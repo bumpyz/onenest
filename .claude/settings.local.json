@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)",
+      "PowerShell(npx --version)",
+      "PowerShell(Write-Output \\(Get-ChildItem \"C:\\\\Users\\\\Nado\\\\OneDrive\\\\Projects\\\\FamilyApp-scaffold\" -Force | ForEach-Object { $_.Name }\\))"
+    ]
+  }
+}
