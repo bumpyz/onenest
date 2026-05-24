@@ -98,6 +98,16 @@ Deno.serve(async () => {
     const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const nowIso = now.toISOString();
     const horizonIso = horizon.toISOString();
+    // QA-020: tasks are user-facing "due today" if their due_at falls anywhere
+    // on today's calendar date, not strictly at-or-after the cron-fire instant.
+    // The client digest uses startOfDay(now); a task with due_at = today 09:00
+    // is visible in-app at any time today, but `gte('due_at', nowIso)` at a
+    // 11:00 cron tick excluded it from the push. Lower the task-fetch bound
+    // to today's UTC midnight so push and in-app agree. Events still use
+    // nowIso (we don't want a push talking about an event that already ended).
+    const todayStartIso = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    ).toISOString();
 
     // 1. Grab every active push token + the owning profile.
     const { data: tokens, error: tokenErr } = await supabase
@@ -305,7 +315,9 @@ Deno.serve(async () => {
         .select('id, household_id, due_at, task_assignees(profile_id)')
         .in('household_id', allHouseholdIds)
         .is('completed_at', null)
-        .gte('due_at', nowIso)
+        // QA-020: today's-start boundary so tasks due earlier today (but
+        // unfinished) still count, matching the in-app digest.
+        .gte('due_at', todayStartIso)
         .lt('due_at', horizonIso);
     if (openTasksErr) {
         console.error('sunday-summary: tasks query failed', openTasksErr);

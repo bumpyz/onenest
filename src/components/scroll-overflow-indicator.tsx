@@ -32,6 +32,7 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import { StyleSheet, View } from 'react-native';
 
 import { Colors } from '@/constants/theme';
+import { withAlpha } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
 /** Tolerance (px) below which we don't render the indicator. Keeps it from
@@ -125,7 +126,10 @@ export function ScrollOverflowChevron({
             style={[
                 styles.indicator,
                 side === 'right' ? styles.right : styles.left,
-                { backgroundColor: colors.background + 'D9' }, // D9 ≈ 85% alpha
+                // QA-023: safe alpha composition. Was `colors.background + 'D9'`,
+                // which silently breaks for any palette value that isn't 7-char
+                // `#RRGGBB`. withAlpha normalizes hex / rgb / rgba inputs.
+                { backgroundColor: withAlpha(colors.background, 0.85) },
                 // RN deprecated the `pointerEvents` prop in favor of the style
                 // value. Keeping it on style means taps still fall through to
                 // the underlying ScrollView.

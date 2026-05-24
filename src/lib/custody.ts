@@ -87,21 +87,47 @@ export function findPattern(id: string | null | undefined): CustodyPattern | nul
 /**
  * Returns the cycle index (0-based) for the given date relative to the schedule's anchor.
  * Handles dates before the anchor correctly via positive modulo.
+ *
+ * QA-019: when called from the responsible-parent resolver with an event tz,
+ * compute the day delta in THAT tz so the cycle index matches what the
+ * sunday-summary edge function (Deno port `dayDeltaInTz`) produces. Without
+ * this, a viewer in Tokyo looking at an NY-tz event saw a different cycle
+ * index than the push notification claimed — same code path, different
+ * answer. Legacy callers from calendar UI strips pass tz omitted, which
+ * keeps the historical local-time behavior for the custody-band day strip.
  */
-export function cycleIndexForDate(schedule: CustodySchedule, date: Date): number {
-    const anchor = parseISO(schedule.anchor_date);
+export function cycleIndexForDate(
+    schedule: CustodySchedule,
+    date: Date,
+    tz?: string | null,
+): number {
     const cycleLength = schedule.cycle_days.length;
     if (cycleLength === 0) return 0;
-    const delta = differenceInCalendarDays(date, anchor);
+    let delta: number;
+    if (tz) {
+        // Luxon-based day delta in tz, mirroring
+        // supabase/functions/_shared/recurrence-resolver.ts dayDeltaInTz.
+        const aDt = DateTime.fromISO(schedule.anchor_date, { zone: tz }).startOf('day');
+        const bDt = DateTime.fromJSDate(date, { zone: 'utc' })
+            .setZone(tz)
+            .startOf('day');
+        delta = aDt.isValid && bDt.isValid
+            ? Math.round(bDt.diff(aDt, 'days').days)
+            : differenceInCalendarDays(date, parseISO(schedule.anchor_date));
+    } else {
+        const anchor = parseISO(schedule.anchor_date);
+        delta = differenceInCalendarDays(date, anchor);
+    }
     return ((delta % cycleLength) + cycleLength) % cycleLength;
 }
 
-/** Returns 'A' or 'B' for the given date. */
+/** Returns 'A' or 'B' for the given date. Pass tz to compute in the event's wall-clock. */
 export function custodyLabelOnDate(
     schedule: CustodySchedule,
     date: Date,
+    tz?: string | null,
 ): CustodyLabel {
-    const idx = cycleIndexForDate(schedule, date);
+    const idx = cycleIndexForDate(schedule, date, tz);
     return (schedule.cycle_days[idx] as CustodyLabel) ?? 'A';
 }
 
@@ -109,8 +135,9 @@ export function custodyLabelOnDate(
 export function custodianProfileIdOnDate(
     schedule: CustodySchedule,
     date: Date,
+    tz?: string | null,
 ): string {
-    return custodyLabelOnDate(schedule, date) === 'A'
+    return custodyLabelOnDate(schedule, date, tz) === 'A'
         ? schedule.parent_a_profile_id
         : schedule.parent_b_profile_id;
 }
@@ -161,7 +188,7 @@ export function resolveCustodianOnDate(
         };
     }
     return {
-        profileId: custodianProfileIdOnDate(schedule, date),
+        profileId: custodianProfileIdOnDate(schedule, date, tz),
         isOverride: false,
         override: null,
     };

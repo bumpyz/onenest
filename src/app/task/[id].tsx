@@ -343,7 +343,7 @@ export default function EditTaskScreen() {
                                         <ThemedText
                                             type="small"
                                             style={{
-                                                color: selected ? '#2A2E3A' : colors.text,
+                                                color: selected ? colors.textOnPastel : colors.text,
                                                 fontWeight: '600',
                                             }}>
                                             {l.name}

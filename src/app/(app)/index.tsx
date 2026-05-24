@@ -17,7 +17,7 @@ import { ThemedView } from '@/components/themed-view';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { Colors, Spacing } from '@/constants/theme';
-import { FAB_SHADOW, PILL_SHADOW } from '@/lib/platform-styles';
+import { FAB_SHADOW, PILL_SHADOW, withAlpha } from '@/lib/platform-styles';
 import { useChildren } from '@/hooks/use-children';
 import { useCustodyOverrides } from '@/hooks/use-custody-overrides';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
@@ -106,6 +106,12 @@ export default function HomeScreen() {
         ? `onenest:home-welcome-dismissed:${household.id}`
         : null;
     useEffect(() => {
+        // QA-021: reset to null before reading AsyncStorage when the household
+        // changes. Without this, switching households (latent today — no
+        // user-facing selector — but coming) would briefly render the new
+        // household with the previous one's dismissal state, flashing the
+        // welcome card on or off incorrectly until the async read settles.
+        setWelcomeDismissed(null);
         if (!welcomeKey) return;
         AsyncStorage.getItem(welcomeKey)
             .then((v) => setWelcomeDismissed(v === 'true'))
@@ -617,6 +623,10 @@ function WelcomeCard({
                     onPress={onDismiss}
                     accessibilityRole="button"
                     accessibilityLabel="Dismiss welcome card"
+                    // UX-027: visible × stays small but hitSlop extends the touch
+                    // target to ~44pt on all sides per Apple HIG. Without this
+                    // the user had to land their finger on an ~28pt glyph.
+                    hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
                     style={({ pressed }) => [
                         styles.welcomeDismiss,
                         pressed && styles.pressed,
@@ -638,12 +648,24 @@ function WelcomeCard({
                         onPress={a.onPress}
                         style={({ pressed }) => [
                             styles.welcomeChip,
-                            { borderColor: colors.backgroundSelected },
+                            {
+                                // UX-026: slate-blue border for the "actionable"
+                                // signal, slate-blue tint for the chip background
+                                // so the chip has its own surface (more visible
+                                // than a hairline border) AND text uses
+                                // colors.text which contrasts ~7:1 on both
+                                // themes. Previous design (#6F7FA5 text on
+                                // colors.backgroundElement) measured ~3.06:1
+                                // on dark, failing WCAG AA.
+                                borderColor: '#6F7FA5',
+                                // Safe alpha via helper rather than hex concat.
+                                backgroundColor: withAlpha('#6F7FA5', 0.13),
+                            },
                             pressed && styles.pressed,
                         ]}>
                         <ThemedText
                             type="small"
-                            style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                            style={{ color: colors.text, fontWeight: '600' }}>
                             {a.label}
                         </ThemedText>
                     </Pressable>
@@ -690,7 +712,12 @@ function DaySection({
                         onPress={() => onPressCustody(format(day, 'yyyy-MM-dd'))}
                         style={({ pressed }) => [
                             styles.custodyPill,
-                            { borderColor: custodianColor, backgroundColor: `${custodianColor}22` },
+                            {
+                                borderColor: custodianColor,
+                                // QA-023: safe alpha. Was `${custodianColor}22`,
+                                // brittle if a member color is ever non-7-char hex.
+                                backgroundColor: withAlpha(custodianColor, 0.13),
+                            },
                             pressed && styles.pressed,
                         ]}>
                         <View style={[styles.custodyPillDot, { backgroundColor: custodianColor }]} />

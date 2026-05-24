@@ -472,12 +472,27 @@ export function EventTaskSection({
                                                 the full name made the chip read as "circle +
                                                 first letter + full name in a bigger button",
                                                 which looked broken. Keep the spelled-out name
-                                                only. */}
+                                                only.
+                                                UX-035: in the unselected state, an 8pt color
+                                                dot before the name restores the at-a-glance
+                                                child-identity signal that a 1pt border alone
+                                                under-communicates (parents + lists + children
+                                                chips can stack on the same task row). The
+                                                selected state already paints the chip the
+                                                child's color so the dot would be redundant. */}
+                                            {!selected ? (
+                                                <View
+                                                    style={[
+                                                        styles.childIdentityDot,
+                                                        { backgroundColor: c.color },
+                                                    ]}
+                                                />
+                                            ) : null}
                                             <ThemedText
                                                 type="small"
                                                 style={{
                                                     color: selected
-                                                        ? '#2A2E3A'
+                                                        ? colors.textOnPastel
                                                         : colors.text,
                                                     fontWeight: '500',
                                                 }}>
@@ -593,6 +608,17 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         paddingHorizontal: Spacing.two,
         paddingVertical: 2,
+        // UX-035: children chip becomes a row so the identity dot sits inline
+        // before the name. Existing parent / list chips don't render the dot,
+        // so the flexDirection here is a no-op for them.
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    childIdentityDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
     },
     dueRow: {
         flexDirection: 'row',

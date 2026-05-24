@@ -654,7 +654,7 @@ export default function ListsScreen() {
                                     <ThemedText
                                         type="small"
                                         style={{
-                                            color: selected ? '#2A2E3A' : colors.text,
+                                            color: selected ? colors.textOnPastel : colors.text,
                                             fontWeight: '600',
                                         }}>
                                         {c.display_name}
@@ -729,7 +729,7 @@ export default function ListsScreen() {
                                     <ThemedText
                                         type="small"
                                         style={{
-                                            color: selected ? '#2A2E3A' : colors.text,
+                                            color: selected ? colors.textOnPastel : colors.text,
                                             fontWeight: '600',
                                         }}>
                                         {l.name}
@@ -1507,7 +1507,7 @@ function TaskListRow({
                                     <ThemedText
                                         type="small"
                                         style={{
-                                            color: selected ? '#2A2E3A' : colors.text,
+                                            color: selected ? colors.textOnPastel : colors.text,
                                             fontWeight: '500',
                                         }}>
                                         {l.name}

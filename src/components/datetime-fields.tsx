@@ -17,6 +17,7 @@
 // platform-agnostic. Empty string means "no value picked yet" and renders a
 // placeholder + opens the picker at today / now.
 
+import { Feather } from '@expo/vector-icons';
 import DateTimePicker, {
     DateTimePickerAndroid,
     type DateTimePickerEvent,
@@ -155,15 +156,26 @@ export function DateField({ value, onChange }: DateProps) {
                 }
                 style={({ pressed }) => [
                     wrapper,
+                    styles.fieldRow,
                     pressed && styles.pressed,
                 ]}>
                 <ThemedText
                     style={{
                         color: value ? colors.text : colors.textSecondary,
                         fontSize: 16,
+                        flex: 1,
                     }}>
                     {display || 'Pick a date'}
                 </ThemedText>
+                {/* UX-032: trailing calendar icon signals "this is interactive
+                    and opens a picker" — mirrors the calendar icon browsers
+                    render inside HTML <input type="date">. Without this the
+                    field looked identical to a static read-only label. */}
+                <Feather
+                    name="calendar"
+                    size={16}
+                    color={colors.textSecondary}
+                />
             </Pressable>
             {Platform.OS === 'ios' && iosModalOpen ? (
                 <Modal
@@ -269,15 +281,22 @@ export function TimeField({ value, onChange }: TimeProps) {
                 }
                 style={({ pressed }) => [
                     wrapper,
+                    styles.fieldRow,
                     pressed && styles.pressed,
                 ]}>
                 <ThemedText
                     style={{
                         color: value ? colors.text : colors.textSecondary,
                         fontSize: 16,
+                        flex: 1,
                     }}>
                     {display || 'Pick a time'}
                 </ThemedText>
+                <Feather
+                    name="clock"
+                    size={16}
+                    color={colors.textSecondary}
+                />
             </Pressable>
             {Platform.OS === 'ios' && iosModalOpen ? (
                 <Modal
@@ -332,6 +351,13 @@ export function TimeField({ value, onChange }: TimeProps) {
 }
 
 const styles = StyleSheet.create({
+    // UX-032: flex row so the text takes available width and the calendar/clock
+    // icon sits flush right.
+    fieldRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.two,
+    },
     pressed: { opacity: 0.7 },
     // Bottom-sheet modal style for iOS. Backdrop captures taps outside the
     // sheet to dismiss (matches iOS conventions).

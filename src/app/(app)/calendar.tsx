@@ -37,7 +37,7 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing } from '@/constants/theme';
-import { FAB_SHADOW } from '@/lib/platform-styles';
+import { FAB_SHADOW, withAlpha } from '@/lib/platform-styles';
 import { useChildren } from '@/hooks/use-children';
 import { useCustodyOverrides } from '@/hooks/use-custody-overrides';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
@@ -93,6 +93,15 @@ const CAL_BLOCK_DATASET = { dataSet: { calBlock: 'true' } } as object;
 // number of columns; Month gets its own compact grid renderer with dot indicators.
 type ViewMode = 'day' | 'week' | 'month';
 const VIEW_MODE_STORAGE_KEY = 'onenest:calendar-view-mode';
+// UX-029: persistent press-and-hold discoverability hint. Native-only — web
+// uses drag-to-create with a crosshair cursor that already communicates
+// interactivity. We show the hint for the first N Calendar sessions even when
+// the user has events (the empty-state banner only fires on zero events, so
+// users with even one event never saw the long-press copy). After N visits OR
+// after the first successful long-press OR after manual dismissal, the hint
+// is gone for good.
+const LONGPRESS_HINT_STORAGE_KEY = 'onenest:calendar-longpress-hint';
+const LONGPRESS_HINT_MAX_SHOWS = 3;
 const VIEW_MODES: ViewMode[] = ['day', 'week', 'month'];
 function isViewMode(v: unknown): v is ViewMode {
     return v === 'day' || v === 'week' || v === 'month';
@@ -176,6 +185,43 @@ export default function CalendarScreen() {
         AsyncStorage.setItem(VIEW_MODE_STORAGE_KEY, next).catch(() => undefined);
     }, []);
 
+    // UX-029: native press-and-hold tip state. `null` until AsyncStorage
+    // resolves so we don't flash the hint on cold start for users who've
+    // already seen it. After mount we increment the persisted count; if the
+    // post-increment value exceeds the show limit, the hint stays hidden.
+    // Dismissing manually OR firing a successful long-press both bump the
+    // count past the limit so the hint goes away immediately.
+    const [longPressHintVisible, setLongPressHintVisible] = useState<boolean | null>(
+        Platform.OS === 'web' ? false : null,
+    );
+    useEffect(() => {
+        if (Platform.OS === 'web') return;
+        let active = true;
+        AsyncStorage.getItem(LONGPRESS_HINT_STORAGE_KEY)
+            .then((raw) => {
+                const prev = raw ? Number(raw) || 0 : 0;
+                const next = prev + 1;
+                AsyncStorage.setItem(
+                    LONGPRESS_HINT_STORAGE_KEY,
+                    String(next),
+                ).catch(() => undefined);
+                if (active) setLongPressHintVisible(next <= LONGPRESS_HINT_MAX_SHOWS);
+            })
+            .catch(() => {
+                if (active) setLongPressHintVisible(false);
+            });
+        return () => {
+            active = false;
+        };
+    }, []);
+    const dismissLongPressHint = useCallback(() => {
+        setLongPressHintVisible(false);
+        AsyncStorage.setItem(
+            LONGPRESS_HINT_STORAGE_KEY,
+            String(LONGPRESS_HINT_MAX_SHOWS + 1),
+        ).catch(() => undefined);
+    }, []);
+
     // `anchor` is the "current position" date the user is looking at. Its meaning depends
     // on the active view:
     //   - day:   the single day shown
@@ -213,6 +259,17 @@ export default function CalendarScreen() {
     const rangeEndInclusive = useMemo(
         () => addDays(rangeStart, numDays - 1),
         [rangeStart, numDays],
+    );
+
+    // UX-025: the past-day dim should only fire when the visible range
+    // anchors against the present — i.e. when today or a future day is on
+    // screen. If the user has navigated entirely into the past (e.g.
+    // browsing last month for reference), dimming every cell to 55% just
+    // makes a wall of washed-out data. In that case the "where am I in
+    // time" cue isn't needed; show everything at full opacity.
+    const rangeAnchorsPresentOrFuture = useMemo(
+        () => days.some((d) => !isBefore(d, startOfDay(new Date()))),
+        [days],
     );
 
     const { overrides: custodyOverrides, refetch: refetchOverrides } = useCustodyOverrides(
@@ -511,6 +568,9 @@ export default function CalendarScreen() {
     // taps for navigation before this fallback fires.
     const handleDayColumnTapNative = useCallback(
         (day: Date, locationY: number) => {
+            // UX-029: a successful press-and-hold means the user discovered the
+            // gesture, so the persistent hint has done its job — stop showing it.
+            dismissLongPressHint();
             const startMins = snapMinutes(yToMinutes(locationY));
             const endMins = startMins + DRAG_SNAP_MIN;
             router.push({
@@ -522,7 +582,7 @@ export default function CalendarScreen() {
                 },
             });
         },
-        [router],
+        [router, dismissLongPressHint],
     );
 
     // Header label is view-specific:
@@ -712,6 +772,70 @@ export default function CalendarScreen() {
                     </View>
                 ) : null}
 
+                {/* UX-022: empty-state banner above the grid when the visible
+                    range has zero events. UX-024 fix: hoisted out of the
+                    non-month branch of the viewMode ternary below so the
+                    "Nothing scheduled this month" copy actually renders in
+                    Month view (it was previously dead code).
+                    Banner copy adapts per view so "Nothing scheduled this week"
+                    reads better than a bare "Nothing scheduled". Drag-to-
+                    create / press-and-hold-to-create still work on the grid
+                    below; the banner just acknowledges emptiness and surfaces
+                    the create affordance for users who don't notice the FAB. */}
+                {visibleEvents.length === 0 ? (
+                    <View
+                        style={[
+                            styles.dayEmptyBanner,
+                            { borderBottomColor: colors.backgroundSelected },
+                        ]}>
+                        <ThemedText themeColor="textSecondary" type="small">
+                            {viewMode === 'day'
+                                ? 'Nothing scheduled.'
+                                : viewMode === 'week'
+                                  ? 'Nothing scheduled this week.'
+                                  : 'Nothing scheduled this month.'}{' '}
+                            {Platform.OS === 'web'
+                                ? 'Drag on the grid to add an event, or tap'
+                                : 'Press and hold a time slot to add an event, or tap'}{' '}
+                            <ThemedText
+                                onPress={() => router.push('/event/new')}
+                                style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                + new event
+                            </ThemedText>
+                            .
+                        </ThemedText>
+                    </View>
+                ) : longPressHintVisible && Platform.OS !== 'web' ? (
+                    // UX-029: native-only press-and-hold discoverability tip.
+                    // Shows only when (a) we have events to render (otherwise
+                    // the empty-state banner above already says it) and (b)
+                    // the user is in their first N Calendar visits AND hasn't
+                    // dismissed manually. Self-dismissing × on the right.
+                    <View
+                        style={[
+                            styles.longPressHintBar,
+                            { borderBottomColor: colors.backgroundSelected },
+                        ]}>
+                        <ThemedText
+                            themeColor="textSecondary"
+                            type="small"
+                            style={{ flex: 1 }}>
+                            Tip: press and hold any time slot to add an event there.
+                        </ThemedText>
+                        <Pressable
+                            onPress={dismissLongPressHint}
+                            accessibilityRole="button"
+                            accessibilityLabel="Dismiss press-and-hold tip"
+                            hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}>
+                            <ThemedText
+                                themeColor="textSecondary"
+                                style={{ fontSize: 18, lineHeight: 20 }}>
+                                ×
+                            </ThemedText>
+                        </Pressable>
+                    </View>
+                ) : null}
+
                 {viewMode === 'month' ? (
                     // ─── Month grid ─────────────────────────────────────────────
                     // 7 columns (Sun–Sat) × 6 rows (always 42 cells, even for short
@@ -762,13 +886,17 @@ export default function CalendarScreen() {
                                                 eventsByDay.get(dayKey) ?? [];
                                             const inMonth = isSameMonth(day, anchor);
                                             const dayIsToday = isToday(day);
-                                            // Past days get dimmed to push the user's
-                                            // attention to today and the future. Today
-                                            // and future stay full opacity.
-                                            const isPast = isBefore(
-                                                day,
-                                                startOfDay(new Date()),
-                                            );
+                                            // UX-025: only dim past days when the
+                                            // visible month actually contains today
+                                            // or future. If user has navigated
+                                            // entirely to a past month, leave the
+                                            // grid at full contrast.
+                                            const isPast =
+                                                rangeAnchorsPresentOrFuture &&
+                                                isBefore(
+                                                    day,
+                                                    startOfDay(new Date()),
+                                                );
                                             const visible = dayEvents.slice(0, 3);
                                             const overflow = Math.max(
                                                 0,
@@ -826,14 +954,27 @@ export default function CalendarScreen() {
                                                     <View
                                                         style={styles.monthCellEvents}>
                                                         {visible.map((e) => {
+                                                            // QA-022: resolve responsible
+                                                            // per cell-day for multi-day
+                                                            // all-day events. For timed
+                                                            // events this is the same
+                                                            // calendar date as the start
+                                                            // (they only appear on their
+                                                            // start day in month view), so
+                                                            // the swap is a no-op there;
+                                                            // for an all-day Mon→Wed series
+                                                            // it now shows each cell's
+                                                            // actual responsible parent.
                                                             const responsible =
                                                                 resolveResponsibleProfileId(
                                                                     {
                                                                         event: e,
                                                                         occurrenceDate:
-                                                                            new Date(
-                                                                                e.starts_at,
-                                                                            ),
+                                                                            e.all_day
+                                                                                ? day
+                                                                                : new Date(
+                                                                                      e.starts_at,
+                                                                                  ),
                                                                         custodySchedule,
                                                                         custodyOverrides:
                                                                             overrideMap,
@@ -872,6 +1013,14 @@ export default function CalendarScreen() {
                                                                                     : 0.45,
                                                                         },
                                                                     ]}>
+                                                                    {/* UX-030: dropped the event-type icon in Month
+                                                                        view. On narrow phones (375pt → ~45pt usable
+                                                                        per cell) the icon stole 1-2 chars and pushed
+                                                                        the title past truncation immediately. Title
+                                                                        is the content that disambiguates events;
+                                                                        icon is decorative. Time prefix stays —
+                                                                        it's the next most-informative bit when
+                                                                        two events share a busy day. */}
                                                                     <ThemedText
                                                                         style={
                                                                             styles.monthEventPillText
@@ -879,14 +1028,6 @@ export default function CalendarScreen() {
                                                                         numberOfLines={1}>
                                                                         {startTime
                                                                             ? `${startTime} `
-                                                                            : ''}
-                                                                        {iconForType(
-                                                                            e.event_type,
-                                                                        )}
-                                                                        {iconForType(
-                                                                            e.event_type,
-                                                                        )
-                                                                            ? ' '
                                                                             : ''}
                                                                         {e.title}
                                                                     </ThemedText>
@@ -925,10 +1066,13 @@ export default function CalendarScreen() {
                     <View style={{ width: TIME_COLUMN_WIDTH }} />
                     {days.map((day) => {
                         const dayIsToday = isToday(day);
-                        // Past day headers dim to ~55% opacity so the user's eye lands
-                        // on today + the upcoming week. Today + future stay full
-                        // contrast.
-                        const isPast = isBefore(day, startOfDay(new Date()));
+                        // UX-025: only dim past day headers when today/future
+                        // is also in the visible range. Past day headers contain
+                        // only text, so opacity is fine here (no event blocks
+                        // to cascade into).
+                        const isPast =
+                            rangeAnchorsPresentOrFuture &&
+                            isBefore(day, startOfDay(new Date()));
                         return (
                             <View
                                 key={day.toISOString()}
@@ -1027,7 +1171,17 @@ export default function CalendarScreen() {
                         {days.map((day) => (
                             <View key={day.toISOString()} style={styles.allDayCell}>
                                 {allDayEventsForDay(allDayEvents, day).map((event) => {
-                                    const occurrenceDate = new Date(event.starts_at);
+                                    // QA-022: for multi-day all-day events the
+                                    // responsible parent should be resolved
+                                    // PER-CELL DAY, not for the whole event.
+                                    // A Mon→Wed vacation with custody alternation
+                                    // should show Mon's parent in the Mon cell,
+                                    // Tue's parent in the Tue cell, etc. Using
+                                    // event.starts_at here showed Mon's color
+                                    // in every cell. The cell's own `day` is
+                                    // the correct lookup date — the alternation
+                                    // resolver consumes a Date, not a key.
+                                    const occurrenceDate = day;
                                     const resolvedResponsible = resolveResponsibleProfileId({
                                         event,
                                         occurrenceDate,
@@ -1086,40 +1240,6 @@ export default function CalendarScreen() {
                     </View>
                 ) : null}
 
-                {/* UX-022: empty-state banner above the grid when the visible
-                    range has zero events. Previously gated to Day view only — a
-                    new user defaulting to Week view (or browsing to a quiet
-                    Month) saw a bare grid with no guidance. Banner copy adapts
-                    per view so "Nothing scheduled this week" reads better than
-                    a bare "Nothing scheduled". Drag-to-create / tap-to-create
-                    still work on the grid below; the banner just acknowledges
-                    the emptiness and surfaces the create affordance for users
-                    who don't notice the FAB. */}
-                {visibleEvents.length === 0 ? (
-                    <View
-                        style={[
-                            styles.dayEmptyBanner,
-                            { borderBottomColor: colors.backgroundSelected },
-                        ]}>
-                        <ThemedText themeColor="textSecondary" type="small">
-                            {viewMode === 'day'
-                                ? 'Nothing scheduled.'
-                                : viewMode === 'week'
-                                  ? 'Nothing scheduled this week.'
-                                  : 'Nothing scheduled this month.'}{' '}
-                            {Platform.OS === 'web'
-                                ? 'Drag on the grid to add an event, or tap'
-                                : 'Press and hold a time slot to add an event, or tap'}{' '}
-                            <ThemedText
-                                onPress={() => router.push('/event/new')}
-                                style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                                + new event
-                            </ThemedText>
-                            .
-                        </ThemedText>
-                    </View>
-                ) : null}
-
                 {isLoading && !events ? (
                     <LoadingScreen />
                 ) : (
@@ -1153,10 +1273,13 @@ export default function CalendarScreen() {
 
                             {days.map((day, dayIdx) => {
                                 const dayIsToday = isToday(day);
-                                // Past-day dim mirrors the day-header row above so the
-                                // whole column reads as "already happened, here for
-                                // reference but not where your attention should be."
-                                const isPast = isBefore(day, startOfDay(new Date()));
+                                // UX-025: only dim past day columns when today/future
+                                // is in the visible range. If the user has navigated
+                                // entirely into the past, leave everything at full
+                                // opacity — there's nothing to orient against.
+                                const isPast =
+                                    rangeAnchorsPresentOrFuture &&
+                                    isBefore(day, startOfDay(new Date()));
                                 const dayTimed = eventsForDay(timedEvents, day);
                                 const draggingThisDay =
                                     dragState && dragState.dayIndex === dayIdx;
@@ -1202,8 +1325,11 @@ export default function CalendarScreen() {
                                             dayIsToday && {
                                                 backgroundColor: colors.backgroundElement,
                                             },
-                                            isPast &&
-                                                !dayIsToday && { opacity: 0.55 },
+                                            // UX-025: do NOT apply `opacity` here — RN
+                                            // cascades opacity into children, which
+                                            // washed out the colored event blocks below.
+                                            // We render a translucent overlay layer
+                                            // instead (see end of this column's children).
                                             // Crosshair cursor on web hints "drag here". On
                                             // native this style is ignored.
                                             Platform.OS === 'web'
@@ -1288,8 +1414,18 @@ export default function CalendarScreen() {
                                                         {
                                                             top,
                                                             height,
-                                                            backgroundColor: `${memberColor}26`,
-                                                            borderLeftColor: `${memberColor}99`,
+                                                            // QA-023: safe alpha. Was
+                                                            // `${memberColor}26` / `${memberColor}99`,
+                                                            // brittle to any palette
+                                                            // entry that isn't `#RRGGBB`.
+                                                            backgroundColor: withAlpha(
+                                                                memberColor,
+                                                                0.15,
+                                                            ),
+                                                            borderLeftColor: withAlpha(
+                                                                memberColor,
+                                                                0.6,
+                                                            ),
                                                         },
                                                     ]}>
                                                     <ThemedText
@@ -1439,6 +1575,25 @@ export default function CalendarScreen() {
                                                 </ThemedText>
                                             </View>
                                         ) : null}
+                                        {/* UX-025: non-cascading past-day dim.
+                                            An absolutely-positioned tinted overlay
+                                            sits on top of the column at low alpha.
+                                            Because the overlay is a sibling (not
+                                            an ancestor) of the event blocks, the
+                                            event colors render at full saturation
+                                            but read through a slight wash that
+                                            says "this day already happened."
+                                            pointerEvents:none lets the tap /
+                                            long-press still reach the column. */}
+                                        {isPast && !dayIsToday ? (
+                                            <View
+                                                style={[
+                                                    styles.pastDayOverlay,
+                                                    { backgroundColor: colors.background },
+                                                    { pointerEvents: 'none' },
+                                                ]}
+                                            />
+                                        ) : null}
                                     </Wrapper>
                                 );
                             })}
@@ -1490,6 +1645,17 @@ const styles = StyleSheet.create({
     // time grid. Border-bottom keeps the visual hierarchy consistent with the other
     // header rows above the grid.
     dayEmptyBanner: {
+        paddingHorizontal: Spacing.four,
+        paddingVertical: Spacing.two,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    // UX-029: press-and-hold discoverability bar. Same vertical rhythm as the
+    // empty banner above, but adds a flex row so a dismiss × can sit on the
+    // right edge.
+    longPressHintBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.three,
         paddingHorizontal: Spacing.four,
         paddingVertical: Spacing.two,
         borderBottomWidth: StyleSheet.hairlineWidth,
@@ -1609,6 +1775,18 @@ const styles = StyleSheet.create({
         flex: 1,
         position: 'relative',
         borderRightWidth: StyleSheet.hairlineWidth,
+    },
+    // UX-025: past-day overlay. Translucent layer that sits ABOVE the column
+    // children (so it doesn't cascade opacity into them) and dims the visual
+    // by ~45%. Z-order: above event blocks but below the drag-ghost (which is
+    // a transient interaction layer). Color comes from theme at render time.
+    pastDayOverlay: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        opacity: 0.45,
     },
     hourLine: { borderTopWidth: StyleSheet.hairlineWidth },
     eventBlock: {

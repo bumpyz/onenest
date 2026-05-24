@@ -11,6 +11,7 @@ import {
     TextInput,
     View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChildBadge } from '@/components/child-badge';
@@ -1265,6 +1266,39 @@ export default function SettingsScreen() {
                             </View>
                         </View>
 
+                        {/* UX-028: recovery path for the Home welcome card.
+                            Once dismissed it's gone for good — this small
+                            link brings it back so users who tapped × by
+                            mistake (or got curious later) can see it again.
+                            Clears the per-household AsyncStorage key the
+                            card uses to remember its dismissal. */}
+                        {household ? (
+                            <Pressable
+                                onPress={async () => {
+                                    try {
+                                        await AsyncStorage.removeItem(
+                                            `onenest:home-welcome-dismissed:${household.id}`,
+                                        );
+                                        Alert.alert(
+                                            'Welcome card restored',
+                                            'Visit the Home tab to see it again.',
+                                        );
+                                    } catch {
+                                        // Best-effort; failure here is silent UX-only.
+                                    }
+                                }}
+                                accessibilityRole="button"
+                                accessibilityLabel="Show welcome card on Home again"
+                                style={({ pressed }) => [
+                                    styles.restoreWelcomeRow,
+                                    pressed && styles.pressed,
+                                ]}>
+                                <ThemedText themeColor="textSecondary" type="small">
+                                    Show welcome card on Home again
+                                </ThemedText>
+                            </Pressable>
+                        ) : null}
+
                         <Pressable
                             onPress={signOut}
                             style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
@@ -1336,6 +1370,13 @@ const styles = StyleSheet.create({
         alignSelf: 'flex-start',
     },
     signOutText: { color: '#B85D52', fontWeight: '500' },
+    // UX-028: low-key restore-welcome link. Outlined-text style (no fill, no
+    // border) so it reads as a secondary action — well below sign-out in
+    // visual weight, but discoverable for users who actually want it.
+    restoreWelcomeRow: {
+        marginTop: Spacing.two,
+        paddingVertical: Spacing.two,
+    },
     pressed: { opacity: 0.7 },
     // Saved-locations list & "Add location" affordance — compact row layout with a chevron
     // on the right; each row pushes to /location/[id] for editing.

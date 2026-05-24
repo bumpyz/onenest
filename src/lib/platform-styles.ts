@@ -34,3 +34,57 @@ export const PILL_SHADOW: ViewStyle = Platform.select<ViewStyle>({
         elevation: 4,
     },
 }) as ViewStyle;
+
+/**
+ * QA-023: safely apply alpha to any CSS color string. Previous call sites
+ * used `colors.background + 'D9'` which works for 7-char `#RRGGBB` and
+ * silently produces broken strings for `#RGB` shorthand, `rgb(...)`,
+ * `rgba(...)`, or named colors. This helper normalizes the most common
+ * input shapes to an `rgba(r, g, b, a)` output that RN + RN Web both
+ * accept consistently.
+ *
+ * Supported inputs:
+ *   - `#RRGGBB` and `#RGB` hex (alpha overrides any existing 8/4-char alpha)
+ *   - `rgb(r, g, b)` and `rgba(r, g, b, a)` (alpha replaces, doesn't multiply)
+ *   - Any other string is returned unchanged with a console warning — better
+ *     than emitting a garbled value that silently fails CSS validation.
+ *
+ * `alpha` is clamped to [0, 1].
+ */
+export function withAlpha(color: string, alpha: number): string {
+    const a = Math.max(0, Math.min(1, alpha));
+    // Hex form.
+    if (color.startsWith('#')) {
+        let hex = color.slice(1);
+        // Expand 3/4-char shorthand to 6/8.
+        if (hex.length === 3 || hex.length === 4) {
+            hex = hex
+                .split('')
+                .map((c) => c + c)
+                .join('');
+        }
+        // Drop existing alpha bytes if present so we control the final alpha.
+        if (hex.length === 8) hex = hex.slice(0, 6);
+        if (hex.length !== 6) {
+            // Unrecognized hex length — return original to avoid silent breakage.
+            console.warn(`withAlpha: unexpected hex shape "${color}"`);
+            return color;
+        }
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        if ([r, g, b].some(Number.isNaN)) {
+            console.warn(`withAlpha: bad hex digits "${color}"`);
+            return color;
+        }
+        return `rgba(${r}, ${g}, ${b}, ${a})`;
+    }
+    // rgb()/rgba() — extract numeric channels and rebuild with our alpha.
+    const m = color.match(/^rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (m) {
+        return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${a})`;
+    }
+    // Named colors or anything else — best effort: warn and return original.
+    console.warn(`withAlpha: unhandled color "${color}"`);
+    return color;
+}

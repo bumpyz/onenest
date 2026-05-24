@@ -40,7 +40,7 @@ types, schema/code drift, missing RLS, and similar code-level defects.
 - new: 0
 - accepted: 0
 - in-progress: 0
-- fixed: 16
+- fixed: 21
 - verified: 0
 - wont-fix: 2
 
@@ -339,4 +339,119 @@ types, schema/code drift, missing RLS, and similar code-level defects.
 - **Notes:** Fixes in increasing surface area: (a) lock the Move buttons during `swapWithNeighbor` (a busy ref / state). (b) Wrap the two updates in a SECURITY DEFINER RPC that does the swap atomically (or even better, recomputes all sort_orders in one shot from a desired order). (c) Add a partial UNIQUE on (household_id, sort_order) so the DB raises on collision; the client retries with the freshest read. (a) is the cheap UX fix; (b/c) are the real fix. The lists.tsx drag-to-reorder (`saveReorder`, lines 200-213) has the same shape but writes all rows at once via `Promise.all`, which makes the interleave window even bigger if two tabs reorder — flagging that for the same fix.
 - **Related tasks:** none yet
 - **Files:** src/app/list/[id].tsx (lines 87-101), src/app/(app)/lists.tsx (lines 200-213), supabase/migrations/0023_lists.sql (lines 24-46)
+
+## QA-019 — Client custody cycle index uses local-tz day delta even when override key uses event tz
+- **Severity:** bug-major
+- **Area:** Responsible-parent resolver / QA-017 follow-up
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** `cycleIndexForDate`, `custodyLabelOnDate`, and `custodianProfileIdOnDate` now all accept an optional `tz` param. When set, the day delta from the anchor is computed in that IANA tz via Luxon (`DateTime.fromISO(anchor, {zone}).startOf('day')` minus the date in the same zone), mirroring the Deno port's `dayDeltaInTz` verbatim. `resolveCustodianOnDate` passes its `tz` through to the schedule-pattern fallback too, so both the override branch AND the pattern branch agree with the edge function. Legacy callers (calendar custody-band strip) keep the local-tz behavior by omitting the param. See Task #257.
+- **Repro / Trigger:** Household with a configured custody schedule and an alternation event whose `timezone` differs from the viewer's device tz, on a date where the wall-clock day in the event's tz disagrees with the viewer's local day (e.g. event tz `America/New_York`, occurrence near midnight NY, viewer in `Asia/Tokyo`). The bug shows up most cleanly when **no** custody override exists for that date — that's when the schedule-pattern path runs, and that path is the half QA-017 didn't fix.
+- **Expected:** The client and the sunday-summary edge function compute the same responsible-parent profile id for the occurrence. The QA-017 fix made the OVERRIDE lookup tz-correct (uses `dateKeyInTz(date, event.timezone)`), so the pattern lookup in the same function should be tz-correct too — otherwise the function is internally inconsistent (overrides keyed in event tz, fallback keyed in viewer-local tz).
+- **Actual:** `src/lib/custody.ts` `resolveCustodianOnDate` (lines 148-168) only threads the `tz` argument into the override map key (line 154, `dateKeyInTz(date, tz)`). When no override matches, line 164 falls through to `custodianProfileIdOnDate(schedule, date)` — which calls `cycleIndexForDate(schedule, date)` (lines 91-97) which uses `differenceInCalendarDays(date, anchor)` from date-fns. `differenceInCalendarDays` interprets both inputs in the runtime's local timezone, NOT the event's timezone. So:
+
+  - Override path: keyed in `event.timezone` (correct, matches Deno).
+  - Pattern path: keyed in viewer-local tz (wrong, drifts from Deno).
+
+  Concrete trace — Tokyo viewer (UTC+9), event at `2026-05-22T03:00:00Z` with `timezone='America/New_York'`, custody schedule anchor `2026-05-01`, 7-day cycle `['A','A','B','B','A','A','B']`:
+  - `dateKeyInTz(date, 'America/New_York')` → `'2026-05-21'` (NY wall clock: 23:00 May 21).
+  - `differenceInCalendarDays(<May 22 12:00 in Tokyo local>, parseISO('2026-05-01'))` → 21 (Tokyo's May 22 − local-parsed May 1).
+  - `cycleIndexForDate` → `21 % 7 = 0` → label A → parent_a.
+  - But the Deno port's `dayDeltaInTz('2026-05-01', date, 'America/New_York')` would return 20 → `20 % 7 = 6` → label B → parent_b.
+
+  So the same alternation occurrence resolves to parent A in the client and parent B in the Sunday-summary push. The QA-017 docstring at lines 138-146 even claims "callers that have an event in hand … pass `tz = event.timezone` so the override-map lookup keys off the event's wall-clock date, matching the Deno-side resolver" — but the schedule-pattern path (which is the COMMON case, since most events have no override) bypasses the tz threading entirely.
+
+  Compare the Deno port's `custodianProfileIdOnDate` in `supabase/functions/_shared/recurrence-resolver.ts` lines 194-204: it passes `tz` into `cycleIndexForDate` → `dayDeltaInTz(schedule.anchor_date, date, tz)` (lines 175-181), which converts both inputs through Luxon in the event tz. Two ports, two different algorithms for the same path.
+- **Notes:** Fix is to thread `tz` through the client's `cycleIndexForDate` and `custodianProfileIdOnDate` (or just inline a Luxon-backed day delta in `resolveCustodianOnDate` and call it directly). The signature change ripples to call sites: `src/app/(app)/calendar.tsx` line 967 (custody-band, passes no event context — keep tz=null), `src/app/(app)/index.tsx` line 672 (DaySection, also no event context — tz=null). The responsible-resolver caller at `src/lib/responsible-resolver.ts` line 79-84 already passes `event.timezone`, so the fix immediately starts working there. Confirmed by re-tracing the algorithm end-to-end against the Deno port — both halves of `resolveCustodianOnDate` need the same tz semantics, and right now only one does. Promoting to bug-major because alternation events are exactly the path the QA-017 fix was meant to align across client/edge.
+- **Related tasks:** none yet
+- **Files:** src/lib/custody.ts (lines 91-97, 109-116, 148-168), src/lib/responsible-resolver.ts (lines 75-85), supabase/functions/_shared/recurrence-resolver.ts (lines 175-204)
+
+## QA-020 — Sunday-summary task count excludes overdue-today tasks the in-app Home digest shows
+- **Severity:** bug-minor
+- **Area:** sunday-summary task counting / client-edge drift
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** sunday-summary now computes `todayStartIso` = UTC midnight at the top of today and uses that as the `.gte('due_at', ...)` bound on the open-tasks query. A task with due_at = today 09:00 stays in the push even when cron fires at 15:00, matching the client digest's `startOfDay(now)` behavior. Events still use `nowIso` (a push shouldn't talk about an event that already ended). See Task #262.
+- **Repro / Trigger:** A household with at least one open task whose `due_at` is earlier today than the cron-fire instant (e.g. task due `2026-05-24T09:00:00Z`, cron fires at `2026-05-24T15:00:00Z`). Compare the "N tasks to do" count in the Sunday push to the Home tab's "Today's tasks" / "This week" sections after the push lands.
+- **Expected:** Same count of actionable upcoming tasks both places — the QA-002 fix point of the sunday-summary rewrite was to make the push and the in-app view agree.
+- **Actual:** `supabase/functions/sunday-summary/index.ts` line 308 fetches tasks with `.gte('due_at', nowIso)` — `nowIso = new Date().toISOString()` at line 99 (current instant). So an open task due at 09:00 today is dropped when the cron fires at 15:00 today.
+
+  The client's `useUpcomingTasks` hook computes `rangeStart = startOfDay(new Date())` (`src/hooks/use-upcoming-tasks.ts` line 25), then calls `getUpcomingTasks(householdId, rangeStart, rangeEnd, { includeUndated: true })`. `getUpcomingTasks` in `src/lib/db.ts` lines 1374-1378 emits a postgrest OR filter `and(due_at.gte.${rangeStart.toISOString()}, due_at.lte.${rangeEnd.toISOString()}), due_at.is.null` — `rangeStart` is 00:00 LOCAL today, which in UTC is some time earlier the prior day for Western tzs or some time later the same day for Eastern tzs. Either way, "due at 09:00 today" is included in the client's filter but excluded by the edge function's "after now" cutoff. Same `mine`-filter rule is applied identically on both sides (assigned to user OR Anyone), so the divergence is purely the lower-bound clause.
+
+  Net: every Sunday morning when the cron fires (~9 AM local for most users — pg_cron schedule in migration 0013), any task due Sun 00:00–~09:00 is "missed" by the push but still highlighted in-app. User opens the app expecting "N tasks to do" and sees N+M. Small but corrodes trust in the push.
+
+  Secondary nit on the same line: the cron also runs once per WEEK (Sunday), so a task due Sun 09:00 that the user completes before the Sunday-evening review still gets counted in the push if the cron fires Sun 06:00. The window slop is symmetric — both ends are off by hours, not days — but the in-app counts use `startOfDay(now)` as the floor.
+- **Notes:** Two reasonable fixes: (a) Replace `nowIso` with `new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z').toISOString()` so the lower bound is UTC midnight of today (a rough analog to "start of day in the user's tz" without per-user logic), or (b) compute per-recipient by walking the user's `profile.default_timezone` and a Luxon `startOfDay` in that zone. (a) is closer to what the client computes and a one-line change. Either way also worth filing a tiny follow-up: the client INCLUDES undated tasks in `useUpcomingTasks` but the Home digest's render at `src/app/(app)/index.tsx` lines 374-443 doesn't display them — so adding them to the sunday-summary count without also surfacing them in the digest would create the inverse drift.
+- **Related tasks:** none yet
+- **Files:** supabase/functions/sunday-summary/index.ts (lines 97-99, 303-309), src/hooks/use-upcoming-tasks.ts (lines 25-32), src/lib/db.ts (lines 1374-1382), src/app/(app)/index.tsx (lines 374-443)
+
+## QA-021 — Welcome card briefly shows prior household's dismissal state on household switch
+- **Severity:** bug-minor
+- **Area:** Home / WelcomeCard / AsyncStorage race
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** The effect that reads AsyncStorage on `welcomeKey` change now calls `setWelcomeDismissed(null)` first. The render gate `welcomeDismissed === false` already treats null as "don't show yet", so the welcome card is hidden during the brief async window — no flash of the prior household's state. Latent today (no UI to switch household), but the fix is invisible and bulletproof for when multi-household ships. See Task #259.
+- **Repro / Trigger:** A user member of two households who switches the active household (or creates a brand-new one) while sitting on the Home tab. Multi-household isn't fully shipped yet — `index.tsx` hardcodes `households?.[0]` (line 97) — so this is latent. Surfaces today only via the corner case "user creates a fresh household after dismissing the welcome on a prior household with the same `households?.[0]` ordering": the per-household AsyncStorage key changes, but the `welcomeDismissed` state doesn't reset.
+- **Expected:** When the household id changes, the welcome card's visibility re-evaluates from a clean slate — `welcomeDismissed = null` until the new household's AsyncStorage key resolves, just like the cold-start path.
+- **Actual:** `src/app/(app)/index.tsx` lines 104-119:
+  ```ts
+  const [welcomeDismissed, setWelcomeDismissed] = useState<boolean | null>(null);
+  const welcomeKey = household
+      ? `onenest:home-welcome-dismissed:${household.id}`
+      : null;
+  useEffect(() => {
+      if (!welcomeKey) return;
+      AsyncStorage.getItem(welcomeKey)
+          .then((v) => setWelcomeDismissed(v === 'true'))
+          .catch(() => setWelcomeDismissed(false));
+  }, [welcomeKey]);
+  ```
+  When `welcomeKey` changes (household switched), the effect fires AsyncStorage.getItem for the NEW key, but `welcomeDismissed` keeps its prior value (e.g. `true` from the previous household's dismissed state) until the new fetch resolves. The render gate at line 236 reads `welcomeDismissed === false` to show — so if the prior household had dismissed (state=true), the brief window between household switch and AsyncStorage resolution will keep the card hidden even for a brand-new household that should show it. Inverse case: prior household visible (state=false), switching to a household that previously dismissed will FLASH the card for the few hundred ms it takes AsyncStorage to read.
+- **Notes:** Reset `welcomeDismissed` to null in the same effect, before the AsyncStorage read: `useEffect(() => { setWelcomeDismissed(null); if (!welcomeKey) return; AsyncStorage.getItem(welcomeKey).then(…) }, [welcomeKey])`. That matches the cold-start invariant ("null = unhydrated, hide until we know"). Latent today because multi-household selection isn't user-facing yet, so flagging at minor severity — but worth fixing before that ships, since the misfire is per-household-state-confusion which is exactly the bug class multi-household introduces. Confirmed by re-tracing the effect / render-gate combo; nothing in the surrounding code resets the state between household ids.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/index.tsx (lines 96-120, 236-258)
+
+## QA-022 — Multi-day all-day month pill uses first-day's responsible parent on every day cell
+- **Severity:** bug-minor
+- **Area:** Calendar Month view / multi-day all-day events
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Both sites that resolve responsible per-cell-day for all-day events now pass the cell's own `day` rather than `new Date(event.starts_at)`. (1) The Week/Day all-day chip row (calendar.tsx ~1080-1090) unconditionally uses `day` as occurrenceDate since this code path only runs for events that already cover the cell. (2) The Month-view pill (~877-893) uses `day` only when `e.all_day` is true; timed events keep `starts_at` because they only appear on their start day in month view. Mon→Wed alternation event now renders Mon's color in Mon's cell, Tue's color in Tue's cell, etc. See Task #260.
+- **Repro / Trigger:** Separated-household with a configured custody schedule whose pattern changes parents mid-event window. Create an all-day event spanning at least two days that crosses a custody handoff (e.g. Mon→Wed vacation where Tue is the cycle handoff). Switch to Month view.
+- **Expected:** The colored title pill for each day cell reflects the responsible parent on THAT day (consistent with how Day / Week view's all-day chip would — though those don't currently show per-day color either, the user reasonably expects Month to either match Day/Week or to show per-day color since it's the only view rendering one pill per cell).
+- **Actual:** `src/app/(app)/calendar.tsx` lines 826-893 — for each visible pill the resolver is called with `occurrenceDate: new Date(e.starts_at)`:
+  ```ts
+  const responsible = resolveResponsibleProfileId({
+      event: e,
+      occurrenceDate: new Date(e.starts_at),
+      ...
+  });
+  ```
+  But the bucketing logic at lines 301-321 walks `cursor.setUTCDate(cursor.getUTCDate() + 1)` over every UTC calendar day in [start, end), pushing the SAME event object into each day's array. So the pill in Tuesday's cell receives the event with starts_at=Monday and resolves Monday's responsible parent — even though the cell is for Tuesday.
+
+  The same shape applies to alternation events with `responsible_alternation = 'same_day'`: the lookupDate fed into `resolveCustodianOnDate` is Monday, not Tuesday, so the Tuesday cell shows the Monday custodian's color. For users who have configured per-occurrence overrides on the Tuesday date, those overrides ALSO won't apply to the Tuesday cell (resolver looks up `${eventId}|Monday`, not `${eventId}|Tuesday`).
+
+  Day and Week view's all-day chip has the same pattern at lines 1027-1037 (`occurrenceDate = new Date(event.starts_at)`), so the bug is consistent across the all-day path. Single-day all-day events naturally fall out as "right answer" because the start day IS the only day. Single-day timed events are fine too (no day-walking happens).
+- **Notes:** Fix is to compute responsible per-day in the bucketing loop, attaching the resolved id either as a synthetic field on the per-cell event object (`{ ...e, _resolvedResponsible: profileId }`) or via a parallel `Map<string, Map<string, string>>` keyed by dayKey then eventId. Then the render at lines 826-893 reads the precomputed value instead of re-resolving with the master event's starts_at. Same fix applies symmetrically to the all-day chip on Day/Week (`allDayEventsForDay` / lines 1027-1037). Bug-minor because separated households with custody handoffs mid-multi-day-vacation are an uncommon shape, but the responsible-parent color is a core part of what the calendar communicates so wrong colors here are misleading. Confirmed by re-tracing the bucketing → render path; no compensation elsewhere.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/calendar.tsx (lines 292-324, 826-893, 1027-1037)
+
+## QA-023 — colors.background + 'D9' alpha concat assumes 7-char hex, brittle to future palette changes
+- **Severity:** bug-minor
+- **Area:** ScrollOverflowChevron / theme color handling
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** New `withAlpha(color, alpha)` helper in `src/lib/platform-styles.ts` normalizes #RGB / #RRGGBB / #RRGGBBAA / rgb() / rgba() inputs into a well-formed `rgba(r, g, b, a)`. Replaced the three brittle concat sites: ScrollOverflowChevron background (`colors.background + 'D9'`), calendar.tsx other-member busy-block bg + border (`${memberColor}26` / `${memberColor}99`), and the Home custody pill bg (`${custodianColor}22`). Also caught the new WelcomeCard chip background (`#6F7FA522`) I'd added in the UX-026 fix. Future palette changes that introduce non-7-char hex won't silently break these surfaces; the helper warns and falls back to the original color string instead. See Task #261.
+- **Repro / Trigger:** No active repro today — `src/constants/theme.ts` lines 21-34 declare `background` as 7-char `#RRGGBB` in both light (`#F4EFE2`) and dark (`#1F232E`). The bug latent-fires the moment any future palette tweak adds a CSS3 shorthand (`#F4E`) or an explicit alpha (`#F4EFE2CC`).
+- **Expected:** Constructing a 60%/85%-opacity variant of the theme background should be expressible in a way that doesn't silently break when the input format shifts.
+- **Actual:** `src/components/scroll-overflow-indicator.tsx` line 128 does `backgroundColor: colors.background + 'D9'`. The result is parsed by React Native / RN-web as `#RRGGBBAA`. For the current palette it's valid (`#F4EFE2D9`). But:
+  - If a future palette uses shorthand `#FFF`, the concat becomes `#FFFD9` — 5 hex chars, which CSS3 + RN-Web treat as malformed and either ignore (transparent background) or interpret unpredictably.
+  - If a future palette pre-bakes an alpha `#F4EFE2CC`, the concat becomes `#F4EFE2CCD9` — 10 hex chars, invalid, parsed as transparent.
+  - Same pattern recurs in `src/app/(app)/calendar.tsx` line 1291-1292: `${memberColor}26` / `${memberColor}99` for member busy block backgrounds. `memberColor` comes from `colorForResponsible` → `memberColorMap` (`src/lib/colors.ts`), which returns palette entries. If the palette ever switches to `rgb()` or shorthand `#RGB`, those concats break the same way.
+  - And `src/app/(app)/lists.tsx` line 1280: `'rgba(111, 127, 165, 0.15)'` is a literal so safe — flagged just to contrast.
+
+  Inline `chipScrollWrapper`-style alpha appending is a known footgun; the more durable shape is a tiny helper `withAlpha(hex, alpha: 0-1): string` that branches on hex length and falls back to `rgba(...)` for non-7-char inputs.
+- **Notes:** Easy fix: add a `withAlpha` helper to `src/lib/colors.ts` and replace the three concat sites. Bug-minor with low immediate impact (the palette is unlikely to change in a way that bites this), but it's an example of theme-tinted code that doesn't actually use the theme system — calling it out so any future palette refactor knows to grep for `+ '` near hex usage. Confirmed by reading the palette + the three usage sites; nothing today is broken.
+- **Related tasks:** none yet
+- **Files:** src/components/scroll-overflow-indicator.tsx (line 128), src/app/(app)/calendar.tsx (lines 1291-1292), src/constants/theme.ts (lines 20-35), src/lib/colors.ts
 

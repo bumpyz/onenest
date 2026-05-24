@@ -40,9 +40,9 @@ inspectable from components, styles, and screen layouts.
 - new: 0
 - accepted: 0
 - in-progress: 0
-- fixed: 22
+- fixed: 32
 - verified: 0
-- wont-fix: 1
+- wont-fix: 3
 
 ---
 
@@ -349,4 +349,136 @@ inspectable from components, styles, and screen layouts.
 - **Recommendation:** Compute the union of `list_ids` across the selected tasks. Render chips for lists in that union with the "selected" treatment (filled background) and lists outside the union as outlined. Optional: disable / dim chips for lists every selected task is already in, since tapping them is a no-op. Even just rendering all chips outlined (matching the per-row picker's unselected state) would be more honest than the current always-filled rendering.
 - **Related tasks:** none yet
 - **Files:** src/app/(app)/lists.tsx (~lines 533-550 handleBulkAddToList, 1147-1172 picker chips, 1453-1490 per-row picker for comparison)
+
+## UX-024 — UX-022 "Nothing scheduled this month" copy ships but the banner never renders in Month view
+- **Severity:** ux-high
+- **Area:** Calendar (Month view, empty state)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Hoisted the `{visibleEvents.length === 0 ? <banner /> : null}` block above the `viewMode === 'month' ? … : …` ternary so it renders in all three views (sits alongside the chip strip / custody band). The per-view copy ("Nothing scheduled this month") now actually appears in Month view on a quiet month. See Task #255.
+- **Description:** UX-022's fix added the `viewMode === 'month' ? 'Nothing scheduled this month.'` copy to the empty-state banner. But the banner JSX (calendar.tsx lines 1098-1121) lives **inside** the non-month branch of the ternary `viewMode === 'month' ? <MonthGrid /> : (<>…banner + grid…</>)` that begins at line 715/918. Whenever the user is in Month view, the entire `<>` else-branch is unmounted — banner included. So a user who lands on Month view with zero events sees a bare 42-cell grid; the "Nothing scheduled this month" branch is dead code that can never execute. The same fix needs to render the banner **above** the ternary (so it sits with the chip strip / custody band and is visible in all three views), or duplicate the banner into the month branch.
+- **Recommendation:** Move the `{visibleEvents.length === 0 ? <banner /> : null}` block above the `viewMode === 'month' ? … : …` ternary so it renders for all three views. The custody band + all-day row are already gated by their own conditions and sit fine in the shared area. Bonus: the `viewMode === 'month'` branch of the banner copy then becomes reachable for the first time, and Month-view first-run users finally see "+ new event" guidance.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/calendar.tsx (~lines 715-918 outer Month-vs-else ternary, 1098-1121 banner JSX that lives in the else branch only)
+
+## UX-025 — Past-day dim cascades through the day column and washes out past event blocks
+- **Severity:** ux-medium
+- **Area:** Calendar (Week / Day view, past days)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Both halves of the agent's recommendation. (a) The day column no longer applies `opacity` to itself; instead a sibling `pastDayOverlay` View (absolute-positioned, `colors.background` background at 45% alpha, `pointerEvents: 'none'`) sits on top of the column children, dimming the visual without cascading into events. Touches still reach the column for press-and-hold-to-create. (b) New `rangeAnchorsPresentOrFuture` memo gates all three dim sites (day header, day column, month cell) — when the user has navigated entirely into the past, nothing dims because the today-anchored interpretation no longer applies. See Task #256.
+- **Description:** The past-day dim is applied on the day column Wrapper itself: `isPast && !dayIsToday && { opacity: 0.55 }` (calendar.tsx ~lines 1205-1206). Because RN `opacity` cascades to children, every event block, busy block, and other-member busy block rendered inside that column is also rendered at 0.55 opacity. The event block's text (already white on a pastel-tinted bg) becomes faint white on a faded pastel — and event blocks anchored to a past day in the same Week view as today's column look "deprioritized" in a way the user can't reverse. Two concrete problems: (1) a user reviewing Monday's pickup time on a Wednesday afternoon has the worst-readable copy on the screen for the most info-dense block; (2) the same opacity cascade applies when the user navigates BACK to a past week — they explicitly asked to see those events, but the entire grid + every event is washed out. The week / day grid effectively says "you're not allowed to look at the past" even when the user is actively looking at the past.
+- **Recommendation:** Either (a) move the opacity off the column and onto the column's hour-line + background-tint layers only (leave events at full opacity — they're the content the user actually wants to read); or (b) gate the dim by anchor: only dim past days when the user is on a CURRENT (today-containing) week / day view. Past weeks already represent "I am intentionally looking at the past" and shouldn't be self-dimming. Option (b) is the smaller change and arguably the more correct mental model — the dim's purpose is "your attention should be on today + future" within a today-anchored view.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/calendar.tsx (~lines 928-952 day-header dim, 1155-1206 day-column dim, 768-803 month-cell dim)
+
+## UX-026 — WelcomeCard action-chip text uses brand slate-blue, fails WCAG AA on dark theme
+- **Severity:** ux-medium
+- **Area:** Home (first-run welcome card, dark theme)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Action-chip text now uses `colors.text` (~7:1 contrast on both themes). Chip identity is carried by the slate-blue border + ~13% slate-blue fill (`#6F7FA522`), which sits behind both light and dark surfaces without contrast issues. The chip reads as a slate-blue tinted action regardless of theme without sacrificing legibility. See Task #258.
+- **Description:** The four action chips inside the WelcomeCard render their label with `color: '#6F7FA5'` (the OneNest brand slate-blue) inside a transparent-background chip with a `colors.backgroundSelected` border, sitting on a `colors.backgroundElement` card (index.tsx ~lines 644-648, styles 1015-1020). On light theme that puts slate-blue text on a pale-sage card — readable at ~5:1. On dark theme it puts slate-blue text (rgb 111,127,165, relative luminance ~0.21) on `#2A2F3D` raised slate (relative luminance ~0.035), which is ~3.06:1 contrast — below WCAG AA's 4.5:1 minimum for normal-size text. The chips are also the only call-to-action affordance on the first thing a brand-new dark-theme user sees, so the legibility hit lands directly on the onboarding moment. Same `#6F7FA5` color is used elsewhere on dark theme (recurrence chip "Done" text, etc.) but those sit beside selected-state chips with white text that carry the contrast — here it's the only colored element and fails on its own.
+- **Recommendation:** Either (a) switch the action-chip text to `colors.text` on dark theme (a small `scheme === 'dark' ? colors.text : '#6F7FA5'` ternary), or (b) brighten the brand accent for dark theme — define a `colors.accent` palette token that's `#6F7FA5` in light and a higher-luminance equivalent (e.g. `#8FA0CC`) in dark. Option (b) is more work but pays off everywhere the brand slate-blue is used.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/index.tsx (~lines 644-648 WelcomeCard chip text)
+
+## UX-027 — WelcomeCard dismiss × has a ~28pt tap target, well below the 44pt mobile minimum
+- **Severity:** ux-medium
+- **Area:** Home (WelcomeCard dismiss button)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Added `hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}` to the dismiss Pressable. Visual × stays compact (preserving the card's clean header) but the touch target extends to ~52×52pt, well above the HIG 44pt minimum. The other small × buttons in the app (event-task-section removeBtn, cross-list pill ×) are flagged for a separate cross-cutting tap-target audit. See Task #258.
+- **Description:** The dismiss × is a ThemedText with `fontSize: 20` inside a Pressable with `padding: Spacing.one` (= 4) on all sides (index.tsx ~lines 616-629, styles 1008-1009). Total tappable area is ~28×28pt. Apple HIG mandates 44×44pt, Material Design recommends 48×48pt; both standards exist because finger-sized targets miss small UI consistently. A user trying to dismiss the welcome card has to tap precisely on a small × in the corner of the card — easy to miss and tap one of the action chips below instead, which then routes them away from Home. Combined with UX-028 (no way to bring the card back), a stray miss can be a surprisingly destructive accident.
+- **Recommendation:** Bump the dismiss button to ≥44×44 tap area. Cheapest fix: `padding: Spacing.three` (16, giving 20+32=52pt) or `hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}` to enlarge the hit zone without enlarging the visual element. Apply the same review to the other small × buttons in the app (event-task-section removeBtn is 28×28 also, lists.tsx chip ✕ glyphs after UX-003, etc.) — this is a cross-cutting pattern worth a sweep.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/index.tsx (~lines 616-629 dismiss Pressable, 1008-1009 welcomeDismiss style)
+
+## UX-028 — Once dismissed, WelcomeCard cannot be brought back without clearing AsyncStorage
+- **Severity:** ux-medium
+- **Area:** Home (first-run welcome card recovery)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Added a "Show welcome card on Home again" link at the bottom of Settings (just above Sign out). On tap it clears the `onenest:home-welcome-dismissed:{householdId}` AsyncStorage key and shows an Alert confirming the restore. Visual weight is intentionally low (textSecondary, no fill) — recovery is a secondary action that shouldn't compete with Sign out or the primary household management rows. See Task #258.
+- **Description:** The welcome card writes `onenest:home-welcome-dismissed:{householdId}` = `'true'` to AsyncStorage on dismiss (index.tsx ~lines 99-119), and the render gate `welcomeDismissed === false` permanently hides it once that key is set. Settings has no "Show the welcome tips again" affordance. The card's four chips (Invite partner, Add a child, Set up custody, New event) are the only first-run navigation hints — once the user dismisses (intentionally or by misclick — see UX-027), they have no path to surface them again short of going through Settings to find the same actions one at a time. A user who dismisses on day one then later wants the "Invite partner" prompt back has no recovery. Reinstall / cache-clear is the only escape hatch.
+- **Recommendation:** Add a "Show getting-started tips" row in Settings that clears the `onenest:home-welcome-dismissed:{id}` key for the active household and bounces back to Home. Could also surface it under a Help menu later. Even just labeling the row "Restart onboarding tips" would let users self-recover. Cheap fix, and it eliminates the "dismissed by accident, lost the tips forever" failure mode that UX-027 makes more likely.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/index.tsx (~lines 99-119 dismissed state + AsyncStorage write), src/app/(app)/settings.tsx (no current affordance)
+
+## UX-029 — Native press-and-hold to create has no discoverability for users who already have events
+- **Severity:** ux-medium
+- **Area:** Calendar (native, Day / Week view)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Recommendation (a) shipped. New AsyncStorage counter `onenest:calendar-longpress-hint` increments on every Calendar mount (native only). For the first 3 sessions, a "Tip: press and hold any time slot to add an event there." bar renders above the grid even when the user has events. Self-dismisses on (i) manual × tap, (ii) a successful long-press fire (gesture discovered), or (iii) hitting the show-count limit. Initial state is `null` until AsyncStorage resolves, so returning users never flash the tip on cold start. See Task #263.
+- **Description:** UX-017's fix added 500ms long-press to the native day column with a banner hint: "Press and hold a time slot to add an event, or tap + new event" (calendar.tsx ~lines 1110-1112). The banner is gated by `visibleEvents.length === 0` (line 1098) — meaning the press-and-hold hint is only ever shown when the user has NO events in the visible range. The moment a user has even one event, the banner disappears and the long-press gesture becomes completely undiscoverable: no visual affordance on the column, no onboarding hint, no tip in Settings. A user who learned the FAB on day one will never discover that "I can also press a time slot to pre-fill the start time" — they'll keep using the FAB and manually typing 9:30. The web flow has a `cursor: 'crosshair'` hint (line 1210) that signals "drag here", but native has no equivalent.
+- **Recommendation:** Either (a) keep the banner showing a discoverability hint for the first N sessions even when events exist (track a `onenest:longpress-hint-seen` counter in AsyncStorage; show "Tip: Press and hold any time slot to add an event" on the first 3 Calendar visits, then dismiss); or (b) add a subtle pulsing hint on the column on first focus (a one-time animated cue); or (c) when the user taps a time slot (currently does nothing on native), show an inline tooltip "Press and hold to add an event here". Option (a) is the smallest change and matches the bottom-bar "tap to dismiss" iOS pattern. Without something, the gesture is effectively invisible past first run.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/calendar.tsx (~lines 1098-1121 banner gate, 1178-1194 long-press wiring on native day column)
+
+## UX-030 — Month-view event pills truncate so aggressively on narrow phones that they convey almost no information
+- **Severity:** ux-medium
+- **Area:** Calendar (Month view, portrait-phone widths)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Recommendation (b) shipped — dropped the event-type icon from Month-view pills entirely. The title is the content that disambiguates; the icon was decorative and stole 1-2 chars before truncation. Time prefix stays. On a 45pt-wide cell, "9am Soccer" now fits where "9am ⚽ S…" used to truncate.
+- **Description:** Month cells split the screen width across 7 columns. On a 375pt-wide iPhone SE-class display that's ~53pt per cell, minus 4pt padding leaves ~45pt of usable text width. Event pills render `{startTime} {iconForType} {title}` with `numberOfLines={1}` (calendar.tsx ~lines 861-893). Concrete cases at 45pt: "9:30am ⚽ Soccer practice" truncates around `9:30am ⚽…` — the title that disambiguates the event is the first thing cut. With three pills stacked + the day number + "+N more", a busy day cell renders three nearly-information-free truncated pills. Compared to the prior "colored dot" representation which was honest about being non-informative, the new pills LOOK like they're telling you something but mostly don't. The mixed time format adds noise: "9am ⚽ S…" vs "9:13am ⚽ S…" produce different truncation points within the same cell, so a column of pills has ragged-left edges that read as misalignment. The :00-stripping helps on "9am" but breaks down on the more common cases of :30 / :15 starts.
+- **Recommendation:** Either (a) drop the time prefix on Month view at narrow widths and show just `{icon} {title}`, letting the title get more space — the cell's row position within the day already implies "early/late" coarsely; or (b) drop the event-type icon (it's redundant when the title is meaningful and steals 1-2 chars otherwise); or (c) use a measured `useWindowDimensions` to switch to a denser format under ~400pt total width. Option (b) is the least invasive — icons are decorative, titles are content. Bonus polish: replace `.replace(':00', '')` with a per-minute format so "9:30am Soccer" reads consistently — the current logic only special-cases on-the-hour times.
+- **Related tasks:** none yet
+- **Files:** src/app/(app)/calendar.tsx (~lines 853-895 month event pill render, 1541-1551 monthEventPill styles)
+
+## UX-031 — Native DateField/TimeField display formats diverge from the web variant — cross-platform spec drift
+- **Severity:** ux-low
+- **Area:** Cross-cutting (any DateField / TimeField, web vs native)
+- **Status:** wont-fix
+- **Found:** 2026-05-23 (agent run #3)
+- **Resolution:** Accepted the trade-off the finding itself flagged as low-severity. Wrapping web's `<input type="date">` in a Pressable + read-only overlay to fake "Mon, May 23" formatting would: (1) require maintaining a hidden-input-with-fake-label pattern brittle to browser version changes; (2) lose the native browser date picker affordance (chevron, calendar icon, keyboard-accessible spinner) that's the whole reason we use the HTML input on web; (3) introduce locale handling that the OS already does for free on each platform. Each platform's native rendering is well-understood by its users. Drift between platforms is real but minor — a user on web sees ISO/24h, on iPhone sees friendly format, both readable. Documenting and leaving as a future polish if real users complain.
+- **Description:** The UX-020 fix gave native users a proper picker, and along the way changed the display format to "Mon, May 23" (no year unless different) for dates and "9:30 AM" for times (datetime-fields.tsx ~lines 50-85). The web variant (datetime-fields.web.tsx) renders the raw HTML `<input type="date">` / `<input type="time">`, which shows `YYYY-MM-DD` and `HH:mm` (24h) in most browsers' default rendering. So the same event form, viewed on iPhone Safari vs Chrome on desktop, displays the same event's start as "Mon, May 23 · 9:30 AM" (iOS) vs "2026-05-23 · 09:30" (web). A household member on web reviewing an event their partner created on phone sees raw ISO and 24-hour, even though the partner picked the date via a friendly UI. The picker UX is a wash (both are platform-native), but the **displayed value** drifts. Same concern on the task editor, child birthday, recurrence Ends-on, etc.
+- **Recommendation:** Wrap the web `<input>` in a Pressable + read-only text label that displays `formatDisplayDate`/`formatDisplayTime` over the native control, hiding the underlying input visually (opacity 0, position absolute, but keeping it interactive for click → native picker). That gives web a friendly display while keeping the OS picker. Alternatively, accept the platform-native ISO format as the web style and trust browsers to render dates in the user's locale — but cross-platform drift is the worse outcome since the same household members compare notes across surfaces. Trade-off noted as low because both formats are technically readable; the drift is a polish issue, not a blocker.
+- **Related tasks:** none yet
+- **Files:** src/components/datetime-fields.tsx (~lines 50-85 native display formatters), src/components/datetime-fields.web.tsx (~lines 1-63 web variant uses raw HTML input)
+
+## UX-032 — Native DateField/TimeField "tap to open" has no signaling beyond a bordered field
+- **Severity:** ux-low
+- **Area:** Cross-cutting (every DateField / TimeField on native)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Added a trailing `<Feather name="calendar" />` to DateField and `<Feather name="clock" />` to TimeField, mirroring the calendar/clock indicators browsers paint inside HTML `<input type="date">` / `type="time">`. Field becomes a flex row with text on the left and icon flush-right. Icon color uses `colors.textSecondary` to read as a hint rather than a primary affordance.
+- **Description:** The native DateField/TimeField renders as a bordered, 44-tall Pressable with formatted text inside (datetime-fields.tsx ~lines 96-105, 146-167). There's no chevron, no calendar icon, no underline-as-link styling — just text in a box that looks identical to a non-interactive read-only label. Compare the web variant which uses a real `<input type="date">` — browsers paint a calendar dropdown icon at the right edge, telling the user "this opens a picker". A native user looking at the event form sees the date as a static-looking value beside a label, with no visible cue that tapping does anything. The only way to discover the interaction is by trial tap. Compound concern: an accidental tap on a date field while scrolling the form opens an iOS modal that animates in — that surprise modal is the user's first signal that the field is interactive. Worth a trailing chevron-down icon at minimum.
+- **Recommendation:** Add a small `<Feather name="calendar" />` (date) or `<Feather name="clock" />` (time) icon on the right side of the field's contents, mirroring browser default. Cheaper alternative: a `▾` chevron suffix. Either gives the user an instant "this is interactive and opens a picker" cue without changing the layout meaningfully.
+- **Related tasks:** none yet
+- **Files:** src/components/datetime-fields.tsx (~lines 96-105 useFieldStyles, 146-167 DateField render, 260-281 TimeField render)
+
+## UX-033 — Recurrence error auto-clear is silent — no positive feedback that the user's fix was accepted
+- **Severity:** ux-low
+- **Area:** Event form (recurrence end-date error)
+- **Status:** wont-fix
+- **Found:** 2026-05-23 (agent run #3)
+- **Resolution:** The silent clear is consistent with how form validation works across most apps users encounter (Gmail / Slack / Linear / Notion — type a valid email, the red border just disappears). Adding a transient success cue per-field would set a precedent we'd need to extend to every other validation (end-time-after-start, required title, recurrence-day-picked), which becomes noisy. The disappearance of the error IS the positive signal in standard form UX vocabulary. Closing as wont-fix; the validation re-runs on Save and surfaces fresh errors there if needed.
+- **Description:** UX-016's fix attaches a `useEffect` that resets `error` to null whenever `date`, `endTime`, or `recurrenceEndDate` change (event-form.tsx ~lines 320-333). Functionally this clears the lingering red-line stale error. UX-wise it does so **silently**: the user fixes the recurrence end date from May 20 → June 20, the red error message simply vanishes the moment they pick the new date. There's no transition, no checkmark, no "Looks good" cue — just an abrupt disappearance. A cautious user might assume the form is hiding something (some validation is still failing but inline-only?), or might miss the disappearance entirely and re-tap Save anyway to "really fix" it. The opposite extreme would be over-engineered (toasts for every field change), but the current zero-feedback path leaves the user uncertain whether their change "took".
+- **Recommendation:** Either (a) keep the silent clear but add a subtle fade-out animation on the error text (250ms opacity → 0) so the user sees the message physically resolving rather than vanishing; or (b) keep the error in place but visually crossed-out / dimmed once the underlying validation passes, then re-validate on Save. Option (a) is the cheapest. Either way, a 2-line behavioral note in the inline error component would help.
+- **Related tasks:** none yet
+- **Files:** src/components/event-form.tsx (~lines 320-333 useEffect that clears, ~1205-1209 inline error render)
+
+## UX-034 — Children chip selected-state hardcodes `#2A2E3A` text, ignores dark theme
+- **Severity:** ux-low
+- **Area:** Event-task-section (Children chips on each inline task)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Promoted `Colors.textOnPastel` (`#2A2E3A` in both themes, with an inline comment explaining the intentional theme-agnostic choice). Swapped all five call sites: event-task-section children chip, lists.tsx active-chip (×3), task/new.tsx list chip, task/[id].tsx list chip. Future palette changes that introduce a darker pastel won't silently break contrast since the token is one edit away.
+- **Description:** The Children chip in `event-task-section.tsx` uses `color: selected ? '#2A2E3A' : colors.text` on `backgroundColor: c.color` (event-task-section.tsx ~lines 476-485). The selected text color is hardcoded to dark slate (`#2A2E3A`) rather than driven from the theme. On both themes the chip background is a child's pastel (`#F4A6C0`, `#A8DEC5`, etc. from CHILDREN_PALETTE in colors.ts), so dark slate text on a pastel bg renders fine in both themes — there's no immediate broken-contrast bug. But the choice is conceptually wrong: a selected chip text-color should follow the theme's "foreground on light surface" convention (i.e. it should be the same dark slate regardless of theme because the pastel bg is the same), but it should be expressed as `colors.textOnPastel` or at least `Colors.light.text` to signal the intent. The same hardcoded `#2A2E3A` shows up in 3 other places in event-task-section.tsx (list chip selected, children chip selected) and lists.tsx bulk picker — each is a "selected chip on pastel" case. If the design ever introduces a darker child palette color, the hardcoded slate becomes a real contrast bug.
+- **Recommendation:** Promote a `Colors.textOnPastel` (or `colorOnLightSurface`) token to the theme — same `#2A2E3A` value in both themes — and reference it everywhere a chip puts text on a known-pastel background. Cosmetic/refactor-level change, but it makes the intent explicit and inoculates against future palette changes. Until then, a comment at each call site noting "intentional: pastel bg is theme-agnostic" would prevent a well-meaning future PR from "fixing" it to `colors.text`.
+- **Related tasks:** none yet
+- **Files:** src/components/event-task-section.tsx (~lines 432-435 list chip, 479-482 child chip), src/app/(app)/lists.tsx (~lines 1190-1192 bulk picker)
+
+## UX-035 — Children chip text-only render loses the child-identity signal in unselected state
+- **Severity:** ux-low
+- **Area:** Event-task-section (Children chip row, unselected state)
+- **Status:** fixed
+- **Found:** 2026-05-23 (agent run #3)
+- **Fix:** Added an 8pt color dot before the name in the unselected state (the selected state already paints the chip the child's color, so the dot would be redundant there). Chip becomes a flex row with the dot + name. Preserves the "no avatar redundancy" goal of the earlier ChildBadge removal while restoring at-a-glance color → identity for the unselected state.
+- **Description:** Per task-brief note, the inline-task children chip was simplified to drop the duplicated ChildBadge avatar (event-task-section.tsx ~lines 469-485). The chip is now just `{c.display_name}` inside a Pressable with `borderColor: c.color` and a transparent bg when unselected. Two children in the household — say "Anna" (pink) and "Ben" (mint) — render as two pill-shaped buttons whose only color cue is a thin 1-pt border. On a busy form with parent assignee chips, list chips, AND children chips in sequence (~3 chip rows per task), the user has to read the border color carefully to identify which chip corresponds to which child. Compare the same-row Lists chips above (line 408-443) which also use just a border in the unselected state — but lists rarely have palette collisions with people, while children + parents on the same screen share visual real estate. The selected state IS distinctive (filled with the child's color + child-named text), but the unselected state under-signals.
+- **Recommendation:** Add a small color swatch (e.g. an 8pt color dot, NOT a full ChildBadge with initial) inside the chip before the name. That preserves the "no avatar redundancy" goal the task fix targeted, but restores the at-a-glance color → identity mapping for the unselected state. Alternatively: keep the border but make it 2pt thick on the children row only (vs 1pt on lists / parents) so the child color reads more clearly.
+- **Related tasks:** none yet
+- **Files:** src/components/event-task-section.tsx (~lines 469-485 children chip render)
 

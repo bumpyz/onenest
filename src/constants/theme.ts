@@ -24,6 +24,13 @@ export const Colors = {
         backgroundElement: '#E6EBDC',  // pale sage — cards, elevated surfaces
         backgroundSelected: '#D6DCC9', // slightly darker sage — selected/today tint
         textSecondary: '#6F7FA5',      // slate blue — secondary text + member dots
+        // UX-034: foreground color for content sitting on a known-pastel surface
+        // (children palette chips, member-color filled chips, etc.). Intentionally
+        // theme-agnostic: pastel surfaces are pastel in both themes, so the
+        // contrasting text must stay dark in both. Reference this token everywhere
+        // a chip puts text on a child/member color background rather than
+        // hardcoding `#2A2E3A` at the call site.
+        textOnPastel: '#2A2E3A',
     },
     dark: {
         text: '#EBE5D5',               // warm cream — matches the light bg color
@@ -31,6 +38,9 @@ export const Colors = {
         backgroundElement: '#2A2F3D',   // raised slate
         backgroundSelected: '#363C4C',  // selected slate
         textSecondary: '#A8B5C5',       // muted dusty blue
+        // UX-034: see light-theme comment. Pastel chip bg → same dark foreground
+        // both themes.
+        textOnPastel: '#2A2E3A',
     },
 } as const;
 
