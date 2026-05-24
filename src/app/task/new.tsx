@@ -33,6 +33,7 @@ import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
+import { useMyRole } from '@/hooks/use-my-role';
 import { UNASSIGNED_COLOR, colorForResponsible, memberColorMap } from '@/lib/colors';
 import { createTask } from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
@@ -55,6 +56,7 @@ export default function NewTaskScreen() {
     const { members, isLoading: membersLoading } = useHouseholdMembers(household?.id);
     const { lists, isLoading: listsLoading } = useLists(household?.id);
     const { children, isLoading: childrenLoading } = useChildren(household?.id);
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
 
     // Blank initial state. createTask in db.ts defaults the list to Inbox when
     // listIds is empty, so we don't have to pre-select anything for "I just want
@@ -75,12 +77,16 @@ export default function NewTaskScreen() {
         householdsLoading ||
         membersLoading ||
         listsLoading ||
-        childrenLoading
+        childrenLoading ||
+        roleLoading
     ) {
         return <LoadingScreen />;
     }
     if (!session || !user) return <Redirect href="/sign-in" />;
     if (!household) return <Redirect href="/create-household" />;
+    // Caregivers can mark tasks complete but cannot create them. Bounce
+    // them home rather than presenting a form that would 403 on save.
+    if (isCaregiver) return <Redirect href="/" />;
 
     const colorMap = memberColorMap(members);
     const canSubmit = title.trim().length > 0 && !submitting;

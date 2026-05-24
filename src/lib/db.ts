@@ -1529,23 +1529,30 @@ export async function getTask(id: string): Promise<Task | null> {
 }
 
 /**
- * Toggles or sets a task's completed state. Sets completed_at to now and stamps
- * completed_by with the current user when checking; clears both when unchecking.
+ * Toggles or sets a task's completed state. Routes through the
+ * mark_task_complete RPC (migration 0031) so that both parents and caregivers
+ * hit the same write path — caregivers cannot UPDATE tasks directly under the
+ * new RLS, and the RPC also stamps reminded_at = now() to keep the cron from
+ * firing a "still pending" push between completion and the next edit (QA-001).
+ *
+ * The RPC returns void, so we refetch the row to give the caller the updated
+ * task (the existing callers — Lists, Home, task/[id] — all expect a Task back
+ * for their optimistic-state refresh).
  */
 export async function setTaskCompleted(
     id: string,
     completed: boolean,
 ): Promise<Task> {
-    const userId = completed ? await currentUserId() : null;
-    const { data, error } = await supabase
-        .from('tasks')
-        .update({
-            completed_at: completed ? new Date().toISOString() : null,
-            completed_by: userId,
-        })
-        .eq('id', id)
-        .select('*, task_assignees(profile_id), task_lists(list_id), task_children(child_id)')
-        .single();
+    const { error } = await supabase.rpc('mark_task_complete', {
+        p_task_id: id,
+        p_completed: completed,
+    });
     if (error) throw error;
-    return attachTaskRelations(data as Record<string, unknown>);
+    const fresh = await getTask(id);
+    if (!fresh) {
+        // Caregiver may have lost read access after completion (unlikely — visibility
+        // gate doesn't toggle on completed_at — but be defensive).
+        throw new Error('Task not visible after update');
+    }
+    return fresh;
 }

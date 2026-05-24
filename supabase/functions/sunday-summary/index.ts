@@ -124,20 +124,28 @@ Deno.serve(async () => {
 
     const profileIds = Array.from(new Set((tokens as PushToken[]).map((t) => t.profile_id)));
 
-    // 2. For each profile, find their household memberships.
+    // 2. For each profile, find their household memberships + role. Role drives
+    //    the per-profile visibility filter below: caregivers only see events
+    //    they're responsible for (or true Anyone without alternation) and only
+    //    tasks they're assigned to (or Anyone) — same boundary as migration
+    //    0031's RLS, but enforced here too since the service role bypasses RLS.
     const { data: memberships, error: memErr } = await supabase
         .from('household_members')
-        .select('profile_id, household_id')
+        .select('profile_id, household_id, role')
         .in('profile_id', profileIds);
     if (memErr) {
         return new Response(`Failed to read household_members: ${memErr.message}`, { status: 500 });
     }
 
     const householdIdsByProfile = new Map<string, Set<string>>();
+    // Keyed by `${profileId}|${householdId}` — gives us per-(profile, household)
+    // role lookup without nesting more maps.
+    const roleByProfileHousehold = new Map<string, string>();
     for (const m of memberships ?? []) {
         const set = householdIdsByProfile.get(m.profile_id) ?? new Set<string>();
         set.add(m.household_id);
         householdIdsByProfile.set(m.profile_id, set);
+        roleByProfileHousehold.set(`${m.profile_id}|${m.household_id}`, m.role);
     }
 
     const allHouseholdIds = Array.from(
@@ -164,6 +172,8 @@ Deno.serve(async () => {
         .in('household_id', allHouseholdIds)
         .lt('starts_at', horizonIso)
         .or(`ends_at.gt.${nowIso},recurrence_rule.not.is.null`);
+    // The `responsible_alternation` column is needed by the per-profile caregiver
+    // filter below — flag it on the row type so we don't lose it via the Event cast.
     if (eventsErr) {
         return new Response(`Failed to read events: ${eventsErr.message}`, { status: 500 });
     }
@@ -260,6 +270,10 @@ Deno.serve(async () => {
         starts_at: string;
         ends_at: string;
         responsible_profile_id: string | null;
+        /** True when the master event uses parent-alternation. Caregivers can
+         *  never be the resolved responsible for these (alternation always picks
+         *  a custody parent), so they're filtered out of caregiver digests. */
+        has_alternation: boolean;
     };
     const occurrences: ResolvedOccurrence[] = [];
     for (const master of masterEvents) {
@@ -285,6 +299,7 @@ Deno.serve(async () => {
                 starts_at: occ.starts_at,
                 ends_at: occ.ends_at,
                 responsible_profile_id: resolved,
+                has_alternation: !!master.responsible_alternation,
             });
         }
     }
@@ -330,7 +345,15 @@ Deno.serve(async () => {
     };
     const openTasks: TaskRow[] = (openTasksRaw ?? []) as TaskRow[];
 
-    // 5. For each profile, compute summary across their households.
+    // 5. For each profile, compute summary across their households. The role
+    //    in each household controls which events are visible:
+    //      • parent    → all occurrences in their households
+    //      • caregiver → only occurrences they're responsible for, OR truly
+    //                    Anyone occurrences (no responsible and no alternation,
+    //                    since alternation resolves to a parent A/B)
+    //    Conflicts + unassigned counts are parent-only concerns (caregivers
+    //    don't own scheduling decisions). The task filter already matches
+    //    caregiver semantics — assigned OR Anyone.
     const summariesByProfile = new Map<string, Summary>();
     for (const profileId of profileIds) {
         const householdIds = householdIdsByProfile.get(profileId);
@@ -341,6 +364,21 @@ Deno.serve(async () => {
         let openTaskCount = 0;
         for (const occ of occurrences) {
             if (!householdIds.has(occ.household_id)) continue;
+            const role = roleByProfileHousehold.get(
+                `${profileId}|${occ.household_id}`,
+            );
+            if (role === 'caregiver') {
+                const visible =
+                    occ.responsible_profile_id === profileId ||
+                    (occ.responsible_profile_id === null && !occ.has_alternation);
+                if (!visible) continue;
+                eventCount += 1;
+                // No conflict / unassigned tallies — caregivers don't manage
+                // either. (A caregiver-assigned event also can't conflict with
+                // a parent's external busy block, since the resolver runs
+                // against the responsible_profile_id only.)
+                continue;
+            }
             eventCount += 1;
             if (!occ.responsible_profile_id) {
                 unassigned += 1;
@@ -357,6 +395,8 @@ Deno.serve(async () => {
             if (!householdIds.has(t.household_id)) continue;
             const assignees = (t.task_assignees ?? []).map((a) => a.profile_id);
             // Count if the user is assigned OR the task is unassigned (anyone).
+            // Same rule for parents and caregivers — the only difference is the
+            // role's event filter above.
             if (assignees.length === 0 || assignees.includes(profileId)) {
                 openTaskCount += 1;
             }

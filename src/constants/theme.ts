@@ -6,7 +6,9 @@
 
 import '@/global.css';
 
-import { Platform } from 'react-native';
+import { Platform, type ViewStyle } from 'react-native';
+
+import { CARD_SHADOW, FAB_SHADOW } from '@/lib/platform-styles';
 
 // Brand constants — used directly in styles where a fixed hue is desired regardless of mode.
 export const BrandColors = {
@@ -79,3 +81,89 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+// ─── Surface tokens ─────────────────────────────────────────────────────────
+//
+// The visual vocabulary every card-like surface in the app should pull from.
+// Before this existed, every screen invented its own card geometry — Home's
+// summaryCard used Spacing.two radius, WelcomeCard used Spacing.three, Settings
+// .card used Spacing.two, and padding was a coin flip between Spacing.three and
+// Spacing.four. The result was a UI that read as "consistent-ish" but kept
+// generating consistency findings each pass. Codify the vocabulary once.
+//
+// Three tiers, named for the mental model rather than the depth:
+//   • page   → the document itself (the background under everything else)
+//   • card   → primary surface lifted off the page (day cards, settings cards)
+//   • inset  → secondary surface nested INSIDE a card (event rows inside a
+//              day card, etc.). No shadow — leans on the parent card's shadow
+//              and uses the page color to read as "deeper" than the card.
+//
+// `fill` is a key into Colors[scheme], not a literal hex. Resolve at the call
+// site so theme switching works:
+//
+//     const surface = Surfaces.card;
+//     <View style={[
+//         { backgroundColor: colors[surface.fill], borderRadius: surface.radius,
+//           padding: surface.padding },
+//         surface.shadow,
+//     ]}>
+//
+// Don't add a fourth tier without a real use case. Three covers the
+// page → card → nested-element hierarchy that maps to how users actually parse
+// the screens. A fourth would push us toward Material-style elevation theatre.
+
+type SurfaceFill = 'background' | 'backgroundElement' | 'backgroundSelected';
+
+export type SurfaceToken = {
+    /** Corner radius in pixels. */
+    radius: number;
+    /** Inner padding in pixels. Apply uniformly unless the consumer needs to
+     *  override (e.g. a card with a colored leading rail uses asymmetric pad). */
+    padding: number;
+    /** Color key into Colors[scheme]. Resolve via colors[fill] at render. */
+    fill: SurfaceFill;
+    /** Platform-aware shadow style; spread into the view's style array. */
+    shadow: ViewStyle | undefined;
+};
+
+export const Surfaces = {
+    page: {
+        radius: 0,
+        padding: Spacing.four,
+        fill: 'background',
+        shadow: undefined,
+    },
+    card: {
+        radius: 12,
+        padding: 16,
+        fill: 'backgroundElement',
+        shadow: CARD_SHADOW,
+    },
+    inset: {
+        radius: 8,
+        padding: 12,
+        // Page color inside a card surface → reads as a "well" / inset, not
+        // a stacked second card. This is the trick that makes nested rows
+        // (event rows inside a day card) feel deeper than their container
+        // without needing another shadow.
+        fill: 'background',
+        shadow: undefined,
+    },
+} as const satisfies Record<string, SurfaceToken>;
+
+// ─── Elevation tokens ───────────────────────────────────────────────────────
+//
+// Three steps. Use the named constant, not the underlying shadow:
+//   • flat     → no shadow. For nested cards-in-cards (the inset surface).
+//   • resting  → primary cards lifted off the page (Surfaces.card uses this).
+//   • floating → FAB, popovers, anything that hovers above all content.
+//
+// If you're tempted to invent a fourth step, you're probably building a
+// component that should be one of the existing three. Re-read the comment on
+// Surfaces above.
+
+export const Elevation = {
+    flat: undefined,
+    resting: CARD_SHADOW,
+    floating: FAB_SHADOW,
+} as const;

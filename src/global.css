@@ -7,3 +7,41 @@
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
 }
+
+/* ─── iOS Safari viewport fix ──────────────────────────────────────────────
+ *
+ * react-native-web sets the root container to `height: 100vh`. On iOS Safari
+ * that's the LARGEST possible viewport — the height when the URL bar is
+ * collapsed. When the URL bar is visible (the usual state on first load),
+ * the actual visible area is ~50px shorter, and the bottom of our app
+ * (most painfully: the bottom tab bar) sits below the visible edge by
+ * that amount.
+ *
+ * `100dvh` (dynamic viewport height) is the CSS unit that resizes as the
+ * URL bar shows/hides. Override the RN-Web defaults to use it. The fallback
+ * to `100vh` below keeps older browsers working — they'll have the same
+ * "tab bar slightly cut off" bug we had before, which is the worst-case.
+ *
+ * `!important` is needed because RN-Web writes inline styles that win the
+ * cascade otherwise. The selectors target every container in the chain so
+ * a fix at one level isn't undone by a parent that's still 100vh.
+ */
+
+html,
+body,
+#root,
+#main {
+    /* Fallback: oldest browsers — same behavior as today's bug. */
+    height: 100vh;
+    height: 100dvh !important;
+}
+
+/* Home-indicator inset for PWA installs (Add to Home Screen). In regular
+ * Safari the home indicator overlays browser chrome, not our app, so the
+ * env() returns 0 and this is a no-op. In PWA mode our app fills the full
+ * safe area; we push the bottom tab bar up by the indicator height via
+ * box-sizing so it doesn't blow past 100dvh. */
+body {
+    box-sizing: border-box;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+}

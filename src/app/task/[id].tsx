@@ -29,6 +29,7 @@ import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
+import { useMyRole } from '@/hooks/use-my-role';
 import { useTask } from '@/hooks/use-task';
 import { UNASSIGNED_COLOR, colorForResponsible, memberColorMap } from '@/lib/colors';
 import {
@@ -60,7 +61,8 @@ export default function EditTaskScreen() {
     const { members, isLoading: membersLoading } = useHouseholdMembers(household?.id);
     const { lists, isLoading: listsLoading } = useLists(household?.id);
     const { children, isLoading: childrenLoading } = useChildren(household?.id);
-    const { task, isLoading: taskLoading } = useTask(id);
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
+    const { task, isLoading: taskLoading, refetch: refetchTask } = useTask(id);
 
     // Local edit state — initialized from the loaded task, mutated freely, written
     // back on Save. Keeping it controlled (vs uncontrolled with a ref) so the assignee
@@ -123,7 +125,8 @@ export default function EditTaskScreen() {
         membersLoading ||
         listsLoading ||
         childrenLoading ||
-        taskLoading
+        taskLoading ||
+        roleLoading
     ) {
         return <LoadingScreen />;
     }
@@ -135,6 +138,90 @@ export default function EditTaskScreen() {
     }
 
     const colorMap = memberColorMap(members);
+    // Caregiver read-only branch — they see the task fields, plus a single
+    // affordance: mark complete / undo. Edit / delete / reminder / assignee
+    // pickers are all hidden (and RLS would reject them anyway).
+    if (isCaregiver) {
+        const doneRO = !!task.completed_at;
+        const taskMembers = (members ?? []).filter((m) =>
+            task.assignee_profile_ids.includes(m.profile_id),
+        );
+        const taskChildren = (children ?? []).filter((c) =>
+            task.child_ids.includes(c.id),
+        );
+        const dueLabel = task.due_at
+            ? `Due ${format(parseISO(task.due_at), 'EEE MMM d, h:mm a')}`
+            : 'No due date';
+        return (
+            <ThemedView style={styles.container}>
+                <SafeAreaView style={{ flex: 1, padding: Spacing.four, gap: Spacing.three }}>
+                    <ThemedText type="subtitle">{task.title}</ThemedText>
+                    <ThemedText themeColor="textSecondary">{dueLabel}</ThemedText>
+                    {task.notes ? <ThemedText>{task.notes}</ThemedText> : null}
+                    {taskMembers.length > 0 ? (
+                        <ThemedText themeColor="textSecondary">
+                            Assigned to {taskMembers.map((m) => m.display_name).join(', ')}
+                        </ThemedText>
+                    ) : (
+                        <ThemedText themeColor="textSecondary">
+                            Anyone in the household can do this.
+                        </ThemedText>
+                    )}
+                    {taskChildren.length > 0 ? (
+                        <ThemedText themeColor="textSecondary">
+                            For {taskChildren.map((c) => c.display_name).join(', ')}
+                        </ThemedText>
+                    ) : null}
+                    <Pressable
+                        onPress={async () => {
+                            try {
+                                await setTaskCompleted(task.id, !doneRO);
+                                await refetchTask();
+                            } catch (err) {
+                                console.error('caregiver mark complete failed', err);
+                                Alert.alert(
+                                    "Couldn't update",
+                                    errorMessage(err) ?? 'Please try again.',
+                                );
+                            }
+                        }}
+                        accessibilityRole="button"
+                        accessibilityLabel={doneRO ? 'Mark task as not done' : 'Mark task as done'}
+                        style={({ pressed }) => [
+                            {
+                                marginTop: Spacing.three,
+                                paddingVertical: Spacing.three,
+                                paddingHorizontal: Spacing.four,
+                                borderRadius: Spacing.two,
+                                backgroundColor: doneRO ? colors.backgroundElement : '#6F7FA5',
+                                alignSelf: 'flex-start',
+                            },
+                            pressed && { opacity: 0.7 },
+                        ]}>
+                        <ThemedText
+                            style={{
+                                color: doneRO ? colors.text : '#fff',
+                                fontWeight: '600',
+                            }}>
+                            {doneRO ? 'Mark as not done' : 'Mark as done'}
+                        </ThemedText>
+                    </Pressable>
+                    <Pressable
+                        onPress={() => router.back()}
+                        accessibilityRole="button"
+                        accessibilityLabel="Close task"
+                        style={({ pressed }) => [
+                            { paddingVertical: Spacing.two },
+                            pressed && { opacity: 0.7 },
+                        ]}>
+                        <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                            Close
+                        </ThemedText>
+                    </Pressable>
+                </SafeAreaView>
+            </ThemedView>
+        );
+    }
     const done = !!task.completed_at;
     const canSubmit = title.trim().length > 0 && !submitting;
 

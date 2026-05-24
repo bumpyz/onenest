@@ -36,6 +36,25 @@ export const PILL_SHADOW: ViewStyle = Platform.select<ViewStyle>({
 }) as ViewStyle;
 
 /**
+ * Card-resting shadow — the default "lifted off the page" shadow for primary
+ * surface cards (Home day cards, Settings cards, etc.). Slightly softer than
+ * PILL_SHADOW: cards live on the page rather than floating above it, so they
+ * want a more diffuse, lower-contrast lift than a popover.
+ *
+ * Part of the surface-token vocabulary (Elevation.resting in theme.ts).
+ */
+export const CARD_SHADOW: ViewStyle = Platform.select<ViewStyle>({
+    web: { boxShadow: '0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 12px rgba(0, 0, 0, 0.06)' },
+    default: {
+        shadowColor: '#000',
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 2 },
+        elevation: 2,
+    },
+}) as ViewStyle;
+
+/**
  * QA-023: safely apply alpha to any CSS color string. Previous call sites
  * used `colors.background + 'D9'` which works for 7-char `#RRGGBB` and
  * silently produces broken strings for `#RGB` shorthand, `rgb(...)`,

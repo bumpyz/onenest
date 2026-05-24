@@ -39,12 +39,13 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing } from '@/constants/theme';
-import { FAB_SHADOW } from '@/lib/platform-styles';
+import { FAB_SHADOW, PILL_SHADOW } from '@/lib/platform-styles';
 import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholdTasks } from '@/hooks/use-household-tasks';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
+import { useMyRole } from '@/hooks/use-my-role';
 import {
     createTask,
     deleteTask,
@@ -54,7 +55,7 @@ import {
     type List as TaskList,
     type Task,
 } from '@/lib/db';
-import { colorForResponsible, memberColorMap } from '@/lib/colors';
+import { UNASSIGNED_COLOR, colorForResponsible, memberColorMap } from '@/lib/colors';
 import { useAuth } from '@/providers/auth-provider';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
@@ -81,6 +82,14 @@ export default function ListsScreen() {
     const household = households?.[0];
     const { members, refetch: refetchMembers } = useHouseholdMembers(household?.id);
     const { children, refetch: refetchChildren } = useChildren(household?.id);
+    // Caregivers can complete tasks but not create them, edit their metadata,
+    // or manage lists. We hide the FAB, the inline "+ add task" affordance,
+    // and the bulk-action toolbar; the checkbox stays live so they can mark
+    // their assigned tasks done (which routes through the mark_task_complete
+    // RPC server-side). `roleLoading` guards the FAB against a one-frame flash
+    // on cold start for caregivers.
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
+    const showCreateAffordances = !roleLoading && !isCaregiver;
     const { lists, isLoading: listsLoading, refetch: refetchLists } = useLists(
         household?.id,
     );
@@ -453,7 +462,13 @@ export default function ListsScreen() {
         // Event-linked tasks live inside their event's form — sending the user there
         // keeps the "single source of truth" cleaner than letting them edit one place
         // and have it diverge from the other. Standalone tasks get their own modal.
-        if (task.event_id) {
+        //
+        // Caregiver exception: if the linked event is one they can't see (alternation
+        // event resolving to a parent), /event/[id] will render "Event not found".
+        // Skip the event route entirely for caregivers and land them on /task/[id]
+        // — they can read the task and complete it from there. They can't edit the
+        // event itself anyway, so they lose nothing.
+        if (task.event_id && !isCaregiver) {
             router.push({
                 pathname: '/event/[id]',
                 params: { id: task.event_id },
@@ -574,9 +589,10 @@ export default function ListsScreen() {
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe}>
-                <View style={styles.header}>
-                    <ThemedText type="title">Lists</ThemedText>
-                </View>
+                {/* No screen-level title — the active tab tint at the bottom
+                    signals which tab we're on, and the list-chip strip below
+                    carries the section context. Reclaim the vertical real
+                    estate for content. */}
 
                 {/* List chip strip. Horizontal scroll so households with many lists
                     don't get truncated. flexGrow:0 because of the react-native-web
@@ -638,6 +654,7 @@ export default function ListsScreen() {
                                     onPress={() => setActiveChildId(c.id)}
                                     style={({ pressed }) => [
                                         styles.listChip,
+                                        selected && styles.listChipActive,
                                         {
                                             borderColor: c.color,
                                             backgroundColor: selected
@@ -714,6 +731,7 @@ export default function ListsScreen() {
                                     onPress={() => setActiveListId(l.id)}
                                     style={({ pressed }) => [
                                         styles.listChip,
+                                        selected && styles.listChipActive,
                                         {
                                             borderColor: l.color,
                                             backgroundColor: selected
@@ -791,7 +809,7 @@ export default function ListsScreen() {
                     dragState.dropIndex !== dragState.fromIndex + 1 ? (
                         <View key="marker-end" style={styles.dropMarker} />
                     ) : null}
-                    {viewMode === 'by-list' ? (
+                    {viewMode === 'by-list' && !isCaregiver ? (
                     <Pressable
                         onPress={() => router.push('/list/new')}
                         style={({ pressed }) => [
@@ -886,31 +904,39 @@ export default function ListsScreen() {
                             {/* Right-aligned "Select" button to enter bulk mode.
                                 Pushes itself to the trailing edge with marginLeft:
                                 auto so it doesn't shift around when the hidden hint
-                                appears. */}
-                            <Pressable
-                                onPress={() =>
-                                    selectionMode
-                                        ? exitSelectionMode()
-                                        : setSelectionMode(true)
-                                }
-                                style={({ pressed }) => [
-                                    styles.selectBtn,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText
-                                    type="small"
-                                    style={{
-                                        color: '#6F7FA5',
-                                        fontWeight: '600',
-                                    }}>
-                                    {selectionMode ? 'Cancel' : 'Select'}
-                                </ThemedText>
-                            </Pressable>
+                                appears. Caregivers don't get bulk edit — the only
+                                task action they can perform is mark-complete, which
+                                doesn't benefit from multi-select since the row's
+                                checkbox already does the job. */}
+                            {!isCaregiver ? (
+                                <Pressable
+                                    onPress={() =>
+                                        selectionMode
+                                            ? exitSelectionMode()
+                                            : setSelectionMode(true)
+                                    }
+                                    style={({ pressed }) => [
+                                        styles.selectBtn,
+                                        pressed && styles.pressed,
+                                    ]}>
+                                    <ThemedText
+                                        type="small"
+                                        style={{
+                                            color: '#6F7FA5',
+                                            fontWeight: '600',
+                                        }}>
+                                        {selectionMode ? 'Cancel' : 'Select'}
+                                    </ThemedText>
+                                </Pressable>
+                            ) : null}
                         </View>
 
                         {/* Quick-add input: title + Enter creates a task in the active
                             list with no due date and no assignees. The user can tap the
-                            new row afterward to fill those in. */}
+                            new row afterward to fill those in. Caregivers don't see
+                            this row — they can't create tasks (RLS blocks INSERTs
+                            anyway). */}
+                        {!isCaregiver ? (
                         <View
                             style={[
                                 styles.quickAddRow,
@@ -951,6 +977,7 @@ export default function ListsScreen() {
                                 </ThemedText>
                             </Pressable>
                         </View>
+                        ) : null}
 
                         <ScrollView
                             style={styles.tasksScroll}
@@ -966,7 +993,9 @@ export default function ListsScreen() {
                             ) : openTasks.length === 0 && completedTasks.length === 0 ? (
                                 <View style={styles.empty}>
                                     <ThemedText themeColor="textSecondary">
-                                        No tasks yet. Type one above to get started.
+                                        {isCaregiver
+                                            ? 'No tasks assigned to you here yet.'
+                                            : 'No tasks yet. Type one above to get started.'}
                                     </ThemedText>
                                 </View>
                             ) : null}
@@ -1206,7 +1235,7 @@ export default function ListsScreen() {
                 pattern on Home and Calendar so the create mental model is
                 consistent across tabs. Hidden while the bulk-action bar is up
                 so the two anchored controls don't fight for the bottom-right. */}
-            {!selectionMode ? (
+            {!selectionMode && showCreateAffordances ? (
                 <Pressable
                     onPress={() => router.push('/list/new')}
                     accessibilityRole="button"
@@ -1268,18 +1297,37 @@ function TaskListRow({
         ? format(new Date(task.due_at), 'EEE, MMM d')
         : null;
 
+    // Leading color band: primary assignee's color, or accentMuted for Anyone.
+    // Drains to backgroundSelected on completion so the row reads as "done"
+    // in coordination with the strikethrough + opacity drop on the title.
+    // Shares the hand-off-card vocabulary used inside Home's Day Cards so
+    // tasks feel like the same object across both surfaces.
+    const primaryAssigneeId = task.assignee_profile_ids[0];
+    const liveBandColor = primaryAssigneeId
+        ? colorForResponsible(primaryAssigneeId, colorMap)
+        : UNASSIGNED_COLOR;
+    const bandColor = done ? colors.backgroundSelected : liveBandColor;
+
     return (
         <Pressable
             onPress={onTap}
             style={({ pressed }) => [
                 styles.taskRow,
                 { borderColor: colors.backgroundSelected },
-                done && { backgroundColor: colors.backgroundElement },
+                done && { backgroundColor: colors.backgroundElement, opacity: 0.7 },
                 // Tint selected rows so the multi-select state is unambiguous —
                 // distinct from the completed-row tint (which uses backgroundElement).
                 selected && { backgroundColor: 'rgba(111, 127, 165, 0.15)' },
                 pressed && styles.pressed,
             ]}>
+            {/* Leading color band — full bleed from card top to card bottom.
+                Hand-off-card vocabulary. Positioned absolutely so it doesn't
+                push the row's content right; the row's paddingLeft already
+                leaves it ~10px of breathing room before the checkbox. */}
+            <View
+                pointerEvents="none"
+                style={[styles.taskRowBand, { backgroundColor: bandColor }]}
+            />
             {/* Selection checkbox (only in bulk mode). Sits to the left of the
                 complete checkbox so the two states are visually separate. Stops
                 propagation so the click doesn't also fire the row's onTap. */}
@@ -1538,11 +1586,6 @@ function TaskListRow({
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    header: {
-        paddingHorizontal: Spacing.four,
-        paddingTop: Spacing.three,
-        paddingBottom: Spacing.two,
-    },
     // flexGrow:0 stops the horizontal ScrollView from greedily eating column height
     // on react-native-web (same workaround as the calendar's filter pill row).
     chipScroll: { flexGrow: 0, flexShrink: 0 },
@@ -1556,6 +1599,12 @@ const styles = StyleSheet.create({
         paddingVertical: Spacing.two,
         alignItems: 'center',
     },
+    // Chip Strip 2.0: the active chip is "pulled forward" out of the row —
+    // bigger, weightier, shadow lifted off the page; inactive chips recede
+    // (slight opacity drop + thinner border weight). The active chip's color
+    // fill + the dimmed inactive chips together give the spine its sense of
+    // current selection without a colored connector tab (which would need
+    // overflow:visible on the parent ScrollView and is fragile cross-platform).
     listChip: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -1564,6 +1613,16 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         paddingHorizontal: Spacing.three,
         paddingVertical: Spacing.one + 2,
+        opacity: 0.85,
+    },
+    listChipActive: {
+        // Active: heavier border + a bit more vertical padding so the chip
+        // sits ~3px taller than its neighbors, lifted by PILL_SHADOW. Full
+        // opacity restored on top of the listChip base.
+        borderWidth: 1.5,
+        paddingVertical: Spacing.two + 1,
+        opacity: 1,
+        ...PILL_SHADOW,
     },
     // Each chip is wrapped so we can render an optional drop marker as its sibling
     // without breaking the flex layout. The wrapper itself has no margin/padding;
@@ -1695,13 +1754,33 @@ const styles = StyleSheet.create({
         padding: Spacing.six,
         alignItems: 'center',
     },
+    // Task row — wrapped in the hand-off-card surface vocabulary. 12px radius,
+    // backgroundElement fill (provided by parent unless completed/selected
+    // overrides it), overflow:hidden so the leading band tucks into the
+    // rounded corners. paddingLeft pushed out by the band width + breathing
+    // room so the checkbox doesn't crash into the colored stripe.
     taskRow: {
         flexDirection: 'row',
         alignItems: 'flex-start',
         gap: Spacing.two,
-        padding: Spacing.two + 2,
-        borderRadius: Spacing.two,
+        paddingVertical: Spacing.two + 2,
+        paddingRight: Spacing.two + 2,
+        paddingLeft: Spacing.two + 2 + 6, // band (3) + breathing room (~7)
+        borderRadius: 12,
         borderWidth: 1,
+        overflow: 'hidden',
+        // position:relative so the absolutely-positioned leading band
+        // anchors to this row, not the parent ScrollView.
+        position: 'relative',
+    },
+    // 3px leading color band — full bleed top to bottom, tinted to the
+    // primary assignee. See TaskListRow where bandColor is computed.
+    taskRowBand: {
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        width: 3,
     },
     checkbox: {
         width: 22,

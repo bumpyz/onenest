@@ -19,6 +19,7 @@ import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
 import { useLocations } from '@/hooks/use-locations';
+import { useMyRole } from '@/hooks/use-my-role';
 import {
     createTask,
     deleteEvent,
@@ -56,6 +57,7 @@ export default function EditEventScreen() {
         household?.id,
     );
     const { lists, isLoading: listsLoading } = useLists(household?.id);
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
     const { event, isLoading: eventLoading, refetch: refetchEvent } = useEvent(id);
     const { tasks: dbTasks, isLoading: tasksLoading, refetch: refetchTasks } =
         useEventTasks(id);
@@ -162,7 +164,8 @@ export default function EditEventScreen() {
         custodyLoading ||
         listsLoading ||
         eventLoading ||
-        tasksLoading
+        tasksLoading ||
+        roleLoading
     ) {
         return <LoadingScreen />;
     }
@@ -279,6 +282,66 @@ export default function EditEventScreen() {
     // The Apply-To toggle and override semantics only apply to recurring events whose
     // specific occurrence was clicked from Calendar / Home. One-off events skip both.
     const isRecurringInstance = !!occurrenceDate && !!event.recurrence_rule;
+
+    // Caregivers see a read-only summary view of the event — title, time, location,
+    // notes, responsible parent, and assigned children. No edit / delete affordances,
+    // no inline tasks editor. EventForm assumes full write access, so we render a
+    // separate panel for caregivers rather than threading a `readOnly` prop through
+    // a screen that's heavily geared toward editing.
+    if (isCaregiver) {
+        const responsibleMember =
+            members?.find((m) => m.profile_id === event.responsible_profile_id) ?? null;
+        const eventChildren = (children ?? []).filter((c) =>
+            event.child_ids.includes(c.id),
+        );
+        const location = event.location_id
+            ? locations?.find((l) => l.id === event.location_id) ?? null
+            : null;
+        const whenLabel = event.all_day
+            ? `${format(parseISO(event.starts_at), 'EEEE, MMM d, yyyy')} · All day`
+            : `${format(parseISO(event.starts_at), 'EEE MMM d, h:mm a')} – ${format(parseISO(event.ends_at), 'h:mm a')}`;
+        return (
+            <ThemedView style={styles.container}>
+                <SafeAreaView style={styles.safe}>
+                    <View style={{ gap: Spacing.three }}>
+                        <ThemedText type="subtitle">{event.title}</ThemedText>
+                        <ThemedText themeColor="textSecondary">{whenLabel}</ThemedText>
+                        {location ? (
+                            <ThemedText themeColor="textSecondary">
+                                At {location.name}
+                            </ThemedText>
+                        ) : event.location ? (
+                            <ThemedText themeColor="textSecondary">
+                                At {event.location}
+                            </ThemedText>
+                        ) : null}
+                        {event.description ? (
+                            <ThemedText>{event.description}</ThemedText>
+                        ) : null}
+                        {responsibleMember ? (
+                            <ThemedText themeColor="textSecondary">
+                                Responsible: {responsibleMember.display_name}
+                            </ThemedText>
+                        ) : null}
+                        {eventChildren.length > 0 ? (
+                            <ThemedText themeColor="textSecondary">
+                                For {eventChildren.map((c) => c.display_name).join(', ')}
+                            </ThemedText>
+                        ) : null}
+                        <Pressable
+                            onPress={() => router.back()}
+                            style={styles.linkBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel="Close event details">
+                            <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                Close
+                            </ThemedText>
+                        </Pressable>
+                    </View>
+                </SafeAreaView>
+            </ThemedView>
+        );
+    }
 
     return (
         <EventForm

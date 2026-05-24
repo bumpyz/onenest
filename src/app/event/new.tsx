@@ -11,6 +11,7 @@ import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
 import { useLocations } from '@/hooks/use-locations';
 import { useMyProfile } from '@/hooks/use-my-profile';
+import { useMyRole } from '@/hooks/use-my-role';
 import { createEvent, createTask } from '@/lib/db';
 import { resolveLocationId } from '@/lib/locations';
 import { useAuth } from '@/providers/auth-provider';
@@ -69,6 +70,7 @@ export default function NewEventScreen() {
     );
     const { lists, isLoading: listsLoading } = useLists(household?.id);
     const { profile, isLoading: profileLoading } = useMyProfile();
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
 
     // Tracks the event id we created on a previous submit attempt that failed
     // during the subsequent task-attach loop. On retry we reuse this id so we
@@ -125,12 +127,18 @@ export default function NewEventScreen() {
         childrenLoading ||
         custodyLoading ||
         listsLoading ||
-        profileLoading
+        profileLoading ||
+        roleLoading
     ) {
         return <LoadingScreen />;
     }
     if (!session || !user) return <Redirect href="/sign-in" />;
     if (!household) return <Redirect href="/create-household" />;
+    // Caregivers can't create events. RLS would reject the INSERT anyway, but
+    // bouncing them at the route layer avoids a half-filled form + cryptic
+    // postgres error. They land back on the Home tab where their read-only
+    // view of assigned events / tasks lives.
+    if (isCaregiver) return <Redirect href="/" />;
     if (!initialValues) return <LoadingScreen />;
 
     const handleSubmit = async (input: EventFormSubmitInput) => {

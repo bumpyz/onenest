@@ -1,16 +1,11 @@
-import { Feather } from '@expo/vector-icons';
-import { addDays, format, isSameDay, startOfDay } from 'date-fns';
+﻿import { addDays, format, isSameDay, startOfDay } from 'date-fns';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    View,
-} from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { EventChildBadges } from '@/components/event-child-badges';
+import { DayCard } from '@/components/day-card';
+import { HandOffCard } from '@/components/hand-off-card';
 import { LoadingScreen } from '@/components/loading-screen';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -23,23 +18,13 @@ import { useCustodyOverrides } from '@/hooks/use-custody-overrides';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { useEventOccurrenceOverrides } from '@/hooks/use-event-occurrence-overrides';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
+import { useMyRole } from '@/hooks/use-my-role';
 import { useUpcomingTasks } from '@/hooks/use-upcoming-tasks';
 import { useHouseholds } from '@/hooks/use-households';
 import { useUpcomingEvents } from '@/hooks/use-upcoming-events';
 import { useWeekSummary } from '@/hooks/use-week-summary';
-import { colorForResponsible, memberColorMap } from '@/lib/colors';
-import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
-import {
-    setTaskCompleted,
-    type CustodyOverride,
-    type CustodySchedule,
-    type Event,
-    type EventOccurrenceOverride,
-    type HouseholdMember,
-    type Task,
-} from '@/lib/db';
-import { iconForType } from '@/lib/event-types';
-import { resolveResponsibleProfileId } from '@/lib/responsible-resolver';
+import { buildOverrideMap } from '@/lib/custody';
+import { setTaskCompleted, type Event, type Task } from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
@@ -95,6 +80,18 @@ export default function HomeScreen() {
 
     const { households } = useHouseholds();
     const household = households?.[0];
+
+    // Caregivers see a strictly read-only Home — no FAB, no quick-create
+    // chooser, no welcome-card "Add your first event" chip. The whole creation
+    // surface is hidden client-side as defense in depth; RLS in migration 0031
+    // also blocks event/task INSERTs server-side.
+    //
+    // `roleLoading` matters at cold-start: defaulting to !isCaregiver while we
+    // wait would briefly flash the FAB for caregivers. Treat unknown role as
+    // "no FAB yet" — parents see it ~one frame later than before, caregivers
+    // never see it.
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
+    const showCreateAffordances = !roleLoading && !isCaregiver;
 
     // UX-019: first-run welcome card. Persisted per-household via AsyncStorage
     // so dismissal sticks across reloads. Initial state is `null` until we've
@@ -195,7 +192,9 @@ export default function HomeScreen() {
         await refetchTasks();
     };
 
-    const colorMap = useMemo(() => memberColorMap(members), [members]);
+    // colorMap used to be computed here for the old DaySection rendering;
+    // DayCard now derives it internally from members. We keep the override
+    // map because DayCard takes it as a prop.
     const overrideMap = useMemo(
         () => buildOverrideMap(custodyOverrides),
         [custodyOverrides],
@@ -207,23 +206,98 @@ export default function HomeScreen() {
         [events, tomorrow],
     );
 
+    // ─── Per-day task partitioning ─────────────────────────────────────────
+    // The old layout had separate "Today's tasks" / "This week" sections at
+    // the top of Home; the Day Card design folds tasks INTO the day they're
+    // due on. Split the existing buckets here once so each card gets a clean
+    //, day-keyed task list — and surface the leftover later-in-week + undated
+    // tasks below in smaller sliver sections.
+    const isSameYmd = (a: Date, b: Date) =>
+        a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate();
+    const todayTasks = useMemo(
+        () => taskBuckets.today,
+        [taskBuckets.today],
+    );
+    const tomorrowTasks = useMemo(
+        () =>
+            taskBuckets.thisWeek.filter(
+                (t) => t.due_at && isSameYmd(new Date(t.due_at), tomorrow),
+            ),
+        [taskBuckets.thisWeek, tomorrow],
+    );
+    const laterThisWeekTasks = useMemo(
+        () =>
+            taskBuckets.thisWeek.filter(
+                (t) => !t.due_at || !isSameYmd(new Date(t.due_at), tomorrow),
+            ),
+        [taskBuckets.thisWeek, tomorrow],
+    );
+
+    // ─── Per-day badge counts (conflicts + unassigned) ─────────────────────
+    // The summary used to render at the top of Home as a "Next 7 days"
+    // section. In the Day Card layout the counts move to badges at the top
+    // of the day they belong to — relevant to where the user is looking.
+    // We bucket by event start-date (local calendar day).
+    const conflictCountsByDay = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const c of summary?.conflicts ?? []) {
+            const key = format(new Date(c.event.starts_at), 'yyyy-MM-dd');
+            m.set(key, (m.get(key) ?? 0) + 1);
+        }
+        return m;
+    }, [summary]);
+    const unassignedCountsByDay = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const e of summary?.unassignedEvents ?? []) {
+            const key = format(new Date(e.starts_at), 'yyyy-MM-dd');
+            m.set(key, (m.get(key) ?? 0) + 1);
+        }
+        return m;
+    }, [summary]);
+    const todayKey = format(today, 'yyyy-MM-dd');
+    const tomorrowKey = format(tomorrow, 'yyyy-MM-dd');
+
     const onPressEvent = (id: string, occurrenceDate: Date) =>
         router.push({
             pathname: '/event/[id]',
             params: { id, date: format(occurrenceDate, 'yyyy-MM-dd') },
         });
 
+    // ─── Task tap handler ──────────────────────────────────────────────────
+    // Tasks land on /event/[id] when linked to an event (parents); /task/[id]
+    // when unlinked OR the user is a caregiver (whose event may be hidden by
+    // RLS — see migration 0031 notes). Same routing rule used previously on
+    // TaskRow, lifted up so DayCard can call it.
+    const onPressTask = (t: Task) => {
+        if (t.event_id && !isCaregiver) {
+            router.push({
+                pathname: '/event/[id]',
+                params: {
+                    id: t.event_id,
+                    date: t.due_at
+                        ? format(new Date(t.due_at), 'yyyy-MM-dd')
+                        : format(today, 'yyyy-MM-dd'),
+                },
+            });
+        } else {
+            router.push({
+                pathname: '/task/[id]',
+                params: { id: t.id },
+            });
+        }
+    };
+    const onPressCustodyDay = (d: string) =>
+        router.push({ pathname: '/custody/[date]', params: { date: d } });
+
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe}>
-                <View style={styles.header}>
-                    <ThemedText type="title">Home</ThemedText>
-                    {household ? (
-                        <ThemedText themeColor="textSecondary" type="small">
-                            {household.name}
-                        </ThemedText>
-                    ) : null}
-                </View>
+                {/* No screen-level title — the active tab tint at the bottom
+                    already signals "you are here", and the day-card stack
+                    below carries the meaning ("TODAY" / "TOMORROW" labels).
+                    Reclaim the vertical real estate for content. */}
 
                 {isLoading && !events ? (
                     <LoadingScreen />
@@ -262,233 +336,105 @@ export default function HomeScreen() {
                                 colors={colors}
                             />
                         ) : null}
-                        {summary ? (
-                            summary.conflicts.length > 0 || summary.unassignedEvents.length > 0 ? (
-                                <View
-                                    style={[
-                                        styles.summaryCard,
-                                        { backgroundColor: colors.backgroundElement },
-                                    ]}>
-                                    <ThemedText type="smallBold">Next 7 days</ThemedText>
-
-                                    {summary.conflicts.length > 0 ? (
-                                        <View style={styles.summarySection}>
-                                            <ThemedText type="small" themeColor="textSecondary">
-                                                ⚠ {summary.conflicts.length}{' '}
-                                                {summary.conflicts.length === 1 ? 'conflict' : 'conflicts'}
-                                            </ThemedText>
-                                            {summary.conflicts.map((c, idx) => {
-                                                const member = members?.find(
-                                                    (m) => m.profile_id === c.profileId,
-                                                );
-                                                const memberName = member?.display_name ?? 'Someone';
-                                                const blockStart = format(
-                                                    new Date(c.blockStartsAt),
-                                                    'h:mm a',
-                                                );
-                                                const blockEnd = format(
-                                                    new Date(c.blockEndsAt),
-                                                    'h:mm a',
-                                                );
-                                                return (
-                                                    <Pressable
-                                                        key={`conflict-${c.event.id}-${idx}`}
-                                                        onPress={() =>
-                                                            onPressEvent(
-                                                                c.event.id,
-                                                                new Date(c.event.starts_at),
-                                                            )
-                                                        }
-                                                        style={({ pressed }) => [
-                                                            styles.summaryRow,
-                                                            pressed && styles.pressed,
-                                                        ]}>
-                                                        <ThemedText type="small" themeColor="textSecondary">
-                                                            {format(
-                                                                new Date(c.event.starts_at),
-                                                                'EEE, MMM d · h:mm a',
-                                                            )}
-                                                        </ThemedText>
-                                                        <ThemedText type="smallBold">
-                                                            {c.event.title}
-                                                        </ThemedText>
-                                                        <ThemedText
-                                                            type="small"
-                                                            themeColor="textSecondary">
-                                                            {memberName} is busy {blockStart} – {blockEnd}
-                                                        </ThemedText>
-                                                    </Pressable>
-                                                );
-                                            })}
-                                        </View>
-                                    ) : null}
-
-                                    {summary.unassignedEvents.length > 0 ? (
-                                        <View style={styles.summarySection}>
-                                            <ThemedText type="small" themeColor="textSecondary">
-                                                📌 {summary.unassignedEvents.length}{' '}
-                                                {summary.unassignedEvents.length === 1
-                                                    ? 'event for Anyone'
-                                                    : 'events for Anyone'}
-                                            </ThemedText>
-                                            {summary.unassignedEvents.map((e) => (
-                                                <Pressable
-                                                    // Recurring expansion shares e.id across
-                                                    // occurrences, so include starts_at to
-                                                    // keep React keys unique within the loop.
-                                                    key={`unassigned-${e.id}-${e.starts_at}`}
-                                                    onPress={() =>
-                                                        onPressEvent(
-                                                            e.id,
-                                                            new Date(e.starts_at),
-                                                        )
-                                                    }
-                                                    style={({ pressed }) => [
-                                                        styles.summaryRow,
-                                                        pressed && styles.pressed,
-                                                    ]}>
-                                                    <ThemedText type="small" themeColor="textSecondary">
-                                                        {format(
-                                                            new Date(e.starts_at),
-                                                            'EEE, MMM d · h:mm a',
-                                                        )}
-                                                    </ThemedText>
-                                                    <ThemedText type="smallBold">{e.title}</ThemedText>
-                                                    <ThemedText
-                                                        type="small"
-                                                        themeColor="textSecondary">
-                                                        For Anyone — tap to open and assign
-                                                    </ThemedText>
-                                                </Pressable>
-                                            ))}
-                                        </View>
-                                    ) : null}
-                                </View>
-                            ) : (
-                                <ThemedText
-                                    themeColor="textSecondary"
-                                    type="small"
-                                    style={styles.summaryAllClear}>
-                                    ✓ All clear for the next 7 days
-                                </ThemedText>
-                            )
-                        ) : null}
-
-                        {/* Task sections — hidden entirely when both buckets are empty so
-                            we don't show dead UI. Tapping a row's body navigates to the
-                            linked event (when set); tapping the checkbox marks complete. */}
-                        {taskBuckets.today.length > 0 ? (
-                            <View style={styles.section}>
-                                <ThemedText type="subtitle">Today&apos;s tasks</ThemedText>
-                                {taskBuckets.today.map((t) => (
-                                    <TaskRow
-                                        key={t.id}
-                                        task={t}
-                                        members={members ?? []}
-                                        colors={colors}
-                                        onToggle={() => onToggleTaskComplete(t)}
-                                        onOpenEvent={
-                                            t.event_id
-                                                ? () =>
-                                                      router.push({
-                                                          pathname: '/event/[id]',
-                                                          params: {
-                                                              id: t.event_id!,
-                                                              date: t.due_at
-                                                                  ? format(
-                                                                        new Date(t.due_at),
-                                                                        'yyyy-MM-dd',
-                                                                    )
-                                                                  : format(
-                                                                        today,
-                                                                        'yyyy-MM-dd',
-                                                                    ),
-                                                          },
-                                                      })
-                                                : undefined
-                                        }
-                                    />
-                                ))}
-                            </View>
-                        ) : null}
-
-                        {taskBuckets.thisWeek.length > 0 ? (
-                            <View style={styles.section}>
-                                <ThemedText type="subtitle">This week</ThemedText>
-                                {taskBuckets.thisWeek.map((t) => (
-                                    <TaskRow
-                                        key={t.id}
-                                        task={t}
-                                        members={members ?? []}
-                                        colors={colors}
-                                        showDay
-                                        onToggle={() => onToggleTaskComplete(t)}
-                                        onOpenEvent={
-                                            t.event_id
-                                                ? () =>
-                                                      router.push({
-                                                          pathname: '/event/[id]',
-                                                          params: {
-                                                              id: t.event_id!,
-                                                              date: t.due_at
-                                                                  ? format(
-                                                                        new Date(t.due_at),
-                                                                        'yyyy-MM-dd',
-                                                                    )
-                                                                  : format(
-                                                                        today,
-                                                                        'yyyy-MM-dd',
-                                                                    ),
-                                                          },
-                                                      })
-                                                : undefined
-                                        }
-                                    />
-                                ))}
-                            </View>
-                        ) : null}
-
-                        <DaySection
+                        {/* Day Cards. Per-day hero surfaces for today + tomorrow.
+                            Tasks fold INTO the day they're due on (no more
+                            separate "Today's tasks" / "This week" sections at
+                            the top). Conflict + unassigned badges land on the
+                            relevant day card. "Later this week" + "Anytime"
+                            sliver sections below pick up tasks that don't fit
+                            into today/tomorrow. */}
+                        <DayCard
                             day={today}
                             label="Today"
                             events={todayEvents}
-                            colorMap={colorMap}
-                            colors={colors}
+                            tasks={todayTasks}
                             members={members ?? []}
                             children={children ?? []}
                             custodySchedule={custodySchedule}
-                            overrideMap={overrideMap}
+                            custodyOverrideMap={overrideMap}
                             occurrenceOverrideMap={occurrenceOverrideMap}
+                            conflictCount={conflictCountsByDay.get(todayKey) ?? 0}
+                            unassignedCount={unassignedCountsByDay.get(todayKey) ?? 0}
                             onPressEvent={onPressEvent}
-                            onPressCustody={(d) =>
-                                router.push({ pathname: '/custody/[date]', params: { date: d } })
-                            }
+                            onPressTask={onPressTask}
+                            onToggleTask={onToggleTaskComplete}
+                            onPressCustody={onPressCustodyDay}
                         />
-                        <DaySection
+                        <DayCard
                             day={tomorrow}
                             label="Tomorrow"
                             events={tomorrowEvents}
-                            colorMap={colorMap}
-                            colors={colors}
+                            tasks={tomorrowTasks}
                             members={members ?? []}
                             children={children ?? []}
                             custodySchedule={custodySchedule}
-                            overrideMap={overrideMap}
+                            custodyOverrideMap={overrideMap}
                             occurrenceOverrideMap={occurrenceOverrideMap}
+                            conflictCount={conflictCountsByDay.get(tomorrowKey) ?? 0}
+                            unassignedCount={unassignedCountsByDay.get(tomorrowKey) ?? 0}
                             onPressEvent={onPressEvent}
-                            onPressCustody={(d) =>
-                                router.push({ pathname: '/custody/[date]', params: { date: d } })
-                            }
+                            onPressTask={onPressTask}
+                            onToggleTask={onToggleTaskComplete}
+                            onPressCustody={onPressCustodyDay}
                         />
+
+                        {/* Sliver: later-this-week tasks that don't belong to
+                            today/tomorrow's cards. Standalone HandOffCards
+                            since they're not nested in a day card. */}
+                        {laterThisWeekTasks.length > 0 ? (
+                            <View style={styles.section}>
+                                <ThemedText
+                                    type="smallBold"
+                                    style={styles.sliverHeader}>
+                                    Later this week
+                                </ThemedText>
+                                {laterThisWeekTasks.map((t) => (
+                                    <HandOffCard
+                                        key={t.id}
+                                        task={t}
+                                        members={members ?? []}
+                                        variant="standalone"
+                                        showDay
+                                        onToggle={() => onToggleTaskComplete(t)}
+                                        onOpen={() => onPressTask(t)}
+                                    />
+                                ))}
+                            </View>
+                        ) : null}
+
+                        {/* Sliver: undated tasks. Whenever-you-get-to-it bucket. */}
+                        {taskBuckets.undated.length > 0 ? (
+                            <View style={styles.section}>
+                                <ThemedText
+                                    type="smallBold"
+                                    style={styles.sliverHeader}>
+                                    Anytime
+                                </ThemedText>
+                                {taskBuckets.undated.map((t) => (
+                                    <HandOffCard
+                                        key={t.id}
+                                        task={t}
+                                        members={members ?? []}
+                                        variant="standalone"
+                                        onToggle={() => onToggleTaskComplete(t)}
+                                        onOpen={() => onPressTask(t)}
+                                    />
+                                ))}
+                            </View>
+                        ) : null}
                     </ScrollView>
                 )}
             </SafeAreaView>
 
-            {/* Quick-create chooser. The FAB itself toggles the menu (+/×); the
+            {/* Quick-create chooser. The FAB itself toggles the menu (+/Ã—); the
                 two pill buttons sit above the FAB. When open, a full-screen
                 transparent backdrop captures taps outside the menu and closes
-                it — the standard popover dismiss pattern. */}
-            {addMenuOpen ? (
+                it — the standard popover dismiss pattern.
+
+                Caregivers can't create events or tasks (RLS blocks it server-
+                side; UI hides it client-side), so the whole FAB + chooser is
+                gated on !isCaregiver. */}
+            {showCreateAffordances && addMenuOpen ? (
                 <>
                     <Pressable
                         onPress={closeAddMenu}
@@ -511,7 +457,7 @@ export default function HomeScreen() {
                                     styles.fabMenuItemText,
                                     { color: colors.text },
                                 ]}>
-                                📅  New event
+                                ðŸ“…  New event
                             </ThemedText>
                         </Pressable>
                         <Pressable
@@ -532,36 +478,21 @@ export default function HomeScreen() {
                     </View>
                 </>
             ) : null}
-            <Pressable
-                onPress={() => setAddMenuOpen((v) => !v)}
-                accessibilityLabel={
-                    addMenuOpen ? 'Close quick-create menu' : 'Open quick-create menu'
-                }
-                style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
-                <ThemedText style={styles.fabText}>
-                    {addMenuOpen ? '×' : '+'}
-                </ThemedText>
-            </Pressable>
+            {showCreateAffordances ? (
+                <Pressable
+                    onPress={() => setAddMenuOpen((v) => !v)}
+                    accessibilityLabel={
+                        addMenuOpen ? 'Close quick-create menu' : 'Open quick-create menu'
+                    }
+                    style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
+                    <ThemedText style={styles.fabText}>
+                        {addMenuOpen ? 'Ã—' : '+'}
+                    </ThemedText>
+                </Pressable>
+            ) : null}
         </ThemedView>
     );
 }
-
-type DaySectionProps = {
-    day: Date;
-    label: string;
-    events: Event[];
-    colorMap: Map<string, string>;
-    colors: Palette;
-    members: HouseholdMember[];
-    /** Household children, passed in for the EventChildBadges lookup inside event rows. */
-    children: import('@/lib/db').Child[];
-    custodySchedule: CustodySchedule | null;
-    overrideMap: Map<string, CustodyOverride>;
-    /** Keyed by "eventId|YYYY-MM-DD" — surfaces per-occurrence responsible overrides. */
-    occurrenceOverrideMap: Map<string, EventOccurrenceOverride>;
-    onPressEvent: (id: string, occurrenceDate: Date) => void;
-    onPressCustody: (dateYmd: string) => void;
-};
 
 /**
  * UX-019: first-run welcome card. Visible on Home for a brand-new household
@@ -623,7 +554,7 @@ function WelcomeCard({
                     onPress={onDismiss}
                     accessibilityRole="button"
                     accessibilityLabel="Dismiss welcome card"
-                    // UX-027: visible × stays small but hitSlop extends the touch
+                    // UX-027: visible Ã— stays small but hitSlop extends the touch
                     // target to ~44pt on all sides per Apple HIG. Without this
                     // the user had to land their finger on an ~28pt glyph.
                     hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
@@ -634,7 +565,7 @@ function WelcomeCard({
                     <ThemedText
                         themeColor="textSecondary"
                         style={styles.welcomeDismissText}>
-                        ×
+                        Ã—
                     </ThemedText>
                 </Pressable>
             </View>
@@ -675,305 +606,33 @@ function WelcomeCard({
     );
 }
 
-function DaySection({
-    day,
-    label,
-    events,
-    colorMap,
-    colors,
-    members,
-    children,
-    custodySchedule,
-    overrideMap,
-    occurrenceOverrideMap,
-    onPressEvent,
-    onPressCustody,
-}: DaySectionProps) {
-    const resolved = useMemo(() => {
-        if (!custodySchedule) return null;
-        return resolveCustodianOnDate(custodySchedule, overrideMap, day);
-    }, [custodySchedule, overrideMap, day]);
-    const custodianMember = resolved
-        ? members.find((m) => m.profile_id === resolved.profileId) ?? null
-        : null;
-    const custodianColor = custodianMember
-        ? colorForResponsible(custodianMember.profile_id, colorMap)
-        : null;
-
-    return (
-        <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-                <ThemedText type="subtitle">{label}</ThemedText>
-                <ThemedText themeColor="textSecondary" type="small">
-                    {format(day, 'EEEE, MMM d')}
-                </ThemedText>
-                {custodianMember && custodianColor ? (
-                    <Pressable
-                        onPress={() => onPressCustody(format(day, 'yyyy-MM-dd'))}
-                        style={({ pressed }) => [
-                            styles.custodyPill,
-                            {
-                                borderColor: custodianColor,
-                                // QA-023: safe alpha. Was `${custodianColor}22`,
-                                // brittle if a member color is ever non-7-char hex.
-                                backgroundColor: withAlpha(custodianColor, 0.13),
-                            },
-                            pressed && styles.pressed,
-                        ]}>
-                        <View style={[styles.custodyPillDot, { backgroundColor: custodianColor }]} />
-                        {/* Unified custody glyph across Home + Calendar (UX-006):
-                            Feather user icon for the default "this parent has the
-                            kid today" case, "↻" for overrides. Replaces the
-                            previous "with" text on Home + 👶 emoji on Calendar. */}
-                        {resolved?.isOverride ? (
-                            <ThemedText type="small" themeColor="textSecondary">
-                                ↻
-                            </ThemedText>
-                        ) : (
-                            <Feather name="user" size={12} color={colors.textSecondary} />
-                        )}
-                        <ThemedText type="smallBold">{custodianMember.display_name}</ThemedText>
-                    </Pressable>
-                ) : null}
-            </View>
-            {events.length === 0 ? (
-                <ThemedText themeColor="textSecondary" style={styles.emptyText}>
-                    Nothing scheduled.
-                </ThemedText>
-            ) : (
-                events.map((event) => {
-                    // Resolver handles alternation lookup + occurrence override for the
-                    // specific date this instance falls on (which is `day` since the list
-                    // is filtered to today / tomorrow).
-                    const resolvedResponsible = resolveResponsibleProfileId({
-                        event,
-                        occurrenceDate: day,
-                        custodySchedule,
-                        custodyOverrides: overrideMap,
-                        occurrenceOverrides: occurrenceOverrideMap,
-                    });
-                    const dotColor = colorForResponsible(resolvedResponsible, colorMap);
-                    return (
-                        <Pressable
-                            key={`${event.id}-${event.starts_at}`}
-                            onPress={() => onPressEvent(event.id, day)}
-                            style={({ pressed }) => [
-                                styles.eventRow,
-                                { backgroundColor: colors.backgroundElement },
-                                pressed && styles.pressed,
-                            ]}>
-                            <View style={styles.timeCol}>
-                                {event.all_day ? (
-                                    <ThemedText type="small" themeColor="textSecondary">
-                                        All day
-                                    </ThemedText>
-                                ) : (
-                                    <>
-                                        <ThemedText type="smallBold">
-                                            {format(new Date(event.starts_at), 'h:mm a')}
-                                        </ThemedText>
-                                        <ThemedText type="small" themeColor="textSecondary">
-                                            {format(new Date(event.ends_at), 'h:mm a')}
-                                        </ThemedText>
-                                    </>
-                                )}
-                            </View>
-                            <View style={[styles.dotCol, { backgroundColor: dotColor }]} />
-                            <View style={styles.contentCol}>
-                                <View style={styles.titleRow}>
-                                    <ThemedText
-                                        type="smallBold"
-                                        numberOfLines={1}
-                                        style={styles.titleText}>
-                                        {iconForType(event.event_type)}
-                                        {iconForType(event.event_type) ? ' ' : ''}
-                                        {event.title}
-                                    </ThemedText>
-                                    <EventChildBadges
-                                        allChildren={children ?? []}
-                                        childIds={event.child_ids}
-                                        size="sm"
-                                        maxVisible={3}
-                                    />
-                                </View>
-                                {event.location ? (
-                                    <ThemedText
-                                        themeColor="textSecondary"
-                                        type="small"
-                                        numberOfLines={1}>
-                                        📍 {event.location}
-                                    </ThemedText>
-                                ) : null}
-                            </View>
-                            {/* Note indicator pinned to the bottom-right corner of
-                                the row — matches the Calendar event-block layout so
-                                the visual language is consistent across screens. */}
-                            {event.description ? (
-                                <ThemedText style={styles.noteIcon}>📝</ThemedText>
-                            ) : null}
-                        </Pressable>
-                    );
-                })
-            )}
-        </View>
-    );
-}
-
-/**
- * Single task row used in the Home Today / This-week sections. Renders:
- *   - Tap-target checkbox on the left (flips completed_at)
- *   - Title (strikethrough when completed)
- *   - Subtitle: assignee names + due time, when due_at is set
- *   - Whole row body tappable → opens the linked event when one exists
- */
-function TaskRow({
-    task,
-    members,
-    colors,
-    onToggle,
-    onOpenEvent,
-    showDay = false,
-}: {
-    task: Task;
-    members: HouseholdMember[];
-    colors: Palette;
-    onToggle: () => void;
-    onOpenEvent?: () => void;
-    /**
-     * Include the day-of-week + date in the due-time label. The Today section
-     * omits it (the section header is already "today"); the This-week section
-     * passes true to match the "Next 7 days" event summary's `EEE, MMM d · h:mm a`
-     * format and avoid the "what day is that?" ambiguity.
-     */
-    showDay?: boolean;
-}) {
-    const done = !!task.completed_at;
-    const assigneeLabel =
-        task.assignee_profile_ids.length === 0
-            ? 'Anyone'
-            : task.assignee_profile_ids
-                  .map((id) => members.find((m) => m.profile_id === id)?.display_name)
-                  .filter((n): n is string => !!n)
-                  .join(', ');
-    const dueLabel = task.due_at
-        ? format(
-              new Date(task.due_at),
-              showDay ? 'EEE, MMM d · h:mm a' : 'h:mm a',
-          )
-        : null;
-    return (
-        <View style={styles.taskRow}>
-            <Pressable
-                onPress={onToggle}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: done }}
-                accessibilityLabel={done ? 'Mark task incomplete' : 'Mark task complete'}
-                style={({ pressed }) => [
-                    styles.taskCheckbox,
-                    {
-                        backgroundColor: done ? '#6F7FA5' : 'transparent',
-                        borderColor: done ? '#6F7FA5' : colors.backgroundSelected,
-                    },
-                    pressed && styles.pressed,
-                ]}>
-                {done ? <ThemedText style={styles.taskCheck}>✓</ThemedText> : null}
-            </Pressable>
-            <Pressable
-                onPress={onOpenEvent}
-                disabled={!onOpenEvent}
-                style={({ pressed }) => [
-                    styles.taskBody,
-                    pressed && onOpenEvent && styles.pressed,
-                ]}>
-                <ThemedText
-                    type="smallBold"
-                    style={
-                        done
-                            ? {
-                                  textDecorationLine: 'line-through',
-                                  color: colors.textSecondary,
-                              }
-                            : undefined
-                    }>
-                    {task.title}
-                </ThemedText>
-                <ThemedText themeColor="textSecondary" type="small">
-                    {assigneeLabel}
-                    {dueLabel ? ` · ${dueLabel}` : ''}
-                </ThemedText>
-            </Pressable>
-        </View>
-    );
-}
-
+// DaySection + TaskRow used to live here. Both replaced by the new <DayCard>
+// + <HandOffCard> components — DayCard wraps a day's events + tasks in one
+// hero card with a custodian color rail; HandOffCard renders each task with
+// a leading assignee-color band. Removed in the day-card / hand-off-card
+// rework so we don't keep two layout vocabularies side by side.
+//
+// Old TaskRow logic for routing (event-linked → /event/[id] vs caregiver →
+// /task/[id]) is preserved as `onPressTask` in the main HomeScreen and
+// passed into DayCard / HandOffCard via the `onOpen` prop.
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    header: {
-        paddingHorizontal: Spacing.four,
-        paddingTop: Spacing.three,
-        paddingBottom: Spacing.two,
-        gap: Spacing.one,
-    },
     scroll: { padding: Spacing.four, gap: Spacing.five, paddingBottom: 100 },
-    summaryCard: {
-        padding: Spacing.three,
-        borderRadius: Spacing.two,
-        gap: Spacing.three,
+    // Section wrapper for the "Later this week" / "Anytime" slivers below the
+    // day-cards. Provides consistent vertical rhythm between the header and
+    // its HandOffCard stack.
+    section: { gap: Spacing.two },
+    // Tertiary header for the Later/Anytime slivers — caps + letterSpacing,
+    // matches the Day Card header label vocabulary at a smaller size so the
+    // hierarchy reads top-down: Day Card label (12px) > sliver header (11px).
+    sliverHeader: {
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        paddingHorizontal: Spacing.one,
     },
-    summarySection: { gap: Spacing.one },
-    summaryRow: { paddingVertical: Spacing.one, gap: 2 },
-    summaryAllClear: { fontStyle: 'italic', paddingHorizontal: Spacing.two },
-    // TaskRow styles for the Home Today / This-week sections.
-    taskRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.two,
-        paddingVertical: Spacing.two,
-    },
-    taskCheckbox: {
-        width: 22,
-        height: 22,
-        borderRadius: 4,
-        borderWidth: 2,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    taskCheck: { color: '#fff', fontSize: 14, fontWeight: '700' },
-    taskBody: { flex: 1, gap: 2 },
-    section: { gap: Spacing.three },
-    sectionHeader: { gap: Spacing.half },
-    emptyText: { fontStyle: 'italic', paddingHorizontal: Spacing.two },
-    custodyPill: {
-        alignSelf: 'flex-start',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.one,
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: Spacing.two,
-        paddingVertical: 2,
-        marginTop: Spacing.one,
-    },
-    custodyPillDot: { width: 8, height: 8, borderRadius: 4 },
-    eventRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        padding: Spacing.three,
-        borderRadius: Spacing.two,
-        gap: Spacing.three,
-        // position: relative so the absolutely-positioned noteIcon child anchors
-        // to this row's bounding box rather than the parent column.
-        position: 'relative',
-    },
-    timeCol: { width: 70, alignItems: 'flex-end', gap: 2 },
-    dotCol: { width: 4, alignSelf: 'stretch', borderRadius: 2 },
-    contentCol: { flex: 1, gap: 2 },
-    titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-    titleText: { flex: 1 },
-    // Mirrors Calendar's noteIcon style so the indicator sits in the same visual
-    // position on both screens.
-    noteIcon: { position: 'absolute', bottom: 2, right: 4, fontSize: 10 },
     fab: {
         position: 'absolute',
         right: Spacing.four,

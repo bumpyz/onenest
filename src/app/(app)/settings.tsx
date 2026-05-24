@@ -27,6 +27,7 @@ import { useChildren } from '@/hooks/use-children';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLocations } from '@/hooks/use-locations';
 import { useMyProfile } from '@/hooks/use-my-profile';
+import { useMyRole } from '@/hooks/use-my-role';
 import { usePendingInvitations } from '@/hooks/use-pending-invitations';
 import { signOut } from '@/lib/auth';
 import { PARENT_PALETTE, colorForResponsible, memberColorMap } from '@/lib/colors';
@@ -39,6 +40,7 @@ import {
     updateMyDefaultTimezone,
     updateMyDisplayName,
     type ExternalCalendar,
+    type HouseholdRole,
     type HouseholdType,
     type Invitation,
 } from '@/lib/db';
@@ -92,6 +94,11 @@ export default function SettingsScreen() {
     const household = households?.[0];
     const householdType: HouseholdType = household?.household_type ?? 'separated';
     const { members, refetch: refetchMembers } = useHouseholdMembers(household?.id);
+    // Caregivers see a trimmed-down Settings: own profile (name, color, tz,
+    // appearance), paired calendars, account / sign out. No household-type
+    // editor, custody schedule, children mgmt, locations mgmt, or invite UI —
+    // those are parent-only data per migration 0031's RLS.
+    const { isCaregiver } = useMyRole(household?.id);
     const colorMap = memberColorMap(members);
     const myMember = members?.find((m) => m.profile_id === user?.id);
     const myColor = myMember?.color ?? null;
@@ -102,6 +109,7 @@ export default function SettingsScreen() {
     const { calendars: externalCalendars, refetch: refetchExternalCalendars } = useExternalCalendars();
 
     const [inviteEmail, setInviteEmail] = useState('');
+    const [inviteRole, setInviteRole] = useState<HouseholdRole>('parent');
     const [inviting, setInviting] = useState(false);
     const [savingColor, setSavingColor] = useState<string | null>(null);
     const [colorError, setColorError] = useState<string | null>(null);
@@ -328,8 +336,9 @@ export default function SettingsScreen() {
         setInviting(true);
         setInviteError(null);
         try {
-            await createInvitation(household.id, email);
+            await createInvitation(household.id, email, inviteRole);
             setInviteEmail('');
+            setInviteRole('parent');
             await refetchInvites();
         } catch (err) {
             console.error('createInvitation failed', err);
@@ -443,7 +452,9 @@ export default function SettingsScreen() {
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe}>
                 <ScrollView contentContainerStyle={styles.scroll}>
-                    <ThemedText type="title">Settings</ThemedText>
+                    {/* No screen-level title — active tab tint at the bottom
+                        signals "you are here", and the first section header
+                        ("Household") tells the user what they're looking at. */}
 
                     {/* Household */}
                     {household ? (
@@ -512,19 +523,21 @@ export default function SettingsScreen() {
                                         <ThemedText type="small" themeColor="textSecondary" style={{ flex: 1 }}>
                                             {labelForHouseholdType(householdType)}
                                         </ThemedText>
-                                        <Pressable
-                                            onPress={() => setEditingType(true)}
-                                            style={({ pressed }) => [
-                                                styles.secondaryBtn,
-                                                { borderColor: colors.backgroundSelected },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <ThemedText
-                                                type="small"
-                                                style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                                                Change
-                                            </ThemedText>
-                                        </Pressable>
+                                        {!isCaregiver ? (
+                                            <Pressable
+                                                onPress={() => setEditingType(true)}
+                                                style={({ pressed }) => [
+                                                    styles.secondaryBtn,
+                                                    { borderColor: colors.backgroundSelected },
+                                                    pressed && styles.pressed,
+                                                ]}>
+                                                <ThemedText
+                                                    type="small"
+                                                    style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                                    Change
+                                                </ThemedText>
+                                            </Pressable>
+                                        ) : null}
                                     </View>
                                 )}
 
@@ -553,8 +566,9 @@ export default function SettingsScreen() {
                     ) : null}
 
                     {/* Children — compact list, edit/delete inside /child/[id] modal.
-                        Same shape as Saved locations below for consistency. */}
-                    {household ? (
+                        Same shape as Saved locations below for consistency. Hidden
+                        for caregivers — child records are parent-managed metadata. */}
+                    {household && !isCaregiver ? (
                         <View style={styles.section}>
                             <ThemedText type="smallBold">Children</ThemedText>
                             <ThemedText themeColor="textSecondary" type="small">
@@ -677,8 +691,10 @@ export default function SettingsScreen() {
                         </View>
                     ) : null}
 
-                    {/* Custody schedule — only relevant for separated co-parents. */}
-                    {household && user && householdType === 'separated' ? (
+                    {/* Custody schedule — only relevant for separated co-parents,
+                        and only visible to parents (RLS denies caregivers access
+                        to custody_* tables; the section would render empty). */}
+                    {household && user && householdType === 'separated' && !isCaregiver ? (
                         <CustodyScheduleSection
                             householdId={household.id}
                             members={members ?? []}
@@ -861,8 +877,10 @@ export default function SettingsScreen() {
                     </View>
 
                     {/* Saved locations — compact list, with add/edit/delete living inside a
-                        modal at /location/new or /location/[id] so this screen stays short. */}
-                    {household ? (
+                        modal at /location/new or /location/[id] so this screen stays short.
+                        Hidden for caregivers since they don't create events and the
+                        location library is a parent-curated asset. */}
+                    {household && !isCaregiver ? (
                         <View style={styles.section}>
                             <ThemedText type="smallBold">Saved locations</ThemedText>
                             <ThemedText themeColor="textSecondary" type="small">
@@ -952,20 +970,87 @@ export default function SettingsScreen() {
                         </View>
                     ) : null}
 
-                    {/* Invite section — hidden for single-parent, relabeled for couple. */}
-                    {householdType !== 'single_parent' && (
-                        <View style={styles.section}>
+                    {/* Invite section — single-parent households can still invite a
+                        caregiver (nanny, grandparent helping with pickups, etc.) so
+                        this block stays visible even when a partner/co-parent invite
+                        wouldn't make sense. The role picker below disambiguates.
+                        Hidden for caregivers — invitations are parent-only per RLS. */}
+                    {!isCaregiver ? (
+                    <View style={styles.section}>
                         <ThemedText type="smallBold">
-                            {householdType === 'couple' ? 'Invite your partner' : 'Invite a co-parent'}
+                            {householdType === 'single_parent'
+                                ? 'Invite a caregiver'
+                                : householdType === 'couple'
+                                  ? 'Invite your partner or a caregiver'
+                                  : 'Invite a co-parent or caregiver'}
                         </ThemedText>
                         <ThemedText themeColor="textSecondary" type="small">
                             Generate a one-time link. Send it any way you like — they sign in with Google and join your household.
                         </ThemedText>
+
+                        {/* Role picker — caregivers see only events/tasks they're
+                            assigned to (or Anyone tasks) and can only mark tasks
+                            complete; they cannot create or edit anything. Hidden
+                            for single-parent since caregiver is the only option
+                            anyway and the chip set would look silly. */}
+                        {householdType === 'single_parent' ? null : (
+                            <View style={styles.roleChipRow}>
+                                {(
+                                    [
+                                        {
+                                            id: 'parent' as const,
+                                            label: householdType === 'couple' ? 'Partner' : 'Co-parent',
+                                            desc: 'Full access. Can create events, manage custody, invite others.',
+                                        },
+                                        {
+                                            id: 'caregiver' as const,
+                                            label: 'Caregiver',
+                                            desc: 'Sees only events/tasks they’re assigned to. Can mark tasks done but cannot create or edit.',
+                                        },
+                                    ]
+                                ).map((opt) => {
+                                    const selected = inviteRole === opt.id;
+                                    return (
+                                        <Pressable
+                                            key={opt.id}
+                                            onPress={() => setInviteRole(opt.id)}
+                                            disabled={inviting}
+                                            accessibilityRole="radio"
+                                            accessibilityState={{ selected }}
+                                            accessibilityLabel={`Invite as ${opt.label}`}
+                                            style={({ pressed }) => [
+                                                styles.roleChip,
+                                                {
+                                                    borderColor: selected
+                                                        ? '#6F7FA5'
+                                                        : colors.backgroundSelected,
+                                                    backgroundColor: selected
+                                                        ? '#6F7FA511'
+                                                        : 'transparent',
+                                                },
+                                                pressed && styles.pressed,
+                                            ]}>
+                                            <ThemedText type="smallBold">{opt.label}</ThemedText>
+                                            <ThemedText
+                                                themeColor="textSecondary"
+                                                type="small">
+                                                {opt.desc}
+                                            </ThemedText>
+                                        </Pressable>
+                                    );
+                                })}
+                            </View>
+                        )}
+
                         <View style={styles.inviteRow}>
                             <TextInput
                                 value={inviteEmail}
                                 onChangeText={setInviteEmail}
-                                placeholder="coparent@example.com"
+                                placeholder={
+                                    inviteRole === 'caregiver'
+                                        ? 'caregiver@example.com'
+                                        : 'coparent@example.com'
+                                }
                                 placeholderTextColor={colors.textSecondary}
                                 style={inputStyle}
                                 keyboardType="email-address"
@@ -1004,10 +1089,13 @@ export default function SettingsScreen() {
                             </ThemedText>
                         ) : null}
                     </View>
-                    )}
+                    ) : null}
 
-                    {/* Pending invitations — visible only when invites are enabled. */}
-                    {householdType !== 'single_parent' && invitations && invitations.length > 0 ? (
+                    {/* Pending invitations — caregiver invites are allowed for any
+                        household type now, so this block is no longer gated on
+                        householdType. Caregivers don't see other invitations
+                        either (parent-only management). */}
+                    {!isCaregiver && invitations && invitations.length > 0 ? (
                         <View style={styles.section}>
                             <ThemedText type="smallBold">Pending invitations</ThemedText>
                             {invitations.map((invitation) => {
@@ -1018,6 +1106,9 @@ export default function SettingsScreen() {
                                         key={invitation.id}
                                         style={[styles.card, { backgroundColor: colors.backgroundElement }]}>
                                         <ThemedText type="smallBold">{invitation.invited_email}</ThemedText>
+                                        <ThemedText themeColor="textSecondary" type="small">
+                                            Invited as {invitation.role}
+                                        </ThemedText>
                                         <ThemedText themeColor="textSecondary" type="small" numberOfLines={1}>
                                             {url}
                                         </ThemedText>
@@ -1346,6 +1437,16 @@ const styles = StyleSheet.create({
         borderWidth: 3,
     },
     inviteRow: { flexDirection: 'row', gap: Spacing.two, alignItems: 'center' },
+    // Caregiver role picker — pair of stacked option chips above the invite
+    // email input. Same shape as the household-type picker so it reads as a
+    // familiar control without inventing a new pattern.
+    roleChipRow: { gap: Spacing.two, paddingTop: Spacing.one },
+    roleChip: {
+        gap: 2,
+        borderWidth: 1,
+        borderRadius: Spacing.two,
+        padding: Spacing.three,
+    },
     primaryBtn: {
         height: 44,
         paddingHorizontal: Spacing.three,

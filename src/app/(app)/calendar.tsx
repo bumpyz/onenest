@@ -1,4 +1,3 @@
-import { Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     addDays,
@@ -46,6 +45,7 @@ import { useEvents } from '@/hooks/use-events';
 import { useHouseholdBusyBlocks } from '@/hooks/use-household-busy-blocks';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
+import { useMyRole } from '@/hooks/use-my-role';
 import { useMyExternalEvents } from '@/hooks/use-my-external-events';
 import { memberColorMap, colorForResponsible } from '@/lib/colors';
 import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
@@ -157,6 +157,12 @@ export default function CalendarScreen() {
     const household = households?.[0];
     const { members, refetch: refetchMembers } = useHouseholdMembers(household?.id);
     const { children, refetch: refetchChildren } = useChildren(household?.id);
+    // Caregivers see Calendar read-only: no FAB, no drag/tap-to-create on the
+    // grid, no tappable custody bands. RLS in migration 0031 enforces the same
+    // boundary server-side; this is the UI defense layer. `roleLoading` guards
+    // against a one-frame FAB flash for caregivers on cold start.
+    const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
+    const showCreateAffordances = !roleLoading && !isCaregiver;
     const { schedule: custodySchedule, refetch: refetchCustody } = useCustodySchedule(
         household?.id,
     );
@@ -290,8 +296,14 @@ export default function CalendarScreen() {
         rangeStart,
         numDays,
     );
+    // Caregivers don't get busy blocks. The server-side RPC
+    // (household_busy_blocks) was tightened to parent-only in migration 0032 —
+    // calling it as a caregiver would 42501; pass undefined household_id so the
+    // hook short-circuits without firing. Defense in depth: even if the RPC
+    // were left open, parents' opaque busy windows shouldn't leak the quantity
+    // and timing of their external commitments to a nanny.
     const { blocks: householdBusyBlocks, refetch: refetchBusyBlocks } = useHouseholdBusyBlocks(
-        household?.id,
+        isCaregiver ? undefined : household?.id,
         rangeStart,
         numDays,
     );
@@ -478,6 +490,10 @@ export default function CalendarScreen() {
     useEffect(() => {
         if (Platform.OS !== 'web') return;
         if (viewMode === 'month') return;
+        // Caregivers can't create events (RLS would block the insert anyway),
+        // so skip wiring the drag-to-create listeners. Their tap on an empty
+        // grid cell falls through to a no-op instead of opening /event/new.
+        if (isCaregiver) return;
         const cleanups: Array<() => void> = [];
         dayColRefs.current.forEach((el, idx) => {
             if (!el) return;
@@ -548,7 +564,7 @@ export default function CalendarScreen() {
                 setDrag(null);
             }
         };
-    }, [days, viewMode, router, setDrag]);
+    }, [days, viewMode, router, setDrag, isCaregiver]);
 
     // ─── Native press-and-hold to create (UX-005 + UX-017) ─────────────────────
     // Drag-to-create is web-only (the pointer-events API doesn't translate cleanly
@@ -568,6 +584,10 @@ export default function CalendarScreen() {
     // taps for navigation before this fallback fires.
     const handleDayColumnTapNative = useCallback(
         (day: Date, locationY: number) => {
+            // Caregivers can't create events; swallow the long-press silently.
+            // (The hint banner doesn't render for them either — see the
+            // !isCaregiver gate on the banner below.)
+            if (isCaregiver) return;
             // UX-029: a successful press-and-hold means the user discovered the
             // gesture, so the persistent hint has done its job — stop showing it.
             dismissLongPressHint();
@@ -582,7 +602,7 @@ export default function CalendarScreen() {
                 },
             });
         },
-        [router, dismissLongPressHint],
+        [router, dismissLongPressHint, isCaregiver],
     );
 
     // Header label is view-specific:
@@ -793,19 +813,28 @@ export default function CalendarScreen() {
                                 ? 'Nothing scheduled.'
                                 : viewMode === 'week'
                                   ? 'Nothing scheduled this week.'
-                                  : 'Nothing scheduled this month.'}{' '}
-                            {Platform.OS === 'web'
-                                ? 'Drag on the grid to add an event, or tap'
-                                : 'Press and hold a time slot to add an event, or tap'}{' '}
-                            <ThemedText
-                                onPress={() => router.push('/event/new')}
-                                style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                                + new event
-                            </ThemedText>
-                            .
+                                  : 'Nothing scheduled this month.'}
+                            {/* Caregivers get an honest empty state — no
+                                create CTAs, since they can't create events.
+                                Parents see the platform-specific drag /
+                                press-and-hold copy + "+ new event" link. */}
+                            {isCaregiver ? null : (
+                                <>
+                                    {' '}
+                                    {Platform.OS === 'web'
+                                        ? 'Drag on the grid to add an event, or tap'
+                                        : 'Press and hold a time slot to add an event, or tap'}{' '}
+                                    <ThemedText
+                                        onPress={() => router.push('/event/new')}
+                                        style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                        + new event
+                                    </ThemedText>
+                                    .
+                                </>
+                            )}
                         </ThemedText>
                     </View>
-                ) : longPressHintVisible && Platform.OS !== 'web' ? (
+                ) : longPressHintVisible && Platform.OS !== 'web' && !isCaregiver ? (
                     // UX-029: native-only press-and-hold discoverability tip.
                     // Shows only when (a) we have events to render (otherwise
                     // the empty-state banner above already says it) and (b)
@@ -902,6 +931,29 @@ export default function CalendarScreen() {
                                                 0,
                                                 dayEvents.length - 3,
                                             );
+                                            // Custody Ribbon — Month variant.
+                                            // A 3px colored stripe at the top
+                                            // of each cell, tinted to the day's
+                                            // custodian. Same data source as
+                                            // the Day/Week ribbon, miniaturized
+                                            // so 42 cells can carry the signal
+                                            // without dominating the grid. Only
+                                            // rendered when a custody schedule
+                                            // exists (non-separated households
+                                            // hide it entirely).
+                                            const monthCustodian = custodySchedule
+                                                ? resolveCustodianOnDate(
+                                                      custodySchedule,
+                                                      overrideMap,
+                                                      day,
+                                                  )
+                                                : null;
+                                            const monthCustodyColor = monthCustodian
+                                                ? colorForResponsible(
+                                                      monthCustodian.profileId,
+                                                      colorMap,
+                                                  )
+                                                : null;
                                             return (
                                                 <Pressable
                                                     key={dayKey}
@@ -931,6 +983,18 @@ export default function CalendarScreen() {
                                                             },
                                                         pressed && styles.pressed,
                                                     ]}>
+                                                    {monthCustodyColor ? (
+                                                        <View
+                                                            style={[
+                                                                styles.monthCellCustodyStripe,
+                                                                {
+                                                                    backgroundColor:
+                                                                        monthCustodyColor,
+                                                                },
+                                                            ]}
+                                                            pointerEvents="none"
+                                                        />
+                                                    ) : null}
                                                     <ThemedText
                                                         type="small"
                                                         style={[
@@ -1097,22 +1161,34 @@ export default function CalendarScreen() {
                 </View>
 
                 {custodySchedule ? (
+                    // ─── Custody Ribbon ──────────────────────────────────────
+                    // Continuous segmented band across the top of the time grid,
+                    // colored per-day by the custodian. This is the calendar's
+                    // identity feature — every competitor has a calendar; only
+                    // OneNest has the ribbon. Previously a series of margin'd
+                    // pills that read as "decorations on a calendar"; now a
+                    // continuous identity element.
+                    //
+                    // Segments butt against each other (no cell margin/radius),
+                    // names in 11px caps centered, override days get a ↻ glyph
+                    // and a 2px white inner border so they pop. Day view gets
+                    // a single full-width segment with a larger name. The TIME
+                    // column on the left stays a spacer for grid alignment
+                    // but is no longer labeled "custody" — the colors and the
+                    // names make that self-evident.
                     <View
                         style={[
-                            styles.custodyBand,
+                            styles.custodyRibbon,
                             { borderBottomColor: colors.backgroundSelected },
                         ]}>
-                        <View style={[styles.custodyLabelCell, { width: TIME_COLUMN_WIDTH }]}>
-                            <ThemedText type="small" themeColor="textSecondary">
-                                custody
-                            </ThemedText>
-                        </View>
+                        <View style={{ width: TIME_COLUMN_WIDTH }} />
                         {days.map((day) => {
                             const resolved = resolveCustodianOnDate(custodySchedule, overrideMap, day);
                             const member = members?.find((m) => m.profile_id === resolved.profileId);
                             const c = colorForResponsible(resolved.profileId, colorMap);
                             const firstName = member?.display_name?.split(' ')[0] ?? '—';
                             const dateParam = format(day, 'yyyy-MM-dd');
+                            const isDayView = days.length === 1;
                             return (
                                 <Pressable
                                     key={`custody-${day.toISOString()}`}
@@ -1122,35 +1198,27 @@ export default function CalendarScreen() {
                                             params: { date: dateParam },
                                         })
                                     }
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`${firstName}${resolved.isOverride ? ' (custody override)' : ''} on ${format(day, 'EEEE, MMMM d')}. Tap to edit.`}
                                     style={({ pressed }) => [
-                                        styles.custodyCell,
+                                        styles.custodySegment,
                                         { backgroundColor: c },
+                                        // Override segments get a 2px white inner
+                                        // border that visually "lifts" them out
+                                        // of the surrounding flat color. Pairs
+                                        // with the ↻ glyph below.
+                                        resolved.isOverride && styles.custodySegmentOverride,
                                         pressed && styles.pressed,
                                     ]}>
-                                    {/* Custody glyph parity with Home (UX-006):
-                                        Feather user icon for default, "↻" for
-                                        overrides. Inline with the first name so
-                                        the whole pill stays under one line. */}
-                                    {resolved.isOverride ? (
-                                        <ThemedText
-                                            style={styles.custodyCellText}
-                                            numberOfLines={1}>
-                                            ↻ {firstName}
-                                        </ThemedText>
-                                    ) : (
-                                        <View style={styles.custodyCellInner}>
-                                            <Feather
-                                                name="user"
-                                                size={11}
-                                                color="#fff"
-                                            />
-                                            <ThemedText
-                                                style={styles.custodyCellText}
-                                                numberOfLines={1}>
-                                                {firstName}
-                                            </ThemedText>
-                                        </View>
-                                    )}
+                                    <ThemedText
+                                        style={[
+                                            styles.custodySegmentText,
+                                            isDayView && styles.custodySegmentTextDay,
+                                        ]}
+                                        numberOfLines={1}>
+                                        {resolved.isOverride ? '↻ ' : ''}
+                                        {firstName}
+                                    </ThemedText>
                                 </Pressable>
                             );
                         })}
@@ -1604,13 +1672,15 @@ export default function CalendarScreen() {
                 )}
             </SafeAreaView>
 
-            <Pressable
-                onPress={() => router.push('/event/new')}
-                accessibilityRole="button"
-                accessibilityLabel="New event"
-                style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
-                <ThemedText style={styles.fabText}>+</ThemedText>
-            </Pressable>
+            {showCreateAffordances ? (
+                <Pressable
+                    onPress={() => router.push('/event/new')}
+                    accessibilityRole="button"
+                    accessibilityLabel="New event"
+                    style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
+                    <ThemedText style={styles.fabText}>+</ThemedText>
+                </Pressable>
+            ) : null}
         </ThemedView>
     );
 }
@@ -1692,6 +1762,22 @@ const styles = StyleSheet.create({
         borderRightWidth: StyleSheet.hairlineWidth,
         padding: 4,
         gap: 2,
+        // overflow:hidden so the custody stripe (absolutely positioned to
+        // the cell's top edge) doesn't bleed past the cell border on the
+        // right side — without this it would visually merge with the next
+        // day's stripe across the column border.
+        overflow: 'hidden',
+    },
+    // 3px colored bar at the top of each month cell, tinted to the day's
+    // custodian. Miniaturized version of the Day/Week ribbon — same data
+    // source, same vocabulary, fits inside a 42-cell grid without dominating
+    // it. Absolutely positioned so it doesn't push the day-num text down.
+    monthCellCustodyStripe: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 3,
     },
     monthCellDayNum: { fontSize: 13 },
     // Vertical stack of event title pills + overflow count. Switched from
@@ -1725,28 +1811,48 @@ const styles = StyleSheet.create({
         paddingVertical: Spacing.two,
         gap: 2,
     },
-    custodyBand: {
+    // ─── Custody Ribbon styles ──────────────────────────────────────────────
+    // 28px tall continuous band. Segments are flat (no margin, no border-
+    // radius) so neighboring custodian colors butt against each other and
+    // read as one ribbon rather than a row of pills. The hairline border on
+    // the bottom separates it from the all-day row below; the top border
+    // edge is owned by the day-header row above.
+    custodyRibbon: {
         flexDirection: 'row',
+        height: 28,
         borderBottomWidth: StyleSheet.hairlineWidth,
+        // overflow:hidden so the override segment's inner border doesn't
+        // clip outside the ribbon when it sits at the edge.
+        overflow: 'hidden',
     },
-    custodyLabelCell: {
-        justifyContent: 'center',
-        paddingLeft: Spacing.one,
-    },
-    custodyCell: {
+    custodySegment: {
         flex: 1,
-        paddingVertical: 3,
-        paddingHorizontal: 4,
-        marginHorizontal: 1,
-        marginVertical: 2,
-        borderRadius: 4,
         justifyContent: 'center',
         alignItems: 'center',
+        paddingHorizontal: 4,
     },
-    custodyCellText: { color: '#fff', fontSize: 11, fontWeight: '600' },
-    // Inner row used for the icon + name pair when there's no override symbol.
-    // Tight gap keeps the icon visually attached to the name in narrow cells.
-    custodyCellInner: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+    // Override visual: a 2px white inner border that "lifts" the segment
+    // out of the flat ribbon. Pairs with the ↻ glyph in the text. Together
+    // they give a strong "this day is an exception" signal without
+    // introducing a hash-pattern overlay (which would need expo-linear-
+    // gradient or a textured image asset, neither worth the cost).
+    custodySegmentOverride: {
+        borderWidth: 2,
+        borderColor: 'rgba(255, 255, 255, 0.85)',
+    },
+    custodySegmentText: {
+        color: '#fff',
+        fontSize: 11,
+        fontWeight: '700',
+        letterSpacing: 0.5,
+        textTransform: 'uppercase',
+    },
+    // Day view: single segment spans the full width, so the name has room
+    // to breathe — bump font size + drop the cramped letterSpacing.
+    custodySegmentTextDay: {
+        fontSize: 13,
+        letterSpacing: 0.8,
+    },
     allDayRow: {
         flexDirection: 'row',
         minHeight: ALL_DAY_ROW_HEIGHT,
