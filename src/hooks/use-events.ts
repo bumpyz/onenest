@@ -3,14 +3,20 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getEventsForRange, type Event } from '@/lib/db';
 
-// Fetches events whose start time falls within [weekStart, weekStart + 7 days).
-// Refetch is exposed so screens can refresh after navigation events (e.g. coming back from a create modal).
-export function useEvents(householdId: string | undefined, weekStart: Date) {
+// Fetches events whose start time falls within [rangeStart, rangeStart + numDays).
+// `numDays` defaults to 7 to preserve the original week-view semantics; Day view passes 1
+// and a future Month view passes ~42. Refetch is exposed so screens can refresh after
+// navigation events (e.g. coming back from a create modal).
+export function useEvents(
+    householdId: string | undefined,
+    rangeStart: Date,
+    numDays: number = 7,
+) {
     const [events, setEvents] = useState<Event[] | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
 
-    const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
+    const rangeEnd = useMemo(() => addDays(rangeStart, numDays), [rangeStart, numDays]);
 
     const refetch = useCallback(async () => {
         if (!householdId) {
@@ -21,7 +27,7 @@ export function useEvents(householdId: string | undefined, weekStart: Date) {
         setIsLoading(true);
         setError(null);
         try {
-            const data = await getEventsForRange(householdId, weekStart, weekEnd);
+            const data = await getEventsForRange(householdId, rangeStart, rangeEnd);
             setEvents(data);
         } catch (err) {
             setError(err instanceof Error ? err : new Error(String(err)));
@@ -29,7 +35,7 @@ export function useEvents(householdId: string | undefined, weekStart: Date) {
         } finally {
             setIsLoading(false);
         }
-    }, [householdId, weekStart, weekEnd]);
+    }, [householdId, rangeStart, rangeEnd]);
 
     useEffect(() => {
         refetch();

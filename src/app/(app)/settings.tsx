@@ -1,8 +1,9 @@
-import { format } from 'date-fns';
-import { useEffect, useState } from 'react';
+import { Feather } from '@expo/vector-icons';
+import { format, parseISO } from 'date-fns';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import {
     Alert,
-    Linking,
     Platform,
     Pressable,
     ScrollView,
@@ -12,35 +13,36 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ChildBadge } from '@/components/child-badge';
 import { CustodyScheduleSection } from '@/components/custody-schedule-section';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { TimezonePicker } from '@/components/timezone-picker';
+import { lookupTimezone } from '@/lib/timezones';
 import { useExternalCalendars } from '@/hooks/use-external-calendars';
 import { Colors, Spacing } from '@/constants/theme';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
+import { useChildren } from '@/hooks/use-children';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLocations } from '@/hooks/use-locations';
+import { useMyProfile } from '@/hooks/use-my-profile';
 import { usePendingInvitations } from '@/hooks/use-pending-invitations';
 import { signOut } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
 import { PARENT_PALETTE, colorForResponsible, memberColorMap } from '@/lib/colors';
 import {
     createInvitation,
-    createLocation,
-    deleteLocation,
     disconnectExternalCalendar,
     revokeInvitation,
-    saveGoogleCalendarPairing,
     updateHouseholdType,
-    updateLocation,
     updateMyColor,
+    updateMyDefaultTimezone,
     updateMyDisplayName,
     type ExternalCalendar,
     type HouseholdType,
     type Invitation,
-    type Location,
 } from '@/lib/db';
 import { GoogleAuthError, syncGoogleCalendar } from '@/lib/google-calendar';
+import { startGoogleOAuth } from '@/lib/google-oauth';
 import { MicrosoftAuthError, syncMicrosoftCalendar } from '@/lib/microsoft-calendar';
 import { startMicrosoftOAuth } from '@/lib/microsoft-oauth';
 import { HOUSEHOLD_TYPE_OPTIONS, labelForHouseholdType } from '@/lib/household-types';
@@ -79,6 +81,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 export default function SettingsScreen() {
+    const router = useRouter();
     const { user } = useAuth();
     const scheme = useAppColorScheme();
     const { preference: themePreference, setPreference: setThemePreference } = useThemePreference();
@@ -94,6 +97,7 @@ export default function SettingsScreen() {
 
     const { invitations, refetch: refetchInvites } = usePendingInvitations(household?.id);
     const { locations, refetch: refetchLocations } = useLocations(household?.id);
+    const { children, refetch: refetchChildren } = useChildren(household?.id);
     const { calendars: externalCalendars, refetch: refetchExternalCalendars } = useExternalCalendars();
 
     const [inviteEmail, setInviteEmail] = useState('');
@@ -109,6 +113,60 @@ export default function SettingsScreen() {
     const [savingName, setSavingName] = useState(false);
     const [nameError, setNameError] = useState<string | null>(null);
 
+    // Default timezone editing — the picker is its own input, so we just track open/
+    // closed state plus the in-flight save status. Selecting a row in the picker calls
+    // onSaveTimezone directly; there's no separate "Save" button to manage.
+    const { profile, refetch: refetchProfile } = useMyProfile();
+    const [editingTimezone, setEditingTimezone] = useState(false);
+    const [savingTimezone, setSavingTimezone] = useState(false);
+    const [timezoneError, setTimezoneError] = useState<string | null>(null);
+    const deviceTimezone =
+        typeof Intl !== 'undefined'
+            ? Intl.DateTimeFormat().resolvedOptions().timeZone
+            : null;
+
+    const onStartEditTimezone = () => {
+        setEditingTimezone(true);
+        setTimezoneError(null);
+    };
+
+    const onCancelEditTimezone = () => {
+        setEditingTimezone(false);
+        setTimezoneError(null);
+    };
+
+    const onPickTimezone = async (tz: string) => {
+        if (savingTimezone) return;
+        setSavingTimezone(true);
+        setTimezoneError(null);
+        try {
+            await updateMyDefaultTimezone(tz);
+            await refetchProfile();
+            setEditingTimezone(false);
+        } catch (err) {
+            console.error('updateMyDefaultTimezone failed', err);
+            setTimezoneError(errorMessage(err));
+        } finally {
+            setSavingTimezone(false);
+        }
+    };
+
+    const onClearTimezone = async () => {
+        if (savingTimezone) return;
+        setSavingTimezone(true);
+        setTimezoneError(null);
+        try {
+            await updateMyDefaultTimezone(null);
+            await refetchProfile();
+            setEditingTimezone(false);
+        } catch (err) {
+            console.error('updateMyDefaultTimezone failed', err);
+            setTimezoneError(errorMessage(err));
+        } finally {
+            setSavingTimezone(false);
+        }
+    };
+
     // Household type editing
     const [editingType, setEditingType] = useState(false);
     const [savingType, setSavingType] = useState(false);
@@ -120,75 +178,26 @@ export default function SettingsScreen() {
     const [syncingCalendarId, setSyncingCalendarId] = useState<string | null>(null);
     const [externalCalendarError, setExternalCalendarError] = useState<string | null>(null);
     const microsoftClientId = process.env.EXPO_PUBLIC_MICROSOFT_CLIENT_ID ?? '';
+    const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_CALENDAR_CLIENT_ID ?? '';
 
-    const PENDING_CONNECT_KEY = 'onenest:pending-google-calendar-connect';
-
-    // After Supabase OAuth re-auth with calendar.readonly scope, the user lands back on
-    // this Settings page with session.provider_token populated. We detect the "pending"
-    // flag we set before redirecting and persist the token to external_calendars.
-    useEffect(() => {
-        if (typeof window === 'undefined') return;
-        const pending = window.localStorage.getItem(PENDING_CONNECT_KEY);
-        if (pending !== 'google') return;
-        if (!user) return;
-
-        (async () => {
-            try {
-                const { data: sessionData } = await supabase.auth.getSession();
-                const providerToken = sessionData.session?.provider_token;
-                const providerRefreshToken = sessionData.session?.provider_refresh_token;
-                if (!providerToken) return;
-                const email = user.email;
-                if (!email) {
-                    setExternalCalendarError('Could not determine Google account email.');
-                    return;
-                }
-                // Google access tokens last about 1 hour; we use that as a heuristic.
-                const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-                const saved = await saveGoogleCalendarPairing({
-                    email,
-                    accessToken: providerToken,
-                    refreshToken: providerRefreshToken ?? null,
-                    expiresAt,
-                });
-                // Kick off an initial sync so the user sees data immediately.
-                try {
-                    await syncGoogleCalendar(saved);
-                } catch (syncErr) {
-                    console.warn('Initial sync after connect failed', syncErr);
-                }
-                await refetchExternalCalendars();
-            } catch (err) {
-                console.error('Saving Google Calendar pairing failed', err);
-                setExternalCalendarError(errorMessage(err));
-            } finally {
-                window.localStorage.removeItem(PENDING_CONNECT_KEY);
-            }
-        })();
-    }, [user, refetchExternalCalendars]);
+    // (Earlier this screen also hosted a useEffect that intercepted the post-OAuth
+    // redirect from Supabase's Google provider and persisted session.provider_token. That
+    // path is gone now — pairing runs through our own PKCE flow + /oauth/google callback,
+    // which writes through saveGoogleCalendarPairing directly. The connect button below
+    // just calls startGoogleOAuth and the rest happens in the callback route.)
 
     const handleConnectGoogleCalendar = async () => {
-        if (typeof window === 'undefined') return;
+        if (!googleClientId) {
+            setExternalCalendarError(
+                'EXPO_PUBLIC_GOOGLE_CALENDAR_CLIENT_ID is not set. Add it to .env.local and restart the dev server.',
+            );
+            return;
+        }
         setConnectingGoogle(true);
         setExternalCalendarError(null);
         try {
-            window.localStorage.setItem(PENDING_CONNECT_KEY, 'google');
-            const { error } = await supabase.auth.signInWithOAuth({
-                provider: 'google',
-                options: {
-                    scopes: 'https://www.googleapis.com/auth/calendar.readonly',
-                    redirectTo: window.location.href,
-                    queryParams: {
-                        access_type: 'offline',
-                        prompt: 'consent',
-                    },
-                },
-            });
-            if (error) {
-                window.localStorage.removeItem(PENDING_CONNECT_KEY);
-                throw error;
-            }
-            // The browser is about to redirect to Google. No need to clear connectingGoogle.
+            await startGoogleOAuth(googleClientId);
+            // Browser is about to redirect; no need to clear connectingGoogle.
         } catch (err) {
             setConnectingGoogle(false);
             setExternalCalendarError(errorMessage(err));
@@ -294,100 +303,19 @@ export default function SettingsScreen() {
         }
     };
 
-    // Locations state
-    const [newLocName, setNewLocName] = useState('');
-    const [newLocUrl, setNewLocUrl] = useState('');
-    const [addingLocation, setAddingLocation] = useState(false);
-    const [locationError, setLocationError] = useState<string | null>(null);
-    const [editingLocationId, setEditingLocationId] = useState<string | null>(null);
-    const [editLocName, setEditLocName] = useState('');
-    const [editLocUrl, setEditLocUrl] = useState('');
-    const [savingLocation, setSavingLocation] = useState(false);
+    // Saved-locations add/edit lives behind the /location/new and /location/[id] modal
+    // routes (LocationForm component). Settings just renders the read-only list and a
+    // push-to-route Add button — no inline form state here anymore.
 
-    const onAddLocation = async () => {
-        if (!household) return;
-        const name = newLocName.trim();
-        if (!name) {
-            setLocationError('Enter a name.');
-            return;
-        }
-        setAddingLocation(true);
-        setLocationError(null);
-        try {
-            await createLocation(household.id, name, newLocUrl.trim() || null);
-            setNewLocName('');
-            setNewLocUrl('');
-            await refetchLocations();
-        } catch (err) {
-            console.error('createLocation failed', err);
-            setLocationError(errorMessage(err));
-        } finally {
-            setAddingLocation(false);
-        }
-    };
-
-    const onStartEditLocation = (loc: Location) => {
-        setEditingLocationId(loc.id);
-        setEditLocName(loc.name);
-        setEditLocUrl(loc.google_maps_url ?? '');
-        setLocationError(null);
-    };
-
-    const onCancelEditLocation = () => {
-        setEditingLocationId(null);
-        setEditLocName('');
-        setEditLocUrl('');
-    };
-
-    const onSaveEditLocation = async () => {
-        if (!editingLocationId) return;
-        const name = editLocName.trim();
-        if (!name) {
-            setLocationError('Name cannot be empty.');
-            return;
-        }
-        setSavingLocation(true);
-        setLocationError(null);
-        try {
-            await updateLocation(editingLocationId, name, editLocUrl.trim() || null);
-            await refetchLocations();
-            onCancelEditLocation();
-        } catch (err) {
-            console.error('updateLocation failed', err);
-            setLocationError(errorMessage(err));
-        } finally {
-            setSavingLocation(false);
-        }
-    };
-
-    const onDeleteLocation = async (loc: Location) => {
-        const doDelete = async () => {
-            try {
-                await deleteLocation(loc.id);
-                await refetchLocations();
-            } catch (err) {
-                console.error('deleteLocation failed', err);
-                setLocationError(errorMessage(err));
-            }
-        };
-        if (Platform.OS === 'web') {
-            const ok = typeof window !== 'undefined' && window.confirm(`Delete location "${loc.name}"?`);
-            if (ok) await doDelete();
-        } else {
-            Alert.alert('Delete location?', `Remove "${loc.name}" from saved places.`, [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive', onPress: doDelete },
-            ]);
-        }
-    };
-
-    const openMaps = (url: string) => {
-        if (Platform.OS === 'web' && typeof window !== 'undefined') {
-            window.open(url, '_blank');
-        } else {
-            Linking.openURL(url).catch(() => undefined);
-        }
-    };
+    // Refetch on screen focus so changes made inside the location / child modals show up
+    // the moment the user returns. Without this the lists would only refresh on full
+    // reload.
+    useFocusEffect(
+        useCallback(() => {
+            refetchLocations();
+            refetchChildren();
+        }, [refetchLocations, refetchChildren]),
+    );
 
     const onInvite = async () => {
         if (!household) return;
@@ -623,6 +551,94 @@ export default function SettingsScreen() {
                         </View>
                     ) : null}
 
+                    {/* Children — compact list, edit/delete inside /child/[id] modal.
+                        Same shape as Saved locations below for consistency. */}
+                    {household ? (
+                        <View style={styles.section}>
+                            <ThemedText type="smallBold">Children</ThemedText>
+                            <ThemedText themeColor="textSecondary" type="small">
+                                The kids in this household. Used to tag events and (later) to
+                                filter the calendar by child.
+                            </ThemedText>
+
+                            <Pressable
+                                onPress={() => router.push('/child/new')}
+                                style={({ pressed }) => [
+                                    styles.locationAddBtn,
+                                    { borderColor: colors.backgroundSelected },
+                                    pressed && styles.pressed,
+                                ]}>
+                                <Feather name="plus" size={16} color="#6F7FA5" />
+                                <ThemedText
+                                    type="small"
+                                    style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                    Add child
+                                </ThemedText>
+                            </Pressable>
+
+                            {children && children.length > 0 ? (
+                                <View
+                                    style={[
+                                        styles.locationList,
+                                        {
+                                            backgroundColor: colors.backgroundElement,
+                                            borderColor: colors.backgroundSelected,
+                                        },
+                                    ]}>
+                                    {children.map((c, idx) => (
+                                        <Pressable
+                                            key={c.id}
+                                            onPress={() =>
+                                                router.push({
+                                                    pathname: '/child/[id]',
+                                                    params: { id: c.id },
+                                                })
+                                            }
+                                            style={({ pressed }) => [
+                                                styles.locationRow,
+                                                idx > 0 && {
+                                                    borderTopWidth: StyleSheet.hairlineWidth,
+                                                    borderTopColor: colors.backgroundSelected,
+                                                },
+                                                pressed && styles.pressed,
+                                            ]}>
+                                            <ChildBadge
+                                                name={c.display_name}
+                                                color={c.color}
+                                                size="lg"
+                                            />
+                                            <View style={styles.locationRowText}>
+                                                <ThemedText type="smallBold">
+                                                    {c.display_name}
+                                                </ThemedText>
+                                                {c.birthdate ? (
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small">
+                                                        {/* parseISO (not new Date) so a date-only string
+                                                            like "2014-01-11" is treated as local midnight
+                                                            instead of UTC midnight — the latter would render
+                                                            one day earlier in any tz west of UTC. */}
+                                                        Born {format(parseISO(c.birthdate), 'MMM d, yyyy')}
+                                                    </ThemedText>
+                                                ) : null}
+                                            </View>
+                                            <Feather
+                                                name="chevron-right"
+                                                size={18}
+                                                color={colors.textSecondary}
+                                            />
+                                        </Pressable>
+                                    ))}
+                                </View>
+                            ) : (
+                                <ThemedText themeColor="textSecondary" type="small">
+                                    No children added yet. Tap Add child to start.
+                                </ThemedText>
+                            )}
+                        </View>
+                    ) : null}
+
                     {/* My color */}
                     {household && myMember ? (
                         <View style={styles.section}>
@@ -752,21 +768,33 @@ export default function SettingsScreen() {
                         <View style={styles.inviteActions}>
                             <Pressable
                                 onPress={handleConnectGoogleCalendar}
-                                disabled={connectingGoogle || connectingMicrosoft}
+                                disabled={
+                                    connectingGoogle ||
+                                    connectingMicrosoft ||
+                                    !googleClientId
+                                }
                                 style={({ pressed }) => [
                                     styles.primaryBtn,
                                     {
                                         backgroundColor:
-                                            connectingGoogle || connectingMicrosoft
+                                            connectingGoogle ||
+                                            connectingMicrosoft ||
+                                            !googleClientId
                                                 ? colors.backgroundSelected
                                                 : '#6F7FA5',
                                     },
-                                    pressed && !connectingGoogle && !connectingMicrosoft && styles.pressed,
+                                    pressed &&
+                                        googleClientId &&
+                                        !connectingGoogle &&
+                                        !connectingMicrosoft &&
+                                        styles.pressed,
                                 ]}>
                                 <ThemedText
                                     style={{
                                         color:
-                                            connectingGoogle || connectingMicrosoft
+                                            connectingGoogle ||
+                                            connectingMicrosoft ||
+                                            !googleClientId
                                                 ? colors.textSecondary
                                                 : '#fff',
                                         fontWeight: '600',
@@ -813,6 +841,11 @@ export default function SettingsScreen() {
                                 </ThemedText>
                             </Pressable>
                         </View>
+                        {!googleClientId ? (
+                            <ThemedText type="small" themeColor="textSecondary">
+                                Google is unavailable: EXPO_PUBLIC_GOOGLE_CALENDAR_CLIENT_ID not set.
+                            </ThemedText>
+                        ) : null}
                         {!microsoftClientId ? (
                             <ThemedText type="small" themeColor="textSecondary">
                                 Microsoft is unavailable: EXPO_PUBLIC_MICROSOFT_CLIENT_ID not set.
@@ -826,185 +859,95 @@ export default function SettingsScreen() {
                         ) : null}
                     </View>
 
-                    {/* Saved locations */}
+                    {/* Saved locations — compact list, with add/edit/delete living inside a
+                        modal at /location/new or /location/[id] so this screen stays short. */}
                     {household ? (
                         <View style={styles.section}>
                             <ThemedText type="smallBold">Saved locations</ThemedText>
                             <ThemedText themeColor="textSecondary" type="small">
-                                Places you reuse for events (School, Soccer field, the other parent&apos;s home).
+                                Places you reuse for events. Tap a row to edit, or use Add location to save a new one.
                             </ThemedText>
 
+                            <Pressable
+                                onPress={() => router.push('/location/new')}
+                                style={({ pressed }) => [
+                                    styles.locationAddBtn,
+                                    { borderColor: colors.backgroundSelected },
+                                    pressed && styles.pressed,
+                                ]}>
+                                <Feather name="plus" size={16} color="#6F7FA5" />
+                                <ThemedText
+                                    type="small"
+                                    style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                    Add location
+                                </ThemedText>
+                            </Pressable>
+
                             {locations && locations.length > 0 ? (
-                                <View style={{ gap: Spacing.two }}>
-                                    {locations.map((loc) => {
-                                        const isEditing = editingLocationId === loc.id;
-                                        return (
-                                            <View
-                                                key={loc.id}
-                                                style={[
-                                                    styles.card,
-                                                    { backgroundColor: colors.backgroundElement },
-                                                ]}>
-                                                {isEditing ? (
-                                                    <>
-                                                        <TextInput
-                                                            value={editLocName}
-                                                            onChangeText={setEditLocName}
-                                                            placeholder="Name"
-                                                            placeholderTextColor={colors.textSecondary}
-                                                            style={inputStyle}
-                                                            editable={!savingLocation}
-                                                        />
-                                                        <TextInput
-                                                            value={editLocUrl}
-                                                            onChangeText={setEditLocUrl}
-                                                            placeholder="Google Maps link (optional)"
-                                                            placeholderTextColor={colors.textSecondary}
-                                                            style={inputStyle}
-                                                            autoCapitalize="none"
-                                                            autoCorrect={false}
-                                                            keyboardType="url"
-                                                            editable={!savingLocation}
-                                                        />
-                                                        <View style={styles.inviteActions}>
-                                                            <Pressable
-                                                                onPress={onSaveEditLocation}
-                                                                disabled={savingLocation}
-                                                                style={({ pressed }) => [
-                                                                    styles.secondaryBtn,
-                                                                    { borderColor: colors.backgroundSelected },
-                                                                    pressed && styles.pressed,
-                                                                ]}>
-                                                                <ThemedText
-                                                                    type="small"
-                                                                    style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                                                                    {savingLocation ? 'Saving…' : 'Save'}
-                                                                </ThemedText>
-                                                            </Pressable>
-                                                            <Pressable
-                                                                onPress={onCancelEditLocation}
-                                                                disabled={savingLocation}
-                                                                style={({ pressed }) => [
-                                                                    styles.secondaryBtn,
-                                                                    { borderColor: colors.backgroundSelected },
-                                                                    pressed && styles.pressed,
-                                                                ]}>
-                                                                <ThemedText themeColor="textSecondary" type="small">
-                                                                    Cancel
-                                                                </ThemedText>
-                                                            </Pressable>
-                                                        </View>
-                                                    </>
+                                <View
+                                    style={[
+                                        styles.locationList,
+                                        {
+                                            backgroundColor: colors.backgroundElement,
+                                            borderColor: colors.backgroundSelected,
+                                        },
+                                    ]}>
+                                    {locations.map((loc, idx) => (
+                                        <Pressable
+                                            key={loc.id}
+                                            onPress={() =>
+                                                router.push({
+                                                    pathname: '/location/[id]',
+                                                    params: { id: loc.id },
+                                                })
+                                            }
+                                            style={({ pressed }) => [
+                                                styles.locationRow,
+                                                idx > 0 && {
+                                                    borderTopWidth: StyleSheet.hairlineWidth,
+                                                    borderTopColor: colors.backgroundSelected,
+                                                },
+                                                pressed && styles.pressed,
+                                            ]}>
+                                            <View style={styles.locationRowText}>
+                                                <ThemedText type="smallBold">
+                                                    {loc.name}
+                                                </ThemedText>
+                                                {loc.formatted_address ? (
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small"
+                                                        numberOfLines={1}>
+                                                        {loc.formatted_address}
+                                                    </ThemedText>
+                                                ) : loc.google_maps_url ? (
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small"
+                                                        numberOfLines={1}>
+                                                        {loc.google_maps_url}
+                                                    </ThemedText>
                                                 ) : (
-                                                    <>
-                                                        <ThemedText type="smallBold">{loc.name}</ThemedText>
-                                                        {loc.google_maps_url ? (
-                                                            <Pressable onPress={() => openMaps(loc.google_maps_url!)}>
-                                                                <ThemedText
-                                                                    type="small"
-                                                                    style={{ color: '#6F7FA5' }}
-                                                                    numberOfLines={1}>
-                                                                    📍 {loc.google_maps_url}
-                                                                </ThemedText>
-                                                            </Pressable>
-                                                        ) : (
-                                                            <ThemedText themeColor="textSecondary" type="small">
-                                                                No map link
-                                                            </ThemedText>
-                                                        )}
-                                                        <View style={styles.inviteActions}>
-                                                            <Pressable
-                                                                onPress={() => onStartEditLocation(loc)}
-                                                                style={({ pressed }) => [
-                                                                    styles.secondaryBtn,
-                                                                    { borderColor: colors.backgroundSelected },
-                                                                    pressed && styles.pressed,
-                                                                ]}>
-                                                                <ThemedText
-                                                                    type="small"
-                                                                    style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                                                                    Edit
-                                                                </ThemedText>
-                                                            </Pressable>
-                                                            <Pressable
-                                                                onPress={() => onDeleteLocation(loc)}
-                                                                style={({ pressed }) => [
-                                                                    styles.secondaryBtn,
-                                                                    { borderColor: colors.backgroundSelected },
-                                                                    pressed && styles.pressed,
-                                                                ]}>
-                                                                <ThemedText
-                                                                    type="small"
-                                                                    style={{ color: '#B85D52', fontWeight: '600' }}>
-                                                                    Delete
-                                                                </ThemedText>
-                                                            </Pressable>
-                                                        </View>
-                                                    </>
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small">
+                                                        No address
+                                                    </ThemedText>
                                                 )}
                                             </View>
-                                        );
-                                    })}
+                                            <Feather
+                                                name="chevron-right"
+                                                size={18}
+                                                color={colors.textSecondary}
+                                            />
+                                        </Pressable>
+                                    ))}
                                 </View>
                             ) : (
                                 <ThemedText themeColor="textSecondary" type="small">
-                                    No saved locations yet. Add one below, or start typing a new location in any event.
+                                    No saved locations yet. Add one above, or start typing a new location in any event.
                                 </ThemedText>
                             )}
-
-                            <View style={[styles.card, { backgroundColor: colors.backgroundElement }]}>
-                                <ThemedText type="smallBold">Add a location</ThemedText>
-                                <TextInput
-                                    value={newLocName}
-                                    onChangeText={setNewLocName}
-                                    placeholder="Name (e.g. Soccer field)"
-                                    placeholderTextColor={colors.textSecondary}
-                                    style={inputStyle}
-                                    editable={!addingLocation}
-                                />
-                                <TextInput
-                                    value={newLocUrl}
-                                    onChangeText={setNewLocUrl}
-                                    placeholder="Google Maps link (optional)"
-                                    placeholderTextColor={colors.textSecondary}
-                                    style={inputStyle}
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    keyboardType="url"
-                                    editable={!addingLocation}
-                                />
-                                <Pressable
-                                    onPress={onAddLocation}
-                                    disabled={addingLocation || newLocName.trim().length === 0}
-                                    style={({ pressed }) => [
-                                        styles.primaryBtn,
-                                        {
-                                            backgroundColor:
-                                                addingLocation || newLocName.trim().length === 0
-                                                    ? colors.backgroundSelected
-                                                    : '#6F7FA5',
-                                            alignSelf: 'flex-start',
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        style={{
-                                            color:
-                                                addingLocation || newLocName.trim().length === 0
-                                                    ? colors.textSecondary
-                                                    : '#fff',
-                                            fontWeight: '600',
-                                        }}>
-                                        {addingLocation ? 'Adding…' : 'Add'}
-                                    </ThemedText>
-                                </Pressable>
-                            </View>
-
-                            {locationError ? (
-                                <ThemedText type="small" style={styles.errorText}>
-                                    {locationError}
-                                </ThemedText>
-                            ) : null}
                         </View>
                     ) : null}
 
@@ -1195,6 +1138,96 @@ export default function SettingsScreen() {
                         </View>
 
                         <View style={[styles.card, { backgroundColor: colors.backgroundElement }]}>
+                            <ThemedText type="smallBold">Default timezone</ThemedText>
+                            <ThemedText themeColor="textSecondary" type="small">
+                                Applied to new events you create. Recurring events use this
+                                to stay anchored to the same wall clock across DST.
+                            </ThemedText>
+                            {editingTimezone ? (
+                                <TimezonePicker
+                                    value={profile?.default_timezone ?? null}
+                                    onChange={onPickTimezone}
+                                    onCancel={onCancelEditTimezone}
+                                    deviceTimezone={deviceTimezone}
+                                />
+                            ) : (
+                                <View style={styles.inviteActions}>
+                                    <View style={{ flex: 1 }}>
+                                        {profile?.default_timezone ? (
+                                            <>
+                                                <ThemedText type="smallBold">
+                                                    {(() => {
+                                                        const opt = lookupTimezone(
+                                                            profile.default_timezone,
+                                                        );
+                                                        return opt
+                                                            ? `${opt.offsetLabel}  ${opt.iana}`
+                                                            : profile.default_timezone;
+                                                    })()}
+                                                </ThemedText>
+                                                {deviceTimezone &&
+                                                deviceTimezone !==
+                                                    profile.default_timezone ? (
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small">
+                                                        Device is currently on {deviceTimezone}
+                                                    </ThemedText>
+                                                ) : null}
+                                            </>
+                                        ) : (
+                                            <>
+                                                <ThemedText type="smallBold">Not set</ThemedText>
+                                                {deviceTimezone ? (
+                                                    <ThemedText
+                                                        themeColor="textSecondary"
+                                                        type="small">
+                                                        Falling back to device tz:{' '}
+                                                        {deviceTimezone}
+                                                    </ThemedText>
+                                                ) : null}
+                                            </>
+                                        )}
+                                    </View>
+                                    <Pressable
+                                        onPress={onStartEditTimezone}
+                                        style={({ pressed }) => [
+                                            styles.secondaryBtn,
+                                            { borderColor: colors.backgroundSelected },
+                                            pressed && styles.pressed,
+                                        ]}>
+                                        <ThemedText
+                                            type="small"
+                                            style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                            {profile?.default_timezone ? 'Change' : 'Set'}
+                                        </ThemedText>
+                                    </Pressable>
+                                    {profile?.default_timezone ? (
+                                        <Pressable
+                                            onPress={onClearTimezone}
+                                            disabled={savingTimezone}
+                                            style={({ pressed }) => [
+                                                styles.secondaryBtn,
+                                                { borderColor: colors.backgroundSelected },
+                                                pressed && styles.pressed,
+                                            ]}>
+                                            <ThemedText
+                                                type="small"
+                                                style={{ color: '#B85D52', fontWeight: '600' }}>
+                                                Clear
+                                            </ThemedText>
+                                        </Pressable>
+                                    ) : null}
+                                </View>
+                            )}
+                            {timezoneError ? (
+                                <ThemedText type="small" style={styles.errorText}>
+                                    {timezoneError}
+                                </ThemedText>
+                            ) : null}
+                        </View>
+
+                        <View style={[styles.card, { backgroundColor: colors.backgroundElement }]}>
                             <ThemedText type="smallBold">Appearance</ThemedText>
                             <ThemedText themeColor="textSecondary" type="small">
                                 Light, dark, or follow your device.
@@ -1304,4 +1337,29 @@ const styles = StyleSheet.create({
     },
     signOutText: { color: '#B85D52', fontWeight: '500' },
     pressed: { opacity: 0.7 },
+    // Saved-locations list & "Add location" affordance — compact row layout with a chevron
+    // on the right; each row pushes to /location/[id] for editing.
+    locationAddBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.two,
+        alignSelf: 'flex-start',
+        paddingHorizontal: Spacing.three,
+        paddingVertical: Spacing.two,
+        borderRadius: Spacing.two,
+        borderWidth: 1,
+    },
+    locationList: {
+        borderRadius: Spacing.two,
+        borderWidth: 1,
+        overflow: 'hidden',
+    },
+    locationRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: Spacing.three,
+        paddingVertical: Spacing.three,
+        gap: Spacing.three,
+    },
+    locationRowText: { flex: 1, gap: 2 },
 });

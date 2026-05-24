@@ -1,7 +1,25 @@
-import { addDays, addWeeks, format, isSameDay, isToday, startOfWeek, subWeeks } from 'date-fns';
+import { Feather } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+    addDays,
+    addMonths,
+    addWeeks,
+    format,
+    isBefore,
+    isSameDay,
+    isSameMonth,
+    isToday,
+    parseISO,
+    startOfDay,
+    startOfMonth,
+    startOfWeek,
+    subMonths,
+    subWeeks,
+} from 'date-fns';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -9,12 +27,21 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ChildBadge } from '@/components/child-badge';
+import { EventChildBadges } from '@/components/event-child-badges';
 import { LoadingScreen } from '@/components/loading-screen';
+import {
+    ScrollOverflowChevron,
+    useHorizontalOverflow,
+} from '@/components/scroll-overflow-indicator';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing } from '@/constants/theme';
+import { FAB_SHADOW } from '@/lib/platform-styles';
+import { useChildren } from '@/hooks/use-children';
 import { useCustodyOverrides } from '@/hooks/use-custody-overrides';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
+import { useEventOccurrenceOverrides } from '@/hooks/use-event-occurrence-overrides';
 import { useEvents } from '@/hooks/use-events';
 import { useHouseholdBusyBlocks } from '@/hooks/use-household-busy-blocks';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
@@ -23,6 +50,8 @@ import { useMyExternalEvents } from '@/hooks/use-my-external-events';
 import { memberColorMap, colorForResponsible } from '@/lib/colors';
 import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
 import type { Event, ExternalEvent, HouseholdBusyBlock } from '@/lib/db';
+import { parseRecurrence } from '@/lib/recurrence';
+import { resolveResponsibleProfileId } from '@/lib/responsible-resolver';
 import { iconForType } from '@/lib/event-types';
 import { useAppColorScheme } from '@/providers/theme-provider';
 import { useAuth } from '@/providers/auth-provider';
@@ -32,6 +61,42 @@ const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const TIME_COLUMN_WIDTH = 56;
 const DEFAULT_SCROLL_HOUR = 7;
 const ALL_DAY_ROW_HEIGHT = 28;
+
+// Drag-to-create snaps to 15-minute increments. Empty-space click without drag creates a
+// single 15-minute slot at the snapped start time — turns a stray click into a quick
+// "add a 15-min slot here" rather than an annoying full-form-with-arbitrary-time.
+const DRAG_SNAP_MIN = 15;
+
+/** Pixel y inside a day column → minute-of-day, clamped to [0, 1439]. */
+function yToMinutes(y: number): number {
+    const m = Math.round((y / HOUR_HEIGHT) * 60);
+    return Math.max(0, Math.min(24 * 60 - 1, m));
+}
+function snapMinutes(m: number): number {
+    return Math.round(m / DRAG_SNAP_MIN) * DRAG_SNAP_MIN;
+}
+function minutesToHHmm(m: number): string {
+    const mm = ((m % (24 * 60)) + 24 * 60) % (24 * 60);
+    const h = Math.floor(mm / 60);
+    const min = mm % 60;
+    return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+// Marker prop spread onto every block inside a day column (events + busy windows).
+// React Native Web rewrites `dataSet={{ calBlock: 'true' }}` to `data-cal-block="true"`
+// on the DOM, and the drag-to-create pointerdown handler uses
+// `closest('[data-cal-block]')` to bail when the user clicks on a block instead of empty
+// space. Casting because RN's bundled types don't include dataSet (RN-web supports it).
+const CAL_BLOCK_DATASET = { dataSet: { calBlock: 'true' } } as object;
+
+// Calendar view toggle. Day and Week share the same time-grid renderer with a different
+// number of columns; Month gets its own compact grid renderer with dot indicators.
+type ViewMode = 'day' | 'week' | 'month';
+const VIEW_MODE_STORAGE_KEY = 'onenest:calendar-view-mode';
+const VIEW_MODES: ViewMode[] = ['day', 'week', 'month'];
+function isViewMode(v: unknown): v is ViewMode {
+    return v === 'day' || v === 'week' || v === 'month';
+}
 
 function formatHourLabel(h: number): string {
     if (h === 0) return '';
@@ -44,6 +109,35 @@ function eventsForDay(events: Event[], day: Date): Event[] {
     return events.filter((e) => isSameDay(new Date(e.starts_at), day));
 }
 
+/**
+ * "Does this all-day event cover the given day?" An all-day event from Mon to Wed
+ * (inclusive) is stored at UTC midnight: starts_at = Mon 00:00 UTC, ends_at = Thu
+ * 00:00 UTC (exclusive). The viewer's day cell is identified by its local
+ * calendar date (`day` is a local-time Date object whose YYYY-MM-DD label is
+ * what the user sees in the header). To check coverage we compare YYYY-MM-DD
+ * strings: the day cell's local-date key against the event's UTC-date range.
+ * Both sides agree because UTC midnight resolves to the same calendar date in
+ * every viewer's local rendering (QA-005).
+ *
+ * Single-day events fall out as a special case — start === end-1day, so
+ * dayKey === startKey passes and dayKey > startKey fails.
+ *
+ * Timed events that span midnight still only show on their start day — those
+ * aren't currently representable through "all-day", so we keep the simpler
+ * semantic for them.
+ */
+function allDayEventsForDay(allDayEvents: Event[], day: Date): Event[] {
+    const dayKey = format(day, 'yyyy-MM-dd');
+    return allDayEvents.filter((e) => {
+        const startKey = e.starts_at.slice(0, 10);
+        const endExclusive = new Date(e.ends_at);
+        // exclusive UTC end → inclusive last-covered UTC date
+        endExclusive.setUTCDate(endExclusive.getUTCDate() - 1);
+        const endKey = endExclusive.toISOString().slice(0, 10);
+        return dayKey >= startKey && dayKey <= endKey;
+    });
+}
+
 export default function CalendarScreen() {
     const router = useRouter();
     const scheme = useAppColorScheme();
@@ -53,39 +147,115 @@ export default function CalendarScreen() {
     const { households } = useHouseholds();
     const household = households?.[0];
     const { members, refetch: refetchMembers } = useHouseholdMembers(household?.id);
+    const { children, refetch: refetchChildren } = useChildren(household?.id);
     const { schedule: custodySchedule, refetch: refetchCustody } = useCustodySchedule(
         household?.id,
     );
 
-    const [weekStart, setWeekStart] = useState(() =>
-        startOfWeek(new Date(), { weekStartsOn: 0 }),
+    // Calendar-only child filter. Resets each session — we don't persist the selection
+    // because users generally want the full picture by default, and the pill makes the
+    // current filter obvious. null = "All".
+    const [childFilter, setChildFilter] = useState<string | null>(null);
+    // UX-010: overflow indicator for the child-filter chip strip. Drives the
+    // right-edge chevron rendered alongside the ScrollView.
+    const childFilterOverflow = useHorizontalOverflow();
+
+    // View toggle. Default to Week until the persisted value hydrates. We accept the small
+    // first-paint flash because the alternative (suspending render) makes the screen feel
+    // janky on cold start.
+    const [viewMode, setViewModeState] = useState<ViewMode>('week');
+    useEffect(() => {
+        AsyncStorage.getItem(VIEW_MODE_STORAGE_KEY)
+            .then((v) => {
+                if (isViewMode(v)) setViewModeState(v);
+            })
+            .catch(() => undefined);
+    }, []);
+    const setViewMode = useCallback((next: ViewMode) => {
+        setViewModeState(next);
+        AsyncStorage.setItem(VIEW_MODE_STORAGE_KEY, next).catch(() => undefined);
+    }, []);
+
+    // `anchor` is the "current position" date the user is looking at. Its meaning depends
+    // on the active view:
+    //   - day:   the single day shown
+    //   - week:  any date inside the displayed week (we derive the Sunday on the fly)
+    //   - month: any date inside the displayed month (we derive the first-day on the fly)
+    // Keeping anchor view-agnostic means switching views preserves "where" you were
+    // looking instead of resetting to today.
+    const [anchor, setAnchor] = useState<Date>(() => new Date());
+
+    // Derive the fetch range and the day cells the grid renders. Month view fetches a 6-week
+    // window starting from the Sunday on/before the first of the month, which is what the
+    // month grid renders.
+    const { rangeStart, numDays, days } = useMemo(() => {
+        if (viewMode === 'day') {
+            const day = new Date(
+                anchor.getFullYear(),
+                anchor.getMonth(),
+                anchor.getDate(),
+            );
+            return { rangeStart: day, numDays: 1, days: [day] };
+        }
+        if (viewMode === 'week') {
+            const start = startOfWeek(anchor, { weekStartsOn: 0 });
+            const out: Date[] = [];
+            for (let i = 0; i < 7; i++) out.push(addDays(start, i));
+            return { rangeStart: start, numDays: 7, days: out };
+        }
+        // month: fetch a 6-row × 7-col grid starting from the Sunday on/before the 1st.
+        const first = startOfMonth(anchor);
+        const start = startOfWeek(first, { weekStartsOn: 0 });
+        const out: Date[] = [];
+        for (let i = 0; i < 42; i++) out.push(addDays(start, i));
+        return { rangeStart: start, numDays: 42, days: out };
+    }, [viewMode, anchor]);
+    const rangeEndInclusive = useMemo(
+        () => addDays(rangeStart, numDays - 1),
+        [rangeStart, numDays],
     );
-    const weekEndInclusive = useMemo(() => addDays(weekStart, 6), [weekStart]);
+
     const { overrides: custodyOverrides, refetch: refetchOverrides } = useCustodyOverrides(
         household?.id,
-        weekStart,
-        weekEndInclusive,
+        rangeStart,
+        rangeEndInclusive,
     );
-    const { events, isLoading, refetch: refetchEvents } = useEvents(household?.id, weekStart);
-    const { events: externalEvents, refetch: refetchExternalEvents } = useMyExternalEvents(weekStart);
+    const {
+        overrideMap: occurrenceOverrideMap,
+        refetch: refetchOccurrenceOverrides,
+    } = useEventOccurrenceOverrides(household?.id, rangeStart, rangeEndInclusive);
+    const { events, isLoading, refetch: refetchEvents } = useEvents(
+        household?.id,
+        rangeStart,
+        numDays,
+    );
+    const { events: externalEvents, refetch: refetchExternalEvents } = useMyExternalEvents(
+        rangeStart,
+        numDays,
+    );
     const { blocks: householdBusyBlocks, refetch: refetchBusyBlocks } = useHouseholdBusyBlocks(
         household?.id,
-        weekStart,
+        rangeStart,
+        numDays,
     );
 
     useFocusEffect(
         useCallback(() => {
             refetchEvents();
             refetchMembers();
+            refetchChildren();
             refetchCustody();
             refetchOverrides();
+            refetchOccurrenceOverrides();
             refetchExternalEvents();
             refetchBusyBlocks();
         }, [
             refetchEvents,
             refetchMembers,
+            refetchChildren,
             refetchCustody,
             refetchOverrides,
+            refetchOccurrenceOverrides,
             refetchExternalEvents,
             refetchBusyBlocks,
         ]),
@@ -98,19 +268,68 @@ export default function CalendarScreen() {
 
     const colorMap = useMemo(() => memberColorMap(members), [members]);
 
-    const days = useMemo(() => {
-        const out: Date[] = [];
-        for (let i = 0; i < 7; i++) out.push(addDays(weekStart, i));
-        return out;
-    }, [weekStart]);
+    // Apply the child filter before splitting all-day vs timed so both lists share the
+    // same visibility rule. Household-wide events (empty child_ids) always show — they
+    // affect everyone, and hiding "Family dinner" when filtering to Anna would feel like
+    // a bug. Selected-child events show when the filter matches.
+    const visibleEvents = useMemo(() => {
+        const all = events ?? [];
+        if (!childFilter) return all;
+        return all.filter(
+            (e) =>
+                e.child_ids.length === 0 || e.child_ids.includes(childFilter),
+        );
+    }, [events, childFilter]);
+
+    // Pre-bucket events by their YYYY-MM-DD start key for the month grid's per-cell
+    // lookup. Cheaper than scanning visibleEvents 42 times per render. Sorted by start
+    // so the first three dots reliably reflect the earliest events of the day.
+    //
+    // Multi-day all-day events get a dot on EVERY day they cover, not just the
+    // start day — same convention as the all-day chip in week/day view. Timed
+    // events only appear on their start day (we don't currently support timed
+    // events that span midnight as a first-class concept).
+    const eventsByDay = useMemo(() => {
+        const map = new Map<string, Event[]>();
+        const sorted = [...visibleEvents].sort(
+            (a, b) =>
+                new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime(),
+        );
+        for (const e of sorted) {
+            const start = new Date(e.starts_at);
+            const end = new Date(e.ends_at);
+            if (e.all_day) {
+                // QA-005: walk each UTC calendar day in [start, end). All-day
+                // events are anchored at UTC midnight, so a Mon→Wed inclusive
+                // run is [Mon 00:00 UTC, Thu 00:00 UTC). We compare YYYY-MM-DD
+                // strings (cheap and tz-stable) and advance via setUTCDate so
+                // DST doesn't shift the iteration.
+                const cursor = new Date(start);
+                const endKey = end.toISOString().slice(0, 10);
+                while (cursor.toISOString().slice(0, 10) < endKey) {
+                    const key = cursor.toISOString().slice(0, 10);
+                    const arr = map.get(key);
+                    if (arr) arr.push(e);
+                    else map.set(key, [e]);
+                    cursor.setUTCDate(cursor.getUTCDate() + 1);
+                }
+            } else {
+                const key = format(start, 'yyyy-MM-dd');
+                const arr = map.get(key);
+                if (arr) arr.push(e);
+                else map.set(key, [e]);
+            }
+        }
+        return map;
+    }, [visibleEvents]);
 
     const allDayEvents = useMemo(
-        () => (events ?? []).filter((e) => e.all_day),
-        [events],
+        () => visibleEvents.filter((e) => e.all_day),
+        [visibleEvents],
     );
     const timedEvents = useMemo(
-        () => (events ?? []).filter((e) => !e.all_day),
-        [events],
+        () => visibleEvents.filter((e) => !e.all_day),
+        [visibleEvents],
     );
     const timedExternalEvents = useMemo(
         () => (externalEvents ?? []).filter((e) => !e.is_all_day),
@@ -133,6 +352,13 @@ export default function CalendarScreen() {
 
     const gridScrollRef = useRef<ScrollView | null>(null);
     useEffect(() => {
+        // Re-fire on every Day/Week mount, not just initial CalendarScreen mount.
+        // Switching to Month unmounts the inner ScrollView (it's in a non-month
+        // conditional branch), and switching back remounts it at scroll-top
+        // (midnight). Keying this effect on viewMode keeps the 7AM landing
+        // consistent across view re-entries. Gated to non-month so the timer
+        // doesn't fire pointlessly while the user is in Month view.
+        if (viewMode === 'month') return;
         const t = setTimeout(() => {
             gridScrollRef.current?.scrollTo({
                 y: DEFAULT_SCROLL_HOUR * HOUR_HEIGHT,
@@ -140,25 +366,244 @@ export default function CalendarScreen() {
             });
         }, 0);
         return () => clearTimeout(t);
-    }, []);
+    }, [viewMode]);
 
-    const weekLabel = `${format(weekStart, 'MMM d')} – ${format(addDays(weekStart, 6), 'MMM d, yyyy')}`;
+    // ─── Drag-to-create (web only) ──────────────────────────────────────────────
+    // Click + drag on an empty area of a day column creates an event with the dragged
+    // time range. Tap (no drag) creates a single 15-minute slot.
+    //
+    // Implementation: we attach native `pointerdown` to each day column's DOM node
+    // (react-native-web's View ref IS the underlying div). The handler bails when the
+    // click lands on an existing event/busy block — those carry data-cal-block via
+    // `dataSet`, and `closest()` catches the bubbled event regardless of z-index.
+    //
+    // During drag we render a translucent "ghost" preview inside the active column. On
+    // pointerup we router.push('/event/new', { date, startTime, endTime }) — the new
+    // route reads these params and pre-fills the form.
+    //
+    // Native (iOS/Android) handling deferred until we're on an EAS build. Pointer
+    // events don't translate cleanly through react-native-gesture-handler, and we'd
+    // want a long-press to start the drag anyway to avoid stealing taps.
+    type DragState = {
+        dayIndex: number;
+        startMins: number;
+        endMins: number;
+    };
+    const [dragState, setDragState] = useState<DragState | null>(null);
+    // Mirror of dragState in a ref so the pointer handlers can read the latest value
+    // synchronously without going through React's state-batching. We also need a
+    // synchronous read on pointerup so the navigation can fire OUTSIDE the React commit
+    // phase — `router.push` inside a setState updater triggers a "Cannot update a
+    // component while rendering a different component" warning because Navigation's
+    // setState lands during the calendar's render.
+    const dragStateRef = useRef<DragState | null>(null);
+    const setDrag = useCallback((next: DragState | null) => {
+        dragStateRef.current = next;
+        setDragState(next);
+    }, []);
+    const dayColRefs = useRef<Array<HTMLDivElement | null>>([]);
+    useEffect(() => {
+        // Trim stale refs when switching from Week (7) to Day (1) so the effect below
+        // doesn't try to attach to ghosts from the previous render.
+        dayColRefs.current.length = days.length;
+    }, [days.length]);
+
+    // QA-010: track an in-flight drag's window-level handlers so the outer
+    // effect's cleanup can detach them. Without this, switching viewMode /
+    // anchor / days mid-drag re-runs the effect, removes pointerdown but
+    // leaks the active pointermove/pointerup handlers — they keep firing
+    // against a stale `days` array and `rect`.
+    const activeDragHandlersRef = useRef<{
+        onMove: (e: PointerEvent) => void;
+        onUp: (e: PointerEvent) => void;
+    } | null>(null);
+
+    useEffect(() => {
+        if (Platform.OS !== 'web') return;
+        if (viewMode === 'month') return;
+        const cleanups: Array<() => void> = [];
+        dayColRefs.current.forEach((el, idx) => {
+            if (!el) return;
+            const onDown = (e: PointerEvent) => {
+                if (e.button !== 0) return; // left button only
+                const target = e.target as HTMLElement | null;
+                if (target?.closest('[data-cal-block]')) return; // landed on event/busy
+                e.preventDefault();
+                const rect = el.getBoundingClientRect();
+                const y0 = e.clientY - rect.top;
+                const startMins = snapMinutes(yToMinutes(y0));
+                setDrag({
+                    dayIndex: idx,
+                    startMins,
+                    endMins: startMins + DRAG_SNAP_MIN,
+                });
+                const onMove = (ev: PointerEvent) => {
+                    const prev = dragStateRef.current;
+                    if (!prev) return;
+                    const y = ev.clientY - rect.top;
+                    const m = snapMinutes(yToMinutes(y));
+                    setDrag({
+                        ...prev,
+                        endMins: Math.max(prev.startMins + DRAG_SNAP_MIN, m),
+                    });
+                };
+                const onUp = () => {
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                    activeDragHandlersRef.current = null;
+                    // Snapshot final state from the ref, clear, THEN navigate. The
+                    // navigation must happen outside the setState callback to keep
+                    // Navigation's own setState from running inside this component's
+                    // commit phase.
+                    const curr = dragStateRef.current;
+                    setDrag(null);
+                    if (curr) {
+                        const day = days[curr.dayIndex];
+                        if (day) {
+                            router.push({
+                                pathname: '/event/new',
+                                params: {
+                                    date: format(day, 'yyyy-MM-dd'),
+                                    startTime: minutesToHHmm(curr.startMins),
+                                    endTime: minutesToHHmm(curr.endMins),
+                                },
+                            });
+                        }
+                    }
+                };
+                activeDragHandlersRef.current = { onMove, onUp };
+                window.addEventListener('pointermove', onMove);
+                window.addEventListener('pointerup', onUp);
+            };
+            el.addEventListener('pointerdown', onDown);
+            cleanups.push(() => el.removeEventListener('pointerdown', onDown));
+        });
+        return () => {
+            cleanups.forEach((c) => c());
+            // Detach the in-flight drag's window listeners on view change so
+            // they don't fire against stale `days` / `rect` data once the
+            // effect closure goes out of scope (QA-010).
+            const active = activeDragHandlersRef.current;
+            if (active) {
+                window.removeEventListener('pointermove', active.onMove);
+                window.removeEventListener('pointerup', active.onUp);
+                activeDragHandlersRef.current = null;
+                setDrag(null);
+            }
+        };
+    }, [days, viewMode, router, setDrag]);
+
+    // ─── Native press-and-hold to create (UX-005 + UX-017) ─────────────────────
+    // Drag-to-create is web-only (the pointer-events API doesn't translate cleanly
+    // to react-native-gesture-handler without an EAS build). On native we give the
+    // user the closest equivalent: PRESS AND HOLD an empty spot on a day column
+    // (~500 ms) and we open /event/new with the day's date + a start time snapped
+    // to the nearest 15-min slot under the touch.
+    //
+    // UX-017: the initial tap-to-fire was too eager — a stray finger touch while
+    // scrolling the grid would route into /event/new for an event the user never
+    // wanted. Long-press is the standard mobile "I really mean this" affordance:
+    // it filters out scroll-through taps and accidental brushes, while still
+    // giving native users a meaningful way to create at a specific time.
+    // A plain tap on empty space now does nothing — matches the convention that
+    // a tap on the grid is a "look at this slot" gesture, not a destructive one.
+    // Event blocks + busy blocks are their own Pressables, so they still consume
+    // taps for navigation before this fallback fires.
+    const handleDayColumnTapNative = useCallback(
+        (day: Date, locationY: number) => {
+            const startMins = snapMinutes(yToMinutes(locationY));
+            const endMins = startMins + DRAG_SNAP_MIN;
+            router.push({
+                pathname: '/event/new',
+                params: {
+                    date: format(day, 'yyyy-MM-dd'),
+                    startTime: minutesToHHmm(startMins),
+                    endTime: minutesToHHmm(endMins),
+                },
+            });
+        },
+        [router],
+    );
+
+    // Header label is view-specific:
+    //   - day:   "Tuesday, May 22, 2026"
+    //   - week:  "May 17 – May 23, 2026"
+    //   - month: "May 2026"
+    const headerLabel = useMemo(() => {
+        if (viewMode === 'day') {
+            return format(days[0], 'EEEE, MMM d, yyyy');
+        }
+        if (viewMode === 'week') {
+            const last = days[days.length - 1];
+            return `${format(days[0], 'MMM d')} – ${format(last, 'MMM d, yyyy')}`;
+        }
+        return format(anchor, 'MMMM yyyy');
+    }, [viewMode, days, anchor]);
+
+    // Step forward/back by the view-appropriate unit.
+    const stepBack = useCallback(() => {
+        if (viewMode === 'day') setAnchor((a) => addDays(a, -1));
+        else if (viewMode === 'week') setAnchor((a) => subWeeks(a, 1));
+        else setAnchor((a) => subMonths(a, 1));
+    }, [viewMode]);
+    const stepForward = useCallback(() => {
+        if (viewMode === 'day') setAnchor((a) => addDays(a, 1));
+        else if (viewMode === 'week') setAnchor((a) => addWeeks(a, 1));
+        else setAnchor((a) => addMonths(a, 1));
+    }, [viewMode]);
+    const jumpToToday = useCallback(() => setAnchor(new Date()), []);
+
     const hasAllDay = allDayEvents.length > 0;
 
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe}>
                 <View style={styles.header}>
+                    {/* Day / Week / Month pill toggle. Lives above the nav row so it's the
+                        first thing the eye lands on and so the nav-arrow step semantics
+                        are clearly tied to it. */}
+                    <View style={styles.viewToggleRow}>
+                        {VIEW_MODES.map((mode) => {
+                            const selected = viewMode === mode;
+                            return (
+                                <Pressable
+                                    key={mode}
+                                    onPress={() => setViewMode(mode)}
+                                    style={({ pressed }) => [
+                                        styles.viewToggleChip,
+                                        {
+                                            borderColor: colors.backgroundSelected,
+                                            backgroundColor: selected
+                                                ? '#6F7FA5'
+                                                : 'transparent',
+                                        },
+                                        pressed && styles.pressed,
+                                    ]}>
+                                    <ThemedText
+                                        type="small"
+                                        style={{
+                                            color: selected ? '#fff' : colors.text,
+                                            fontWeight: '600',
+                                            textTransform: 'capitalize',
+                                        }}>
+                                        {mode}
+                                    </ThemedText>
+                                </Pressable>
+                            );
+                        })}
+                    </View>
                     <View style={styles.headerRow}>
                         <Pressable
-                            onPress={() => setWeekStart(subWeeks(weekStart, 1))}
+                            onPress={stepBack}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Previous ${viewMode}`}
                             style={({ pressed }) => [styles.navBtn, pressed && styles.pressed]}>
                             <ThemedText themeColor="textSecondary" type="subtitle">
                                 ‹
                             </ThemedText>
                         </Pressable>
                         <View style={styles.headerTitle}>
-                            <ThemedText type="smallBold">{weekLabel}</ThemedText>
+                            <ThemedText type="smallBold">{headerLabel}</ThemedText>
                             {household ? (
                                 <ThemedText themeColor="textSecondary" type="small">
                                     {household.name}
@@ -166,7 +611,9 @@ export default function CalendarScreen() {
                             ) : null}
                         </View>
                         <Pressable
-                            onPress={() => setWeekStart(addWeeks(weekStart, 1))}
+                            onPress={stepForward}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Next ${viewMode}`}
                             style={({ pressed }) => [styles.navBtn, pressed && styles.pressed]}>
                             <ThemedText themeColor="textSecondary" type="subtitle">
                                 ›
@@ -174,7 +621,7 @@ export default function CalendarScreen() {
                         </Pressable>
                     </View>
                     <Pressable
-                        onPress={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 0 }))}
+                        onPress={jumpToToday}
                         style={({ pressed }) => [styles.todayBtn, pressed && styles.pressed]}>
                         <ThemedText themeColor="textSecondary" type="small">
                             Jump to today
@@ -182,6 +629,294 @@ export default function CalendarScreen() {
                     </Pressable>
                 </View>
 
+                {/* Per-child filter pill row. Hidden for households with no kids — there's
+                    nothing to filter by. "All" stays selected by default. Household-wide
+                    events (no child tags) stay visible no matter which kid is selected. */}
+                {children && children.length > 0 ? (
+                    <View style={styles.filterScrollWrapper}>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        // flexGrow:0 stops react-native-web from letting this horizontal
+                        // ScrollView consume the column's leftover vertical space (without it
+                        // the filter row would push the calendar grid halfway down the screen).
+                        style={styles.filterScroll}
+                        contentContainerStyle={styles.filterRow}
+                        onContentSizeChange={childFilterOverflow.onContentSizeChange}
+                        onLayout={childFilterOverflow.onLayout}
+                        onScroll={childFilterOverflow.onScroll}
+                        scrollEventThrottle={32}>
+                        <Pressable
+                            onPress={() => setChildFilter(null)}
+                            style={({ pressed }) => [
+                                styles.filterChip,
+                                {
+                                    borderColor: colors.backgroundSelected,
+                                    backgroundColor:
+                                        childFilter === null
+                                            ? '#6F7FA5'
+                                            : 'transparent',
+                                },
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                type="small"
+                                style={{
+                                    color: childFilter === null ? '#fff' : colors.text,
+                                    fontWeight: '600',
+                                }}>
+                                All
+                            </ThemedText>
+                        </Pressable>
+                        {children.map((c) => {
+                            const selected = childFilter === c.id;
+                            return (
+                                <Pressable
+                                    key={c.id}
+                                    onPress={() => setChildFilter(c.id)}
+                                    style={({ pressed }) => [
+                                        styles.filterChip,
+                                        {
+                                            borderColor: c.color,
+                                            backgroundColor: selected
+                                                ? c.color
+                                                : 'transparent',
+                                        },
+                                        pressed && styles.pressed,
+                                    ]}>
+                                    <ChildBadge
+                                        name={c.display_name}
+                                        color={c.color}
+                                        size="sm"
+                                    />
+                                    <ThemedText
+                                        type="small"
+                                        style={{
+                                            color: colors.text,
+                                            fontWeight: '500',
+                                        }}>
+                                        {c.display_name}
+                                    </ThemedText>
+                                </Pressable>
+                            );
+                        })}
+                    </ScrollView>
+                    <ScrollOverflowChevron
+                        visible={childFilterOverflow.showLeftIndicator}
+                        side="left"
+                    />
+                    <ScrollOverflowChevron
+                        visible={childFilterOverflow.showRightIndicator}
+                        side="right"
+                    />
+                    </View>
+                ) : null}
+
+                {viewMode === 'month' ? (
+                    // ─── Month grid ─────────────────────────────────────────────
+                    // 7 columns (Sun–Sat) × 6 rows (always 42 cells, even for short
+                    // months — keeps row height steady when stepping forward/back).
+                    // Each cell shows the day number + up to 3 dots colored by the
+                    // resolved-responsible parent of that day's events + a "+N" if
+                    // there are more. Out-of-month cells are dimmed but still
+                    // clickable so a misclick can still navigate.
+                    <ScrollView
+                        style={styles.monthScroll}
+                        // flexGrow:1 on the content container lets the inner grid claim
+                        // the full vertical space the ScrollView is given. Without it,
+                        // the rows hug their minHeight and leave acres of empty space
+                        // on tall desktop windows. The ScrollView still kicks in if the
+                        // grid's minHeight total exceeds a short viewport.
+                        contentContainerStyle={styles.monthScrollContent}
+                        showsVerticalScrollIndicator={false}>
+                        <View style={styles.monthGrid}>
+                            <View
+                                style={[
+                                    styles.monthDowRow,
+                                    { borderBottomColor: colors.backgroundSelected },
+                                ]}>
+                                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(
+                                    (d) => (
+                                        <View key={d} style={styles.monthDowCell}>
+                                            <ThemedText
+                                                type="small"
+                                                themeColor="textSecondary">
+                                                {d}
+                                            </ThemedText>
+                                        </View>
+                                    ),
+                                )}
+                            </View>
+                            {[0, 1, 2, 3, 4, 5].map((rowIdx) => (
+                                <View
+                                    key={rowIdx}
+                                    style={[
+                                        styles.monthRow,
+                                        { borderBottomColor: colors.backgroundSelected },
+                                    ]}>
+                                    {days
+                                        .slice(rowIdx * 7, rowIdx * 7 + 7)
+                                        .map((day) => {
+                                            const dayKey = format(day, 'yyyy-MM-dd');
+                                            const dayEvents =
+                                                eventsByDay.get(dayKey) ?? [];
+                                            const inMonth = isSameMonth(day, anchor);
+                                            const dayIsToday = isToday(day);
+                                            // Past days get dimmed to push the user's
+                                            // attention to today and the future. Today
+                                            // and future stay full opacity.
+                                            const isPast = isBefore(
+                                                day,
+                                                startOfDay(new Date()),
+                                            );
+                                            const visible = dayEvents.slice(0, 3);
+                                            const overflow = Math.max(
+                                                0,
+                                                dayEvents.length - 3,
+                                            );
+                                            return (
+                                                <Pressable
+                                                    key={dayKey}
+                                                    onPress={() => {
+                                                        // Drill into Day view for the
+                                                        // clicked cell. Both updates
+                                                        // are batched so the days
+                                                        // memo re-derives once.
+                                                        setAnchor(day);
+                                                        setViewMode('day');
+                                                    }}
+                                                    accessibilityRole="button"
+                                                    accessibilityLabel={`${format(day, 'EEEE, MMMM d')}, ${dayEvents.length} event${dayEvents.length === 1 ? '' : 's'}`}
+                                                    style={({ pressed }) => [
+                                                        styles.monthCell,
+                                                        {
+                                                            borderRightColor:
+                                                                colors.backgroundSelected,
+                                                        },
+                                                        dayIsToday && {
+                                                            backgroundColor:
+                                                                colors.backgroundElement,
+                                                        },
+                                                        isPast &&
+                                                            !dayIsToday && {
+                                                                opacity: 0.55,
+                                                            },
+                                                        pressed && styles.pressed,
+                                                    ]}>
+                                                    <ThemedText
+                                                        type="small"
+                                                        style={[
+                                                            styles.monthCellDayNum,
+                                                            {
+                                                                color: dayIsToday
+                                                                    ? '#6F7FA5'
+                                                                    : inMonth
+                                                                      ? colors.text
+                                                                      : colors.textSecondary,
+                                                                fontWeight: dayIsToday
+                                                                    ? '700'
+                                                                    : '500',
+                                                                opacity: inMonth
+                                                                    ? 1
+                                                                    : 0.5,
+                                                            },
+                                                        ]}>
+                                                        {format(day, 'd')}
+                                                    </ThemedText>
+                                                    <View
+                                                        style={styles.monthCellEvents}>
+                                                        {visible.map((e) => {
+                                                            const responsible =
+                                                                resolveResponsibleProfileId(
+                                                                    {
+                                                                        event: e,
+                                                                        occurrenceDate:
+                                                                            new Date(
+                                                                                e.starts_at,
+                                                                            ),
+                                                                        custodySchedule,
+                                                                        custodyOverrides:
+                                                                            overrideMap,
+                                                                        occurrenceOverrides:
+                                                                            occurrenceOverrideMap,
+                                                                    },
+                                                                );
+                                                            const c = colorForResponsible(
+                                                                responsible,
+                                                                colorMap,
+                                                            );
+                                                            // Time prefix for timed events
+                                                            // helps the user disambiguate
+                                                            // two events on the same day.
+                                                            // All-day events skip the
+                                                            // prefix.
+                                                            const startTime = e.all_day
+                                                                ? null
+                                                                : format(
+                                                                      new Date(e.starts_at),
+                                                                      'h:mma',
+                                                                  )
+                                                                      .toLowerCase()
+                                                                      .replace(':00', '');
+                                                            return (
+                                                                <View
+                                                                    key={`${e.id}-${e.starts_at}`}
+                                                                    style={[
+                                                                        styles.monthEventPill,
+                                                                        {
+                                                                            backgroundColor:
+                                                                                c,
+                                                                            opacity:
+                                                                                inMonth
+                                                                                    ? 1
+                                                                                    : 0.45,
+                                                                        },
+                                                                    ]}>
+                                                                    <ThemedText
+                                                                        style={
+                                                                            styles.monthEventPillText
+                                                                        }
+                                                                        numberOfLines={1}>
+                                                                        {startTime
+                                                                            ? `${startTime} `
+                                                                            : ''}
+                                                                        {iconForType(
+                                                                            e.event_type,
+                                                                        )}
+                                                                        {iconForType(
+                                                                            e.event_type,
+                                                                        )
+                                                                            ? ' '
+                                                                            : ''}
+                                                                        {e.title}
+                                                                    </ThemedText>
+                                                                </View>
+                                                            );
+                                                        })}
+                                                        {overflow > 0 ? (
+                                                            <ThemedText
+                                                                style={[
+                                                                    styles.monthOverflow,
+                                                                    {
+                                                                        color: colors.textSecondary,
+                                                                        opacity: inMonth
+                                                                            ? 1
+                                                                            : 0.5,
+                                                                    },
+                                                                ]}>
+                                                                +{overflow} more
+                                                            </ThemedText>
+                                                        ) : null}
+                                                    </View>
+                                                </Pressable>
+                                            );
+                                        })}
+                                </View>
+                            ))}
+                        </View>
+                    </ScrollView>
+                ) : (
+                    <>
                 <View
                     style={[
                         styles.dayHeaderRow,
@@ -190,12 +925,17 @@ export default function CalendarScreen() {
                     <View style={{ width: TIME_COLUMN_WIDTH }} />
                     {days.map((day) => {
                         const dayIsToday = isToday(day);
+                        // Past day headers dim to ~55% opacity so the user's eye lands
+                        // on today + the upcoming week. Today + future stay full
+                        // contrast.
+                        const isPast = isBefore(day, startOfDay(new Date()));
                         return (
                             <View
                                 key={day.toISOString()}
                                 style={[
                                     styles.dayLabel,
                                     dayIsToday && { backgroundColor: colors.backgroundElement },
+                                    isPast && !dayIsToday && { opacity: 0.55 },
                                 ]}>
                                 <ThemedText
                                     type="small"
@@ -243,12 +983,30 @@ export default function CalendarScreen() {
                                         { backgroundColor: c },
                                         pressed && styles.pressed,
                                     ]}>
-                                    <ThemedText
-                                        style={styles.custodyCellText}
-                                        numberOfLines={1}>
-                                        {resolved.isOverride ? '↻ ' : '👶 '}
-                                        {firstName}
-                                    </ThemedText>
+                                    {/* Custody glyph parity with Home (UX-006):
+                                        Feather user icon for default, "↻" for
+                                        overrides. Inline with the first name so
+                                        the whole pill stays under one line. */}
+                                    {resolved.isOverride ? (
+                                        <ThemedText
+                                            style={styles.custodyCellText}
+                                            numberOfLines={1}>
+                                            ↻ {firstName}
+                                        </ThemedText>
+                                    ) : (
+                                        <View style={styles.custodyCellInner}>
+                                            <Feather
+                                                name="user"
+                                                size={11}
+                                                color="#fff"
+                                            />
+                                            <ThemedText
+                                                style={styles.custodyCellText}
+                                                numberOfLines={1}>
+                                                {firstName}
+                                            </ThemedText>
+                                        </View>
+                                    )}
                                 </Pressable>
                             );
                         })}
@@ -268,38 +1026,97 @@ export default function CalendarScreen() {
                         </View>
                         {days.map((day) => (
                             <View key={day.toISOString()} style={styles.allDayCell}>
-                                {eventsForDay(allDayEvents, day).map((event) => (
+                                {allDayEventsForDay(allDayEvents, day).map((event) => {
+                                    const occurrenceDate = new Date(event.starts_at);
+                                    const resolvedResponsible = resolveResponsibleProfileId({
+                                        event,
+                                        occurrenceDate,
+                                        custodySchedule,
+                                        custodyOverrides: overrideMap,
+                                        occurrenceOverrides: occurrenceOverrideMap,
+                                    });
+                                    return (
                                     <Pressable
                                         key={`${event.id}-${event.starts_at}`}
                                         onPress={() =>
                                             router.push({
                                                 pathname: '/event/[id]',
-                                                params: { id: event.id },
+                                                params: {
+                                                    id: event.id,
+                                                    // Pass the occurrence's date so the edit
+                                                    // screen knows which instance was clicked.
+                                                    // For one-off events this is identical to
+                                                    // the event's start date and is harmless.
+                                                    date: format(occurrenceDate, 'yyyy-MM-dd'),
+                                                },
                                             })
                                         }
                                         style={({ pressed }) => [
                                             styles.allDayChip,
                                             {
                                                 backgroundColor: colorForResponsible(
-                                                    event.responsible_profile_id,
+                                                    resolvedResponsible,
                                                     colorMap,
                                                 ),
                                             },
                                             pressed && styles.pressed,
                                         ]}>
-                                        <ThemedText
-                                            type="small"
-                                            style={styles.allDayChipText}
-                                            numberOfLines={1}>
-                                            {iconForType(event.event_type)}
-                                            {iconForType(event.event_type) ? ' ' : ''}
-                                            {event.title}
-                                            {event.description ? ' 📝' : ''}
-                                        </ThemedText>
+                                        <View style={styles.allDayChipRow}>
+                                            <ThemedText
+                                                type="small"
+                                                style={[styles.allDayChipText, { flex: 1 }]}
+                                                numberOfLines={1}>
+                                                {iconForType(event.event_type)}
+                                                {iconForType(event.event_type) ? ' ' : ''}
+                                                {event.title}
+                                                {event.description ? ' 📝' : ''}
+                                            </ThemedText>
+                                            <EventChildBadges
+                                                allChildren={children ?? []}
+                                                childIds={event.child_ids}
+                                                size="sm"
+                                                maxVisible={2}
+                                            />
+                                        </View>
                                     </Pressable>
-                                ))}
+                                    );
+                                })}
                             </View>
                         ))}
+                    </View>
+                ) : null}
+
+                {/* UX-022: empty-state banner above the grid when the visible
+                    range has zero events. Previously gated to Day view only — a
+                    new user defaulting to Week view (or browsing to a quiet
+                    Month) saw a bare grid with no guidance. Banner copy adapts
+                    per view so "Nothing scheduled this week" reads better than
+                    a bare "Nothing scheduled". Drag-to-create / tap-to-create
+                    still work on the grid below; the banner just acknowledges
+                    the emptiness and surfaces the create affordance for users
+                    who don't notice the FAB. */}
+                {visibleEvents.length === 0 ? (
+                    <View
+                        style={[
+                            styles.dayEmptyBanner,
+                            { borderBottomColor: colors.backgroundSelected },
+                        ]}>
+                        <ThemedText themeColor="textSecondary" type="small">
+                            {viewMode === 'day'
+                                ? 'Nothing scheduled.'
+                                : viewMode === 'week'
+                                  ? 'Nothing scheduled this week.'
+                                  : 'Nothing scheduled this month.'}{' '}
+                            {Platform.OS === 'web'
+                                ? 'Drag on the grid to add an event, or tap'
+                                : 'Press and hold a time slot to add an event, or tap'}{' '}
+                            <ThemedText
+                                onPress={() => router.push('/event/new')}
+                                style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                + new event
+                            </ThemedText>
+                            .
+                        </ThemedText>
                     </View>
                 ) : null}
 
@@ -334,18 +1151,64 @@ export default function CalendarScreen() {
                                 ))}
                             </View>
 
-                            {days.map((day) => {
+                            {days.map((day, dayIdx) => {
                                 const dayIsToday = isToday(day);
+                                // Past-day dim mirrors the day-header row above so the
+                                // whole column reads as "already happened, here for
+                                // reference but not where your attention should be."
+                                const isPast = isBefore(day, startOfDay(new Date()));
                                 const dayTimed = eventsForDay(timedEvents, day);
+                                const draggingThisDay =
+                                    dragState && dragState.dayIndex === dayIdx;
+                                // UX-005: on native we render the column as a Pressable so
+                                // empty-area taps route to /event/new with a snapped time.
+                                // On web it stays a View — the drag-to-create effect attaches
+                                // pointerdown directly to the DOM ref, and we don't want a
+                                // Pressable's synthetic click double-firing after a drag.
+                                const Wrapper: typeof View | typeof Pressable =
+                                    Platform.OS === 'web' ? View : Pressable;
+                                const wrapperProps =
+                                    Platform.OS === 'web'
+                                        ? {
+                                              ref: (el: unknown) => {
+                                                  dayColRefs.current[dayIdx] =
+                                                      (el as HTMLDivElement | null) ?? null;
+                                              },
+                                          }
+                                        : {
+                                              // UX-017: press-and-hold instead of plain
+                                              // tap — see handleDayColumnTapNative comment.
+                                              onLongPress: (e: {
+                                                  nativeEvent: { locationY: number };
+                                              }) =>
+                                                  handleDayColumnTapNative(
+                                                      day,
+                                                      e.nativeEvent.locationY,
+                                                  ),
+                                              // ~500ms felt right in informal mobile usage:
+                                              // long enough to disqualify accidental brushes,
+                                              // short enough to feel intentional.
+                                              delayLongPress: 500,
+                                              accessibilityRole: 'button' as const,
+                                              accessibilityLabel: `Press and hold to add an event on ${format(day, 'EEEE, MMMM d')}`,
+                                          };
                                 return (
-                                    <View
+                                    <Wrapper
                                         key={day.toISOString()}
+                                        {...(wrapperProps as object)}
                                         style={[
                                             styles.dayColumn,
                                             { borderRightColor: colors.backgroundSelected },
                                             dayIsToday && {
                                                 backgroundColor: colors.backgroundElement,
                                             },
+                                            isPast &&
+                                                !dayIsToday && { opacity: 0.55 },
+                                            // Crosshair cursor on web hints "drag here". On
+                                            // native this style is ignored.
+                                            Platform.OS === 'web'
+                                                ? ({ cursor: 'crosshair' } as object)
+                                                : null,
                                         ]}>
                                         {HOURS.map((h) => (
                                             <View
@@ -376,6 +1239,10 @@ export default function CalendarScreen() {
                                             return (
                                                 <View
                                                     key={`busy-${ext.id}`}
+                                                    // Marked so the drag-to-create handler
+                                                    // bails when the user clicks on a busy
+                                                    // block instead of empty space.
+                                                    {...CAL_BLOCK_DATASET}
                                                     style={[styles.busyBlock, { top, height }]}>
                                                     <ThemedText
                                                         style={styles.busyBlockText}
@@ -412,6 +1279,10 @@ export default function CalendarScreen() {
                                             return (
                                                 <View
                                                     key={`other-busy-${b.profile_id}-${b.starts_at}`}
+                                                    // Marked so drag-to-create skips when
+                                                    // the user clicks on a member's busy
+                                                    // window instead of empty space.
+                                                    {...CAL_BLOCK_DATASET}
                                                     style={[
                                                         styles.otherBusyBlock,
                                                         {
@@ -444,18 +1315,47 @@ export default function CalendarScreen() {
                                                 (durationMins / 60) * HOUR_HEIGHT,
                                                 22,
                                             );
+                                            // Resolve the effective responsible parent for
+                                            // THIS occurrence — accounts for alternation
+                                            // (looking up the custody schedule) and any
+                                            // per-occurrence override row.
+                                            const resolvedResponsible = resolveResponsibleProfileId({
+                                                event,
+                                                occurrenceDate: start,
+                                                custodySchedule,
+                                                custodyOverrides: overrideMap,
+                                                occurrenceOverrides: occurrenceOverrideMap,
+                                            });
                                             const bg = colorForResponsible(
-                                                event.responsible_profile_id,
+                                                resolvedResponsible,
                                                 colorMap,
                                             );
                                             const hasNote = !!event.description;
+                                            // Recurring + end-date check — show "ends MMM d"
+                                            // on the block so the user can see series
+                                            // boundaries at a glance. parseRecurrence is
+                                            // pure (parses the rrule string), no fetches.
+                                            const parsedRec = event.recurrence_rule
+                                                ? parseRecurrence(event.recurrence_rule)
+                                                : null;
+                                            const untilLabel =
+                                                parsedRec?.until
+                                                    ? `ends ${format(parseISO(parsedRec.until), 'MMM d')}`
+                                                    : null;
                                             return (
                                                 <Pressable
                                                     key={`${event.id}-${event.starts_at}`}
+                                                    // data-cal-block tells the drag-to-create
+                                                    // handler to bail when the user clicks on
+                                                    // this event rather than empty space.
+                                                    {...CAL_BLOCK_DATASET}
                                                     onPress={() =>
                                                         router.push({
                                                             pathname: '/event/[id]',
-                                                            params: { id: event.id },
+                                                            params: {
+                                                                id: event.id,
+                                                                date: format(start, 'yyyy-MM-dd'),
+                                                            },
                                                         })
                                                     }
                                                     style={({ pressed }) => [
@@ -463,14 +1363,25 @@ export default function CalendarScreen() {
                                                         { top, height, backgroundColor: bg },
                                                         pressed && styles.pressed,
                                                     ]}>
-                                                    <ThemedText
-                                                        type="small"
-                                                        style={styles.eventTitle}
-                                                        numberOfLines={1}>
-                                                        {iconForType(event.event_type)}
-                                                        {iconForType(event.event_type) ? ' ' : ''}
-                                                        {event.title}
-                                                    </ThemedText>
+                                                    <View style={styles.eventTitleRow}>
+                                                        <ThemedText
+                                                            type="small"
+                                                            style={[
+                                                                styles.eventTitle,
+                                                                { flex: 1 },
+                                                            ]}
+                                                            numberOfLines={1}>
+                                                            {iconForType(event.event_type)}
+                                                            {iconForType(event.event_type) ? ' ' : ''}
+                                                            {event.title}
+                                                        </ThemedText>
+                                                        <EventChildBadges
+                                                            allChildren={children ?? []}
+                                                            childIds={event.child_ids}
+                                                            size="sm"
+                                                            maxVisible={2}
+                                                        />
+                                                    </View>
                                                     {height >= 36 ? (
                                                         <ThemedText
                                                             type="small"
@@ -479,22 +1390,69 @@ export default function CalendarScreen() {
                                                             {format(start, 'h:mm a')} – {format(end, 'h:mm a')}
                                                         </ThemedText>
                                                     ) : null}
+                                                    {/* "↻ ends MMM d" on recurring events
+                                                        that have an end date. Lives below
+                                                        the time row when the block is tall
+                                                        enough (≥ 1 hour); on short blocks
+                                                        we skip it to avoid crowding. */}
+                                                    {untilLabel && height >= 56 ? (
+                                                        <ThemedText
+                                                            type="small"
+                                                            style={styles.eventUntil}
+                                                            numberOfLines={1}>
+                                                            ↻ {untilLabel}
+                                                        </ThemedText>
+                                                    ) : null}
                                                     {hasNote ? (
                                                         <ThemedText style={styles.noteIcon}>📝</ThemedText>
                                                     ) : null}
                                                 </Pressable>
                                             );
                                         })}
-                                    </View>
+
+                                        {/* Drag-to-create ghost preview. Rendered on top
+                                            of empty space (zIndex 3) so the user sees
+                                            exactly the range that will get pre-filled in
+                                            the event form when they release. */}
+                                        {draggingThisDay ? (
+                                            <View
+                                                style={[
+                                                    styles.ghostBlock,
+                                                    // pointerEvents on style (was a prop) so taps fall through
+                                                    { pointerEvents: 'none' },
+                                                    {
+                                                        top:
+                                                            (dragState!.startMins / 60) *
+                                                            HOUR_HEIGHT,
+                                                        height:
+                                                            ((dragState!.endMins -
+                                                                dragState!.startMins) /
+                                                                60) *
+                                                            HOUR_HEIGHT,
+                                                    },
+                                                ]}>
+                                                <ThemedText
+                                                    style={styles.ghostText}
+                                                    numberOfLines={1}>
+                                                    {minutesToHHmm(dragState!.startMins)} –{' '}
+                                                    {minutesToHHmm(dragState!.endMins)}
+                                                </ThemedText>
+                                            </View>
+                                        ) : null}
+                                    </Wrapper>
                                 );
                             })}
                         </View>
                     </ScrollView>
                 )}
+                    </>
+                )}
             </SafeAreaView>
 
             <Pressable
                 onPress={() => router.push('/event/new')}
+                accessibilityRole="button"
+                accessibilityLabel="New event"
                 style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
                 <ThemedText style={styles.fabText}>+</ThemedText>
             </Pressable>
@@ -515,6 +1473,82 @@ const styles = StyleSheet.create({
     headerTitle: { flex: 1, alignItems: 'center' },
     navBtn: { paddingHorizontal: Spacing.three, paddingVertical: Spacing.one },
     todayBtn: { alignSelf: 'center' },
+    // View toggle row sits above the nav row. flex-row + center alignment keeps the
+    // three chips visually grouped as a single segmented control.
+    viewToggleRow: {
+        flexDirection: 'row',
+        gap: Spacing.two,
+        alignSelf: 'center',
+    },
+    viewToggleChip: {
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: Spacing.three,
+        paddingVertical: 4,
+    },
+    // Day-view empty banner: a single padded line between the all-day row and the
+    // time grid. Border-bottom keeps the visual hierarchy consistent with the other
+    // header rows above the grid.
+    dayEmptyBanner: {
+        paddingHorizontal: Spacing.four,
+        paddingVertical: Spacing.two,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    // ─── Month view ────────────────────────────────────────────────────────────
+    // Vertical scroll wraps the grid so phone heights with tall headers still see
+    // the full 6 rows. On wider screens the contentContainerStyle below lets the
+    // grid claim the full available height and the rows flex evenly.
+    monthScroll: { flex: 1 },
+    monthScrollContent: { flexGrow: 1 },
+    monthGrid: { flex: 1 },
+    monthDowRow: {
+        flexDirection: 'row',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    monthDowCell: {
+        flex: 1,
+        alignItems: 'center',
+        paddingVertical: Spacing.two,
+    },
+    monthRow: {
+        flex: 1,
+        flexDirection: 'row',
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        // Floor for cramped viewports — if the 6 rows together exceed the viewport
+        // (very short window or many other UI chrome), the ScrollView lets the user
+        // scroll instead of squishing rows into illegibility.
+        minHeight: 60,
+    },
+    // Each day cell. Right border draws the column dividers; the bottom border
+    // comes from monthRow above. The cell takes the row's full height via flex.
+    monthCell: {
+        flex: 1,
+        borderRightWidth: StyleSheet.hairlineWidth,
+        padding: 4,
+        gap: 2,
+    },
+    monthCellDayNum: { fontSize: 13 },
+    // Vertical stack of event title pills + overflow count. Switched from
+    // colored dots to thin colored title pills so users can see what's on each
+    // day at a glance — dots-only required tapping into Day view to identify
+    // anything. Caps at 3 visible pills + "+N more" so a busy day doesn't
+    // explode the row height.
+    monthCellEvents: {
+        flexDirection: 'column',
+        gap: 2,
+        flexShrink: 1,
+    },
+    monthEventPill: {
+        paddingHorizontal: 4,
+        paddingVertical: 1,
+        borderRadius: 3,
+    },
+    monthEventPillText: {
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: '600',
+    },
+    monthOverflow: { fontSize: 10, fontWeight: '600' },
     dayHeaderRow: {
         flexDirection: 'row',
         borderBottomWidth: StyleSheet.hairlineWidth,
@@ -544,6 +1578,9 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     custodyCellText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+    // Inner row used for the icon + name pair when there's no override symbol.
+    // Tight gap keeps the icon visually attached to the name in narrow cells.
+    custodyCellInner: { flexDirection: 'row', alignItems: 'center', gap: 3 },
     allDayRow: {
         flexDirection: 'row',
         minHeight: ALL_DAY_ROW_HEIGHT,
@@ -610,8 +1647,70 @@ const styles = StyleSheet.create({
     },
     otherBusyInitial: { fontSize: 10, fontWeight: '700' },
     eventTitle: { color: '#fff', fontSize: 12, fontWeight: '600' },
+    // Inline row that places ChildBadges before the event title in time-grid blocks.
+    // Mirror's allDayChipRow but defined here so the time-grid layout can adjust gap
+    // independently if we ever need to.
+    eventTitleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    allDayChipRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
+    // Filter pill row above the day-header row. Horizontal scroll so households with many
+    // kids don't get clipped; the View is kept tight vertically to avoid stealing too much
+    // screen height from the grid.
+    // The ScrollView wrapper around filterRow needs an explicit non-growing style on
+    // react-native-web. Without it, the horizontal ScrollView greedily fills its parent
+    // column's flex space and pushes the calendar grid halfway down the screen.
+    filterScroll: { flexGrow: 0, flexShrink: 0 },
+    // UX-010: relative-positioned wrapper so the overflow chevron pins to the
+    // filter strip's visible right edge.
+    filterScrollWrapper: { position: 'relative' },
+    filterRow: {
+        flexDirection: 'row',
+        gap: Spacing.two,
+        paddingHorizontal: Spacing.four,
+        paddingVertical: Spacing.two,
+        alignItems: 'center',
+    },
+    filterChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.one,
+        borderWidth: 1,
+        borderRadius: 999,
+        paddingHorizontal: Spacing.three,
+        paddingVertical: Spacing.one,
+    },
     eventTime: { color: '#fff', fontSize: 11, opacity: 0.9 },
-    noteIcon: { position: 'absolute', top: 2, right: 4, fontSize: 10 },
+    // "ends MMM d" line on recurring events with an UNTIL clause. Slightly dimmer
+    // than the time row so the eye still anchors on the time first.
+    eventUntil: { color: '#fff', fontSize: 10, opacity: 0.7, fontStyle: 'italic' },
+    // Drag-to-create ghost: dashed slate-blue outline, semi-translucent fill, no shadow.
+    // zIndex 3 places it above the event blocks (z=2) so the user sees it while dragging
+    // over existing events, and above busy blocks (z=1). pointerEvents="none" is set on
+    // the rendered View so the window-level pointermove keeps reaching this column.
+    ghostBlock: {
+        position: 'absolute',
+        left: 2,
+        right: 2,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderStyle: 'dashed',
+        borderColor: '#6F7FA5',
+        backgroundColor: 'rgba(111, 127, 165, 0.22)',
+        paddingHorizontal: 4,
+        paddingTop: 2,
+        zIndex: 3,
+    },
+    ghostText: { color: '#2A2E3A', fontSize: 11, fontWeight: '600' },
+    // Anchored to the bottom-right of the event block so it doesn't crowd the child-badge
+    // row at the top-right. Small fontSize keeps it from overlapping the time label.
+    noteIcon: { position: 'absolute', bottom: 2, right: 4, fontSize: 10 },
     fab: {
         position: 'absolute',
         right: Spacing.four,
@@ -622,11 +1721,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#6F7FA5',
         alignItems: 'center',
         justifyContent: 'center',
-        shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 4 },
-        elevation: 4,
+        ...FAB_SHADOW,
     },
     fabText: { color: '#fff', fontSize: 28, lineHeight: 32 },
     pressed: { opacity: 0.7 },

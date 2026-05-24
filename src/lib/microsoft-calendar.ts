@@ -2,6 +2,7 @@ import { addDays } from 'date-fns';
 
 import {
     deleteOwnedExternalEventsInRange,
+    getExternalCalendarTokens,
     touchExternalCalendarLastSynced,
     updateExternalCalendarTokens,
     upsertExternalEvents,
@@ -200,7 +201,16 @@ export async function syncMicrosoftCalendar(
         );
     }
 
-    let accessToken = calendar.encrypted_access_token;
+    // Tokens live in Vault (migration 0017). Fetch the decrypted pair via the
+    // SECURITY DEFINER RPC, which checks ownership internally.
+    const tokens = await getExternalCalendarTokens(calendar.id);
+    if (!tokens?.access_token) {
+        throw new MicrosoftAuthError(
+            'No access token on file for this calendar. Re-connect to grant access.',
+        );
+    }
+    let accessToken = tokens.access_token;
+    const refreshToken = tokens.refresh_token;
     const start = new Date();
     const end = addDays(start, horizonDays);
 
@@ -209,19 +219,18 @@ export async function syncMicrosoftCalendar(
         items = await listCalendarView(accessToken, start, end);
     } catch (err) {
         // On auth failure, try refreshing once before giving up.
-        if (err instanceof MicrosoftAuthError && calendar.encrypted_refresh_token) {
-            const refreshed = await refreshMicrosoftToken(
-                clientId,
-                calendar.encrypted_refresh_token,
-            );
+        if (err instanceof MicrosoftAuthError && refreshToken) {
+            const refreshed = await refreshMicrosoftToken(clientId, refreshToken);
             accessToken = refreshed.access_token;
             const expiresAt = new Date(
                 Date.now() + refreshed.expires_in * 1000,
             ).toISOString();
+            // Pass refresh_token only if Microsoft rotated it — null means "keep
+            // existing" inside the RPC.
             await updateExternalCalendarTokens(
                 calendar.id,
                 refreshed.access_token,
-                refreshed.refresh_token ?? calendar.encrypted_refresh_token,
+                refreshed.refresh_token ?? null,
                 expiresAt,
             );
             items = await listCalendarView(accessToken, start, end);

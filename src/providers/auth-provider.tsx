@@ -27,7 +27,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-            setSession(nextSession);
+            // Deduplicate: Supabase fires this event on web whenever the tab regains
+            // visibility (it does a "session recovery" check). If nothing meaningful
+            // changed — same user id and same access token — skip the setState. Without
+            // this guard, every tab-switch cascades through every hook that depends on
+            // `session`, briefly forcing isLoading=true and unmounting child routes.
+            setSession((prev) => {
+                const samePresence = !!prev === !!nextSession;
+                const sameUser = prev?.user?.id === nextSession?.user?.id;
+                const sameToken = prev?.access_token === nextSession?.access_token;
+                if (samePresence && sameUser && sameToken) return prev;
+                return nextSession;
+            });
             setIsLoading(false);
         });
 

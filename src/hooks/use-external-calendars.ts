@@ -4,13 +4,15 @@ import { getMyExternalCalendars, type ExternalCalendar } from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 
 export function useExternalCalendars() {
+    // Depend on user id, not the full session — see use-households.ts for the rationale.
     const { session } = useAuth();
+    const userId = session?.user?.id ?? null;
     const [calendars, setCalendars] = useState<ExternalCalendar[] | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
 
     const refetch = useCallback(async () => {
-        if (!session) {
+        if (!userId) {
             setCalendars(null);
             setIsLoading(false);
             return;
@@ -26,7 +28,7 @@ export function useExternalCalendars() {
         } finally {
             setIsLoading(false);
         }
-    }, [session]);
+    }, [userId]);
 
     useEffect(() => {
         refetch();

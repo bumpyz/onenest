@@ -5,21 +5,28 @@ import { getHouseholdBusyBlocks, type HouseholdBusyBlock } from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 
 /**
- * Returns all household members' opaque busy windows that overlap [weekStart, weekStart+7).
- * The underlying RPC runs as SECURITY DEFINER and returns no titles or descriptions —
- * just times + the owner's profile_id, which is enough to render colored "busy" overlays
- * for each parent without leaking what they're actually doing.
+ * Returns all household members' opaque busy windows that overlap
+ * [rangeStart, rangeStart + numDays). `numDays` defaults to 7 (week view); Day view passes
+ * 1 and a future Month view passes ~42. The underlying RPC runs as SECURITY DEFINER and
+ * returns no titles or descriptions — just times + the owner's profile_id, which is enough
+ * to render colored "busy" overlays for each parent without leaking what they're doing.
  */
-export function useHouseholdBusyBlocks(householdId: string | undefined, weekStart: Date) {
+export function useHouseholdBusyBlocks(
+    householdId: string | undefined,
+    rangeStart: Date,
+    numDays: number = 7,
+) {
+    // Depend on user id, not the full session — see use-households.ts for the rationale.
     const { session } = useAuth();
+    const userId = session?.user?.id ?? null;
     const [blocks, setBlocks] = useState<HouseholdBusyBlock[] | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
 
-    const weekEnd = useMemo(() => addDays(weekStart, 7), [weekStart]);
+    const rangeEnd = useMemo(() => addDays(rangeStart, numDays), [rangeStart, numDays]);
 
     const refetch = useCallback(async () => {
-        if (!session || !householdId) {
+        if (!userId || !householdId) {
             setBlocks(null);
             setIsLoading(false);
             return;
@@ -27,7 +34,7 @@ export function useHouseholdBusyBlocks(householdId: string | undefined, weekStar
         setIsLoading(true);
         setError(null);
         try {
-            const data = await getHouseholdBusyBlocks(householdId, weekStart, weekEnd);
+            const data = await getHouseholdBusyBlocks(householdId, rangeStart, rangeEnd);
             setBlocks(data);
         } catch (err) {
             setError(err instanceof Error ? err : new Error(String(err)));
@@ -35,7 +42,7 @@ export function useHouseholdBusyBlocks(householdId: string | undefined, weekStar
         } finally {
             setIsLoading(false);
         }
-    }, [session, householdId, weekStart, weekEnd]);
+    }, [userId, householdId, rangeStart, rangeEnd]);
 
     useEffect(() => {
         refetch();

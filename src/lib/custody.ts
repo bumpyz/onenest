@@ -1,6 +1,22 @@
 import { differenceInCalendarDays, format, parseISO } from 'date-fns';
+import { DateTime } from 'luxon';
 
 import type { CustodyOverride, CustodySchedule } from './db';
+
+/** QA-017: YYYY-MM-DD key for a date interpreted in the given IANA timezone.
+ *  Mirrors `dateKeyInTz` in supabase/functions/_shared/recurrence-resolver.ts
+ *  so the client and the sunday-summary edge function key custody lookups off
+ *  the same calendar date even when the viewer's device tz differs from the
+ *  event's tz. Falls back to local-time formatting when no tz is given (legacy
+ *  callers from the custody-band strip that pass a local-midnight Date with
+ *  no event context). */
+export function dateKeyInTz(date: Date, tz: string | null | undefined): string {
+    if (tz) {
+        const dt = DateTime.fromJSDate(date, { zone: 'utc' }).setZone(tz);
+        if (dt.isValid) return dt.toFormat('yyyy-MM-dd');
+    }
+    return format(date, 'yyyy-MM-dd');
+}
 
 // 'A' / 'B' refers to the two parents stored on the schedule as parent_a_profile_id /
 // parent_b_profile_id. Pattern presets are just A/B day arrays of cycle length 7 or 14.
@@ -121,13 +137,21 @@ export type ResolvedCustody = {
 
 /**
  * Returns the effective custodian for a date — checks overrides first, then the schedule pattern.
+ *
+ * QA-017: callers that have an event in hand (the responsible-parent resolver) pass
+ * `tz = event.timezone` so the override-map lookup keys off the event's wall-clock
+ * date, matching the Deno-side resolver in the sunday-summary edge function.
+ * Calendar UI callers (custody-band strip) keep the legacy local-time behavior by
+ * passing tz omitted/undefined — those operate on a local-midnight calendar Date
+ * directly, so there's no event tz to consider.
  */
 export function resolveCustodianOnDate(
     schedule: CustodySchedule,
     overrideMap: Map<string, CustodyOverride>,
     date: Date,
+    tz?: string | null,
 ): ResolvedCustody {
-    const dateKey = format(date, 'yyyy-MM-dd');
+    const dateKey = dateKeyInTz(date, tz);
     const override = overrideMap.get(dateKey) ?? null;
     if (override) {
         return {
