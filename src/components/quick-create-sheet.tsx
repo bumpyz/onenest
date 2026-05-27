@@ -23,6 +23,7 @@ import {
     StyleSheet,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily, Spacing } from '@/constants/theme';
@@ -42,6 +43,7 @@ export function QuickCreateSheet({
     const router = useRouter();
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
+    const insets = useSafeAreaInsets();
 
     // Blur the FAB that opened the sheet so the soon-to-be-aria-hidden
     // page behind doesn't retain DOM focus (Chromium aria-hidden warning).
@@ -104,7 +106,14 @@ export function QuickCreateSheet({
                 <View
                     style={[
                         styles.sheet,
-                        { backgroundColor: colors.background },
+                        {
+                            backgroundColor: colors.background,
+                            // Inset-aware home-indicator padding (audit
+                            // #330 HIGH #2). The static 30px paddingBottom
+                            // clipped iOS's gesture bar at 402×874; falls
+                            // back to 16px when no inset is reported.
+                            paddingBottom: 16 + insets.bottom,
+                        },
                     ]}>
                     {/* Drag handle */}
                     <View style={styles.dragHandleWrap}>
@@ -438,7 +447,9 @@ const styles = StyleSheet.create({
     sheet: {
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
-        paddingBottom: 30,
+        // paddingBottom is set inline via `insets.bottom` so the iOS
+        // home-indicator inset is honored on real devices (audit #330
+        // HIGH #2).
         // Sheet height is content-driven; max so it never covers the home
         // header (the dim-Home preview in the design hints at this — most
         // of the time the sheet sits around 60% of screen height).

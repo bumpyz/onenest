@@ -22,7 +22,12 @@ import { useAuth } from '@/providers/auth-provider';
 // is explicit, no internal react-navigation defaults to fight.
 //
 // Visual spec from design (CBottomNav in `direction-c-pro.jsx`):
-//   • Bar: height 80, padding '10px 16px 28px', border-top 0.5px hair
+//   • Bar: nominal height 80; design padding '10px 16px 28px' + 0.5px
+//     hair border. Real rendered height at 402×874 is ~97px native (the
+//     home-indicator safe-area inset adds to the bottom pad) and ~63px
+//     web (no safe-area inset). Anything that reserves FAB / scroll
+//     clearance should reference the actual rendered height, not the
+//     nominal 80 (audit #330 LOW #1).
 //   • Items: column, alignItems center, gap 3 between icon and label
 //   • Icon: 20×20, ink active / inkFaint inactive
 //   • Label: fontSize 9.5 (we use 10 — RN-Web text metrics differ),

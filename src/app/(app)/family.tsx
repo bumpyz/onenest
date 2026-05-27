@@ -651,23 +651,34 @@ export default function FamilyHubScreen() {
                                             size={12}
                                             color={colors.warn}
                                         />
-                                        <ThemedText
-                                            numberOfLines={1}
-                                            style={[
-                                                styles.swapBannerText,
-                                                { color: colors.text, flex: 1 },
-                                            ]}>
-                                            {pendingSwaps[0]!.requesterName}{' '}
-                                            requested a swap ·{' '}
+                                        {/* Two-line layout: name + verb on
+                                            line 1, mono range label on line 2.
+                                            At 402px width with the icon + REVIEW
+                                            chip flanking, single-line truncated
+                                            the date for any name >12 chars
+                                            (audit #330 MEDIUM #1). */}
+                                        <View style={{ flex: 1, gap: 1 }}>
                                             <ThemedText
+                                                numberOfLines={1}
+                                                style={[
+                                                    styles.swapBannerText,
+                                                    { color: colors.text },
+                                                ]}>
+                                                {pendingSwaps[0]!.requesterName}{' '}
+                                                requested a swap
+                                            </ThemedText>
+                                            <ThemedText
+                                                numberOfLines={1}
                                                 style={{
                                                     fontFamily:
                                                         FontFamily.monoMedium,
                                                     color: colors.inkSec,
+                                                    fontSize: 11,
+                                                    letterSpacing: -0.1,
                                                 }}>
                                                 {pendingSwaps[0]!.rangeLabel}
                                             </ThemedText>
-                                        </ThemedText>
+                                        </View>
                                         <ThemedText
                                             style={[
                                                 styles.swapBannerCta,
@@ -1336,6 +1347,8 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         borderWidth: StyleSheet.hairlineWidth,
         flexDirection: 'row',
+        // Two-line text content — keep the chrome (icon + REVIEW chip)
+        // centered against the text block (audit #330 MEDIUM #1).
         alignItems: 'center',
         gap: 8,
     },

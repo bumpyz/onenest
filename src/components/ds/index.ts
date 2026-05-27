@@ -79,3 +79,11 @@ export { RepeatsPickerSheet } from './repeats-picker-sheet';
 // NewListCard is the trailing dashed "+ New list" affordance in the
 // same row.
 export { ListCardV2, NewListCard, type ListCardV2Child } from './list-card-v2';
+
+// ── Strip variants (design_handoff_strip_variants, #397/#398) ─────────
+// Read-only/per-kid POV reshapes of CustodyStripToday. RoleBadge also
+// expected to land in Members/Family Hub people rows once #404 ports
+// the EXT tag treatment app-wide.
+export { RoleBadge, type RoleBadgeKind } from './role-badge';
+export { KidPOVHeader } from './kid-pov-header';
+export { DashedBusyBlockRow } from './dashed-busy-block-row';

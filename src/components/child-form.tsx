@@ -40,6 +40,7 @@ import { Feather } from '@expo/vector-icons';
 import { useState } from 'react';
 import {
     Alert,
+    KeyboardAvoidingView,
     Platform,
     Pressable,
     ScrollView,
@@ -430,6 +431,12 @@ export function ChildForm({
 
     return (
         <ThemedView style={styles.container}>
+            {/* KeyboardAvoidingView: iOS keyboard otherwise covers the lower
+                inline TextInputs (school/grade/teacher rows) on a 402×874
+                viewport. Audit #330 CRITICAL #2. */}
+            <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <SafeAreaView style={styles.safe} edges={['top']}>
                 <CreateTopBar
                     title={headerTitle}
@@ -974,6 +981,7 @@ export function ChildForm({
                     ) : null}
                 </ScrollView>
             </SafeAreaView>
+            </KeyboardAvoidingView>
 
             {/* Shared field-edit sheet — opens for the FormRow + chevron
                 rows above (Pronouns / Nickname / School / Grade /

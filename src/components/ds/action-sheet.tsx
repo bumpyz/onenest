@@ -18,6 +18,7 @@
 import { Feather } from '@expo/vector-icons';
 import { useEffect } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
@@ -44,6 +45,7 @@ export function ActionSheet({
 }) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
+    const insets = useSafeAreaInsets();
 
     // Blur whatever was focused before the sheet opens — same Chromium
     // aria-hidden warning workaround the FAB sheet uses. Without this,
@@ -70,7 +72,15 @@ export function ActionSheet({
                 <View
                     style={[
                         styles.sheet,
-                        { backgroundColor: colors.background },
+                        {
+                            backgroundColor: colors.background,
+                            // Inset-aware home-indicator padding — fixes
+                            // viewport audit #330 HIGH #2 (static 30px
+                            // bottom-pad clipped the iOS gesture bar on
+                            // 402×874 devices). Falls back to 16px when
+                            // the inset is 0 (web / older devices).
+                            paddingBottom: 16 + insets.bottom,
+                        },
                     ]}>
                     {/* Drag handle — decorative anchor for the sheet's
                         gesture affordance. Real drag-to-dismiss is a
@@ -149,8 +159,9 @@ const styles = StyleSheet.create({
     sheet: {
         borderTopLeftRadius: 20,
         borderTopRightRadius: 20,
-        // 30 bottom-pad reserves space for the iOS home indicator.
-        paddingBottom: 30,
+        // paddingBottom is set inline via `insets.bottom` so the iOS
+        // home-indicator inset is honored on devices that report a real
+        // safe-area value (audit #330 HIGH #2).
         // Cap so the sheet doesn't cover the entire screen — the user
         // should still see the rest of the screen for context.
         maxHeight: '85%',

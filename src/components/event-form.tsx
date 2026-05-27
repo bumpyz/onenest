@@ -2,6 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
+    KeyboardAvoidingView,
     Linking,
     Platform,
     Pressable,
@@ -802,6 +803,13 @@ export function EventForm({
 
     return (
         <ThemedView style={styles.container}>
+            {/* KeyboardAvoidingView: iOS soft keyboard otherwise covers the
+                date/title inputs at the bottom of the form on a 402×874
+                viewport. Android relies on windowSoftInputMode=adjustResize
+                (Expo default); web ignores the wrap. Audit #330 CRITICAL #2. */}
+            <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <SafeAreaView style={styles.safe}>
                 {/* Top bar lifted to the shared CreateTopBar primitive
                     so every creation surface (Event/Task/List/Contact/
@@ -1731,6 +1739,7 @@ export function EventForm({
                     </View>
                 ) : null}
             </SafeAreaView>
+            </KeyboardAvoidingView>
 
             {/* Starts picker — single-shot date+time sheet. Save
                 bumps endDate forward if the user moves start past it

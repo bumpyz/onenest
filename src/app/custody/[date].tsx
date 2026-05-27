@@ -44,7 +44,7 @@ function ScreenMessage({
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
     return (
         <ThemedView style={styles.container}>
-            <SafeAreaView style={styles.safeCenter}>
+            <SafeAreaView style={styles.safeCenter} edges={['top']}>
                 <ThemedText type="subtitle" style={{ textAlign: 'center' }}>
                     {title}
                 </ThemedText>
@@ -230,7 +230,7 @@ export default function CustodyOverrideScreen() {
 
     return (
         <ThemedView style={styles.container}>
-            <SafeAreaView style={styles.safe}>
+            <SafeAreaView style={styles.safe} edges={['top']}>
                 <View style={styles.headerBar}>
                     <Pressable
                         onPress={() => router.back()}

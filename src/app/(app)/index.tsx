@@ -6,7 +6,7 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { CustodyStripToday } from '@/components/custody/custody-strip-today';
+import { CustodyStripSection } from '@/components/custody/custody-strip-section';
 import { HairlineDivider, MemberStack, SectionHeader, TaskRow } from '@/components/ds';
 import { LoadingScreen } from '@/components/loading-screen';
 import { QuickCreateSheet } from '@/components/quick-create-sheet';
@@ -428,13 +428,16 @@ export default function HomeScreen() {
                             }}
                         />
 
-                        {/* Custody status strip (custody-surfaces v2) — sits
-                            between the AI bar and the conflict card per
-                            design source ProHomeV2. Renders nothing for
-                            non-separated households or when the schedule
-                            hasn't been set up yet (the component checks
-                            internally and returns null). */}
-                        <CustodyStripToday householdId={household?.id} />
+                        {/* Custody status strip (custody-surfaces v2 +
+                            strip-variants #397/#398) — sits between the
+                            AI bar and the conflict card per design
+                            source ProHomeV2. CustodyStripSection
+                            resolves the viewer's role (co-parent /
+                            caregiver / external co-parent) and stacks
+                            multiple strips when the viewer has multiple
+                            linked kids. Renders nothing when the viewer
+                            has no role to render anywhere. */}
+                        <CustodyStripSection householdId={household?.id} />
 
                         {firstTodayConflict ? (
                             <ConflictRibbon
@@ -590,9 +593,10 @@ export default function HomeScreen() {
                             </View>
                         ) : null}
 
-                        {/* Bottom spacer so the FAB pill doesn't overlap the
-                            last card when the user scrolls to the bottom. */}
-                        <View style={{ height: 80 }} />
+                        {/* FAB clearance now lives on the ScrollView's
+                            contentContainerStyle.paddingBottom (styles.scroll)
+                            so it applies regardless of which conditional
+                            branch above renders. Audit #330 HIGH #4. */}
                     </ScrollView>
                 )}
             </SafeAreaView>
@@ -1890,7 +1894,11 @@ function WelcomeCard({
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    scroll: { paddingBottom: Spacing.four },
+    // paddingBottom reserves clearance for the floating FAB pill (44px
+    // height + 16px bottom gap + 20px breathing room). Lifted out of the
+    // inline spacer below the task-list branches so empty + welcome
+    // states share the same scroll-end safety (audit #330 HIGH #4).
+    scroll: { paddingBottom: 80 },
 
     // Header
     headerRow: {
@@ -2355,11 +2363,11 @@ const styles = StyleSheet.create({
 
     // FAB pill + quick-create chooser.
     //
-    // bottom: 16 — matches the design (FAB at `bottom: 96` measured from the
-    // IOSDevice frame; subtract the 80px tab-bar height and you get 16
-    // above tab-bar top, which is what `bottom` measures against in our
-    // ThemedView). The FAB sits close to the tab bar with a small gap;
-    // it doesn't dominate the lower half of the screen.
+    // bottom: 16 — measured ABOVE the tab bar (the ThemedView the FAB
+    // anchors against ends where the tab bar begins). Tab bar at 402×874
+    // renders ~97px native (28px bottom-pad + home-indicator inset) /
+    // ~63px web. The 16px gap is consistent across both — audit #330
+    // LOW #1 corrected the prior 80-nominal comment.
     fabPill: {
         position: 'absolute',
         right: 16,

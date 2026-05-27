@@ -21,6 +21,7 @@
 import { Feather } from '@expo/vector-icons';
 import { useEffect } from 'react';
 import {
+    KeyboardAvoidingView,
     Modal,
     Platform,
     Pressable,
@@ -29,6 +30,7 @@ import {
     View,
     type ViewStyle,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
@@ -78,6 +80,7 @@ export function SheetShell({
 }) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
+    const insets = useSafeAreaInsets();
 
     // Blur whatever was focused before the sheet opens — same Chromium
     // aria-hidden warning workaround the FAB sheet uses.
@@ -108,11 +111,18 @@ export function SheetShell({
             window.removeEventListener('keydown', onKey, true);
     }, [open, onClose]);
 
+    // Sheet sizing: `height` is the design's nominal value, but we clamp
+    // with `maxHeight: 85%` so a tall sheet on a short device (or with
+    // the keyboard up) still has room for the title row + footer. The
+    // KeyboardAvoidingView wrap below shifts the whole sheet upward when
+    // an input inside it focuses — fixes audit #330 CRITICAL #1 (sheets
+    // with text inputs were getting clipped by the keyboard).
     const sheetStyle: ViewStyle = {
         ...styles.sheet,
         backgroundColor: colors.backgroundElement,
         borderTopColor: colors.hair,
         height,
+        maxHeight: '85%',
     };
 
     return (
@@ -122,7 +132,14 @@ export function SheetShell({
             animationType="slide"
             onRequestClose={onClose}
             statusBarTranslucent>
-            <View style={styles.root}>
+            <KeyboardAvoidingView
+                style={styles.root}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                // On Android, soft keyboard already pushes content via
+                // windowSoftInputMode=adjustResize (Expo default). On web
+                // KeyboardAvoidingView is a no-op. Only iOS needs the
+                // explicit behavior.
+            >
                 <Pressable
                     onPress={onClose}
                     accessibilityLabel="Dismiss"
@@ -192,12 +209,18 @@ export function SheetShell({
                         {children}
                     </ScrollView>
 
-                    {/* Footer — dual chip row when either label is set. */}
+                    {/* Footer — dual chip row when either label is set.
+                        paddingBottom adds the device's home-indicator inset
+                        so the Save chip's lower edge doesn't overlap the
+                        iOS gesture-bar hit area (audit #330 HIGH #2). */}
                     {primary || secondary ? (
                         <View
                             style={[
                                 styles.footer,
-                                { borderTopColor: colors.hair },
+                                {
+                                    borderTopColor: colors.hair,
+                                    paddingBottom: 16 + insets.bottom,
+                                },
                             ]}>
                             {secondary ? (
                                 <Pressable
@@ -250,7 +273,7 @@ export function SheetShell({
                         </View>
                     ) : null}
                 </View>
-            </View>
+            </KeyboardAvoidingView>
         </Modal>
     );
 }
@@ -298,6 +321,9 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         letterSpacing: -0.3,
     },
+    // 2-line wrap at fontSize 11.5 fits ~140-150 chars at 402px width
+    // (minus the 28px close X). Longer `sub` props will silently clip
+    // the 3rd line — keep copy concise. Audit #330 LOW #3.
     sub: {
         fontSize: 11.5,
         marginTop: 2,

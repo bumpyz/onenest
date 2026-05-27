@@ -22,6 +22,32 @@ export type Household = {
     household_type: HouseholdType;
     created_by: string;
     created_at: string;
+    /** Hand-off brief items — what the caregiver should communicate to
+     *  the next parent. Auto-generates caregiver brief tasks on hand-off
+     *  days (#397). Migration 0050. Shape: `[{ label: string }, ...]`. */
+    default_brief_items: BriefItem[];
+};
+
+/** Item in households.default_brief_items. Loose shape for now — the
+ *  full editor (Settings → Household) lands with Phase G (#489). */
+export type BriefItem = {
+    label: string;
+};
+
+/** Per-kid external co-parent link from migration 0050's
+ *  `child_external_coparents` table. Profile linked to a child as the
+ *  child's external parent (NOT a household member; relationship is
+ *  per-kid). Drives the #398 per-kid POV strip variant. */
+export type ChildExternalCoparent = {
+    child_id: string;
+    profile_id: string;
+    /** Identity color the external parent renders with on this kid's
+     *  strip. Null falls back to a stable palette pick client-side. */
+    color: string | null;
+    created_at: string;
+    /** Resolved at fetch time when the caller wants name + avatar
+     *  context for the row (the existing `cMembers`-equivalent). */
+    display_name?: string;
 };
 
 /** Severity of an allergy entry. Maps 1:1 to the Postgres
@@ -928,6 +954,133 @@ export async function deleteChild(id: string): Promise<void> {
     // children_living_with / children_allergies / children_medications rows
     // also cascade-delete via migration 0043 FKs.
     const { error } = await supabase.from('children').delete().eq('id', id);
+    if (error) throw error;
+}
+
+// ─── child_external_coparents (migration 0050, #398) ────────────────────
+//
+// Per-kid junction linking a profile to a child as the kid's external
+// co-parent. Drives the #398 per-kid POV strip variant. The external
+// profile is NOT a household_member — the relationship is per-kid.
+// RLS keeps the external parent's view scoped to just the kids they're
+// linked to (the new carve-outs in 0050 on children + custody tables
+// make that visibility work).
+
+/** Returns external co-parents linked to a single child. Includes the
+ *  display name via a profiles join so the per-kid strip can render
+ *  the avatar + identity color row directly. */
+export async function getExternalCoparentsByChild(
+    childId: string,
+): Promise<ChildExternalCoparent[]> {
+    const { data, error } = await supabase
+        .from('child_external_coparents')
+        .select(
+            'child_id, profile_id, color, created_at, profiles!inner(display_name)',
+        )
+        .eq('child_id', childId)
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map((row: any) => ({
+        child_id: row.child_id,
+        profile_id: row.profile_id,
+        color: row.color,
+        created_at: row.created_at,
+        display_name: row.profiles?.display_name ?? undefined,
+    }));
+}
+
+/** Returns every (child_id, household_id) tuple the viewer is external
+ *  to. Powers the #398 entry point: Today / Family Hub query this to
+ *  decide whether to render the external strip + which kids to stack.
+ *  Joins children to surface the household_id so the parent component
+ *  can group by household before stacking strips. */
+export async function getMyExternalCoparentLinks(): Promise<
+    Array<{
+        child_id: string;
+        household_id: string;
+        color: string | null;
+        // Resolved child fields for convenience — the caller would query
+        // children separately otherwise.
+        child_display_name: string;
+        child_color: string;
+    }>
+> {
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) throw authError;
+    const userId = authData.user?.id;
+    if (!userId) return [];
+    const { data, error } = await supabase
+        .from('child_external_coparents')
+        .select(
+            'child_id, color, children!inner(household_id, display_name, color)',
+        )
+        .eq('profile_id', userId)
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map((row: any) => ({
+        child_id: row.child_id,
+        household_id: row.children.household_id,
+        color: row.color,
+        child_display_name: row.children.display_name,
+        child_color: row.children.color,
+    }));
+}
+
+/** Add a profile as an external co-parent for a kid. Household parents
+ *  only (RLS-enforced). No-op safe via the unique PK on (child_id,
+ *  profile_id) — duplicate inserts surface as a 409. */
+export async function addExternalCoparent(
+    childId: string,
+    profileId: string,
+    color: string | null = null,
+): Promise<void> {
+    const { error } = await supabase
+        .from('child_external_coparents')
+        .insert({ child_id: childId, profile_id: profileId, color });
+    if (error) throw error;
+}
+
+/** Remove an external co-parent link. The profile itself is untouched
+ *  — only the per-kid link is dropped. */
+export async function removeExternalCoparent(
+    childId: string,
+    profileId: string,
+): Promise<void> {
+    const { error } = await supabase
+        .from('child_external_coparents')
+        .delete()
+        .eq('child_id', childId)
+        .eq('profile_id', profileId);
+    if (error) throw error;
+}
+
+// ─── households.default_brief_items (migration 0050, #397) ───────────────
+//
+// Read/write helpers for the caregiver brief-items list. Auto-task
+// generation lands with Phase G (#489); these helpers cover the
+// Settings editor + the strip's "does this household even use brief
+// items?" check.
+
+export async function getHouseholdBriefItems(
+    householdId: string,
+): Promise<BriefItem[]> {
+    const { data, error } = await supabase
+        .from('households')
+        .select('default_brief_items')
+        .eq('id', householdId)
+        .single();
+    if (error) throw error;
+    return ((data?.default_brief_items as BriefItem[] | null) ?? []) as BriefItem[];
+}
+
+export async function updateHouseholdBriefItems(
+    householdId: string,
+    items: BriefItem[],
+): Promise<void> {
+    const { error } = await supabase
+        .from('households')
+        .update({ default_brief_items: items })
+        .eq('id', householdId);
     if (error) throw error;
 }
 

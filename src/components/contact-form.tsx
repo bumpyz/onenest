@@ -30,6 +30,7 @@ import { useState } from 'react';
 import {
     Alert,
     Image,
+    KeyboardAvoidingView,
     Platform,
     Pressable,
     ScrollView,
@@ -279,6 +280,12 @@ export function ContactForm({
 
     return (
         <ThemedView style={styles.container}>
+            {/* KeyboardAvoidingView: iOS keyboard otherwise covers the lower
+                inline TextInputs (notes, etc.) on a 402×874 viewport.
+                Audit #330 CRITICAL #2. */}
+            <KeyboardAvoidingView
+                style={{ flex: 1 }}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <SafeAreaView style={styles.safe} edges={['top']}>
                 <CreateTopBar
                     title={headerTitle}
@@ -688,6 +695,7 @@ export function ContactForm({
                     ) : null}
                 </ScrollView>
             </SafeAreaView>
+            </KeyboardAvoidingView>
         </ThemedView>
     );
 }
