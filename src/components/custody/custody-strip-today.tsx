@@ -28,9 +28,9 @@
 // the external mode lives at the caller (Today screen + Family Hub).
 
 import { Feather } from '@expo/vector-icons';
-import { differenceInHours, format } from 'date-fns';
+import { differenceInHours, format, startOfWeek } from 'date-fns';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import {
@@ -166,6 +166,18 @@ export function CustodyStripToday({
         };
     }, [isCaregiver, householdId, user?.id, nextHandoffAtIso]);
 
+    // External viewer's paired-calendar overlap (Phase H, #490). MUST
+    // be called before any early return — hooks rules. Memoized
+    // weekStart so the hook's deps don't churn render-to-render (it
+    // re-fetches whenever rangeStart changes identity). Same Mon-first
+    // ISO week the custody hook uses, so the dashed row's busy-block
+    // count lines up with the 7-day bar above it.
+    const weekStart = useMemo(
+        () => startOfWeek(new Date(), { weekStartsOn: 1 }),
+        [],
+    );
+    const externalBusyEvents = useMyExternalEvents(weekStart, 7);
+
     // README rule: hide entirely when there's no custody schedule —
     // single-home families never see custody UI.
     if (!custody) return null;
@@ -192,16 +204,10 @@ export function CustodyStripToday({
     const { weekCustody, nextHandoff } = custody;
     const colorMap = memberColorMap(members);
 
-    // External viewer's paired-calendar overlap (Phase H, #490). The
-    // dashed row beneath the 7-day bar shows the count of the viewer's
-    // own busy blocks for the current week — "this is your data, not
-    // the household's". Only fetches when viewer is external; the hook
-    // returns `null` until userId resolves, which the count derivation
-    // tolerates. Other viewer modes don't render the row.
-    const externalBusyEvents = useMyExternalEvents(
-        weekCustody.weekStart,
-        7,
-    );
+    // Paired-cal busy count (Phase H, #490) — derived from the hook
+    // hoisted above the early return. Only used by the external
+    // branch; other viewer modes don't render the dashed row, so the
+    // count derivation gates on `isExternal`.
     const externalBusyCount = isExternal
         ? (externalBusyEvents.events ?? []).length
         : 0;
