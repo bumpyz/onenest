@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LoadingScreen } from '@/components/loading-screen';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, Spacing } from '@/constants/theme';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
@@ -40,6 +40,8 @@ function ScreenMessage({
     body: string;
     onBack: () => void;
 }) {
+    const scheme = useAppColorScheme();
+    const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safeCenter}>
@@ -50,7 +52,7 @@ function ScreenMessage({
                     {body}
                 </ThemedText>
                 <Pressable onPress={onBack} style={({ pressed }) => [styles.linkBtn, pressed && styles.pressed]}>
-                    <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>Go back</ThemedText>
+                    <ThemedText style={{ color: colors.accent, fontWeight: '600' }}>Go back</ThemedText>
                 </Pressable>
             </SafeAreaView>
         </ThemedView>
@@ -243,7 +245,7 @@ export default function CustodyOverrideScreen() {
                         style={({ pressed }) => [styles.headerBtn, pressed && !saving && styles.pressed]}>
                         <ThemedText
                             style={{
-                                color: !selectedProfileId ? colors.textSecondary : '#6F7FA5',
+                                color: !selectedProfileId ? colors.textSecondary : colors.accent,
                                 fontWeight: '600',
                             }}>
                             {saving ? 'Saving…' : 'Save'}
@@ -260,7 +262,7 @@ export default function CustodyOverrideScreen() {
                             {format(parsedDate, 'MMMM d, yyyy')}
                         </ThemedText>
                         {originalOverrideExists ? (
-                            <ThemedText type="small" style={{ color: '#6F7FA5' }}>
+                            <ThemedText type="small" style={{ color: colors.accent }}>
                                 ↻ This day is currently overridden.
                             </ThemedText>
                         ) : null}
@@ -369,15 +371,15 @@ const styles = StyleSheet.create({
         paddingVertical: Spacing.one,
     },
     chipDot: { width: 8, height: 8, borderRadius: 4 },
-    errorText: { color: '#B85D52' },
+    errorText: { color: BrandColors.error },
     resetBtn: {
         marginTop: Spacing.three,
         paddingVertical: Spacing.three,
         borderRadius: Spacing.two,
-        backgroundColor: '#F3D9D3',
+        backgroundColor: '#F5DBD4',
         alignItems: 'center',
     },
-    resetText: { color: '#B85D52', fontWeight: '600' },
+    resetText: { color: BrandColors.error, fontWeight: '600' },
     linkBtn: { padding: Spacing.two },
     pressed: { opacity: 0.7 },
 });

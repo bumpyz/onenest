@@ -1,36 +1,48 @@
 import type { Child, HouseholdMember } from './db';
 
-// The palette every member's color is picked from. Stays in sync with migration 0005's
-// default-color trigger (it uses the same array on the server side) — keep these in lockstep
-// when adding new colors.
-
+// Palette every member's color is picked from. Pulled from the redesign handoff's
+// P3 Mist Forest member set — saturation-mid colors curated to be visually
+// distinguishable from each other AND from CHILDREN_PALETTE's pastels, so a
+// parent's color dot reads as "identity" not "background" when it sits next to
+// a child badge on an event row.
+//
+// Stays in sync with migration 0005's default-color trigger (server side picks
+// from the same array). Update both when adding new colors.
+//
+// Dark-mode brightening: when a member color is rendered on dark surfaces, the
+// renderer should brighten ~15% per the handoff spec. That transform lives in
+// display helpers, not here — these are the canonical "light mode" values
+// stored in the DB.
 export const PARENT_PALETTE = [
-    '#208AEF', // blue
-    '#E94B6A', // rose
-    '#F2A93C', // amber
-    '#5BBE91', // green
-    '#A678D6', // purple
-    '#3FAFD6', // cyan
-    '#D6803F', // burnt orange
-    '#7CB342', // lime
+    '#5C77B5', // slate blue
+    '#C77046', // warm terracotta
+    '#8369A8', // heather purple
+    '#3E8A6B', // forest
+    '#BE7896', // dusty rose
+    '#6F9DC4', // sky blue
+    '#BFA168', // sand
+    '#6BC0A6', // pale teal
 ] as const;
 
-// Pastel palette for children — intentionally a different visual family from PARENT_PALETTE
-// so a child's badge can sit beside a parent's color block on an event without collision.
-// Must stay in sync with migration 0020's default-color trigger (same hex literals on the
-// server side).
+// Pastel siblings of the parent palette — same hue families lifted toward
+// white so they read as "kid colors" against the white card surface. Distinct
+// enough from PARENT_PALETTE that a child's badge can sit beside a parent's
+// color block on an event without collision. Must stay in sync with migration
+// 0020's default-color trigger.
 export const CHILDREN_PALETTE = [
-    '#F4A6C0', // soft pink
-    '#A8DEC5', // mint
-    '#A8C9E8', // sky
-    '#C9B0E0', // lavender
-    '#F4B895', // peach
-    '#F2D88B', // buttercup
-    '#F2A088', // coral
-    '#A0D8CC', // pale teal
+    '#A6B4DE', // soft slate blue
+    '#E3A688', // soft terracotta
+    '#B9A4D2', // soft heather
+    '#90C1AB', // soft forest
+    '#DCB1C0', // soft rose
+    '#A8C4DF', // soft sky
+    '#DDC9A1', // soft sand
+    '#A8DDCC', // soft teal
 ] as const;
 
-export const UNASSIGNED_COLOR = '#9CA3AF'; // grey
+// Neutral gray for "no one assigned" / Anyone affordances. Pulled from Mist
+// Forest's inkMuted so it harmonizes with the new palette.
+export const UNASSIGNED_COLOR = '#828B85';
 
 // Palette for task lists. Pastel and intentionally distinct from PARENT_PALETTE and
 // CHILDREN_PALETTE so a list's color chip never collides with a person's color on

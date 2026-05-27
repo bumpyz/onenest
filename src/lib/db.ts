@@ -24,6 +24,18 @@ export type Household = {
     created_at: string;
 };
 
+/** Severity of an allergy entry. Maps 1:1 to the Postgres
+ *  `allergy_severity` enum from migration 0043. */
+export type AllergySeverity = 'mild' | 'moderate' | 'severe';
+
+/** Caregiver-visibility scope from migration 0043's
+ *  `child_caregiver_visibility` enum. Drives what caregivers in this
+ *  household see for the child. */
+export type ChildCaregiverVisibility =
+    | 'assigned_only'
+    | 'everything'
+    | 'custom';
+
 export type Child = {
     id: string;
     household_id: string;
@@ -33,6 +45,48 @@ export type Child = {
     /** Hex color (#RRGGBB) used in the child's badge across events. Auto-assigned on
      * insert by migration 0020's trigger; parents can change it from Settings. */
     color: string;
+    /** Free-text pronouns (e.g. "he/him"). Null = unset. Migration 0043. */
+    pronouns: string | null;
+    /** Free-text nickname surfaced in compact UIs. Migration 0043. */
+    nickname: string | null;
+    /** School name. Migration 0043. */
+    school: string | null;
+    /** Grade level — free text so "K", "3rd", "Year 6" all work. */
+    grade: string | null;
+    /** Teacher name. Migration 0043. */
+    teacher: string | null;
+    /** When true, child inherits the household's custody pattern.
+     *  When false, the child has its own pattern (per-child override
+     *  UI is a separate surface; this flag just toggles inheritance). */
+    follows_main_pattern: boolean;
+    /** Soft FK to contacts.id when the user has picked a pediatrician
+     *  from the household contacts. Null = no pediatrician set. */
+    pediatrician_contact_id: string | null;
+    /** Caregiver visibility scope. Defaults to 'assigned_only' so
+     *  caregivers only see tasks/events they were assigned to. */
+    caregiver_visibility: ChildCaregiverVisibility;
+    created_at: string;
+};
+
+/** Allergy row attached to a child via migration 0043's
+ *  `children_allergies` junction. */
+export type ChildAllergy = {
+    id: string;
+    child_id: string;
+    label: string;
+    severity: AllergySeverity | null;
+    notes: string | null;
+    created_at: string;
+};
+
+/** Medication row attached to a child via migration 0043's
+ *  `children_medications` junction. */
+export type ChildMedication = {
+    id: string;
+    child_id: string;
+    label: string;
+    dose: string | null;
+    notes: string | null;
     created_at: string;
 };
 
@@ -113,8 +167,56 @@ export type Event = {
      *   previous_day → custodian on the date before (morning drop-off carries overnight)
      */
     responsible_alternation: 'same_day' | 'previous_day' | null;
+    /**
+     * Multi-responsible model (migration 0039). Each row tags one adult on this event;
+     * the row with is_lead=true is the primary responsible (gets the LEAD chip + primary
+     * push). Tagging IS the sharing primitive — anyone tagged sees the full event across
+     * households; anyone NOT tagged sees only "Busy" in that time slot.
+     *
+     * Reads: populated from the events_responsible join in getEvent / getEventsForRange.
+     * Empty array means the event has no assigned responsible (Anyone / unassigned).
+     *
+     * Optional in the type because not every read path is guaranteed to select the
+     * join — `normalizeEventRow` defaults to `[]` and every consumer uses `?? []`
+     * defensively. Marking required would lie about the runtime contract; QA-found drift.
+     * Back-compat: the legacy `responsible_profile_id` column still mirrors the current
+     * lead (writers update both during the transition window). Code that needs the
+     * "primary responsible" should prefer this list and consult responsible_profile_id
+     * only as a fallback for unmigrated rows.
+     */
+    responsibles: EventResponsible[];  // see note above re. optionality — keep required at the type level so call sites have to think about the join; normalizeEventRow guarantees []
+    /**
+     * Privacy opt-in for personal events (migration 0044, #466). When true,
+     * viewers who are NOT in the `responsibles` list see this event as a
+     * generic Busy block — no title, no location, no detail screen, same
+     * vocabulary as the external paired-calendar busy blocks. Responsibles
+     * still see the full event. Defaults to false (visible to the
+     * household). Decouples "who owns this" (responsibles) from "who can
+     * see the title" (is_private).
+     */
+    is_private: boolean;
+    /**
+     * Per-event "Also notify other parent" flag (migration 0046, #322).
+     * When true the event reminder dispatch path (#308) pings every
+     * tagged adult on the event in addition to the creator's default
+     * notification scope. Defaults to false. The dispatch path itself
+     * lands with #308; until then this stores intent.
+     */
+    notify_other_parent: boolean;
     created_at: string;
     updated_at: string;
+};
+
+/**
+ * One row in events_responsible (migration 0039). Each row tags one adult as
+ * responsible for an event; is_lead marks the primary (exactly one per event
+ * when responsibles exist, enforced by a partial unique index).
+ */
+export type EventResponsible = {
+    event_id: string;
+    profile_id: string;
+    is_lead: boolean;
+    created_at: string;
 };
 
 /** Per-event, per-date responsible-parent override (event_occurrence_overrides). */
@@ -151,6 +253,48 @@ export type NewEventInput = {
      * null (the responsible parent is computed from the custody schedule per occurrence).
      */
     responsibleAlternation?: 'same_day' | 'previous_day' | null;
+    /**
+     * Multi-responsible list (migration 0039). Each entry tags one adult on the event;
+     * `isLead` marks the primary (exactly one entry should have isLead=true when the
+     * list is non-empty — the create/update path enforces this client-side and the
+     * server enforces it via partial unique index).
+     *
+     * When omitted, the writer falls back to building a single-row list from
+     * `responsibleProfileId` for back-compat (so callers that haven't migrated to
+     * multi-responsible keep working). Pass an empty array to deliberately create an
+     * event with no assigned responsible (Anyone / unassigned). Pass an explicit list
+     * to set multi-responsible.
+     *
+     * The writer also mirrors the lead's profile_id into the legacy
+     * `events.responsible_profile_id` column during the transition window — readers
+     * that haven't migrated to the join table still see the lead.
+     */
+    responsibles?: NewEventResponsibleInput[];
+    /**
+     * Privacy opt-in (#466). When true, non-responsibles see this event
+     * as a generic Busy block. Defaults to false at the DB layer if
+     * omitted from the input, so existing callers that pre-date the flag
+     * keep their previous behavior. Toggled from EventForm's "Mark
+     * private" Switch.
+     */
+    isPrivate?: boolean;
+    /**
+     * "Also notify other parent" flag (#322). When true, the reminder
+     * dispatch path (#308 follow-up) pings every tagged adult, not just
+     * the creator's default targets. Defaults to false at the DB layer
+     * when omitted so callers that pre-date the flag keep their
+     * previous behavior.
+     */
+    notifyOtherParent?: boolean;
+};
+
+/**
+ * One entry in a NewEventInput.responsibles list. Lead semantics: at most one entry
+ * with isLead=true; if none are flagged the writer promotes the first entry to lead.
+ */
+export type NewEventResponsibleInput = {
+    profileId: string;
+    isLead: boolean;
 };
 
 export type Location = {
@@ -172,6 +316,91 @@ export type LocationPlaceInput = {
     formattedAddress: string;
 };
 
+/**
+ * Contacts — household-scoped quick-dial list (caregiver, handyman, gardener,
+ * pediatrician, etc.). Tap a row in the Contacts tab → confirm → dial. Read by
+ * any household member (caregivers included — they need to be able to call the
+ * plumber); write is parent-only (migration 0034). Phone stored as free-form
+ * string — the `tel:` URI handler strips non-digits at dial time, so format
+ * validation at this layer would be busywork.
+ */
+// Closed-set categories backed by the contacts_category_check constraint
+// in migration 0036. Adding a new category here ALSO requires a follow-up
+// migration to update the CHECK; keep them in sync.
+export type ContactCategory =
+    | 'medical'
+    | 'school'
+    | 'activities'
+    | 'family'
+    | 'emergency'
+    | 'other';
+
+export const CONTACT_CATEGORIES: ReadonlyArray<ContactCategory> = [
+    'medical',
+    'school',
+    'activities',
+    'family',
+    'emergency',
+    'other',
+];
+
+export type Contact = {
+    id: string;
+    household_id: string;
+    name: string;
+    phone: string;
+    /** Optional — e.g. "ABC Plumbing" for a business contact. */
+    company: string | null;
+    /** Optional short label users scan for ("babysitter", "doctor", "plumber"). */
+    descriptor: string | null;
+    /** Storage path within the contact-avatars bucket — `{household_id}/{contact_id}.{ext}`.
+     *  Null when no photo set; the UI falls back to an initials avatar. The bucket is
+     *  private; getContactAvatarUrl mints a signed URL for display. */
+    avatar_url: string | null;
+    sort_order: number;
+    // Phase 7 fields (migration 0036). Closed-set category + two booleans for
+    // the redesign's Emergency / Favorites strips + four optional text fields
+    // and one optional FK for the new detail-screen SGroups. Defaults are
+    // benign so legacy rows pre-0036 deserialize cleanly: category 'other',
+    // both booleans false, every text field null.
+    category: ContactCategory;
+    is_favorite: boolean;
+    is_emergency: boolean;
+    email: string | null;
+    /** Free-form human hint ("After 4 PM", "Weekends only") — no parsing. */
+    best_time: string | null;
+    /** Free-form address. Phase 7 keeps contacts lightweight; events use the
+     *  richer `locations` table with place_id linkage instead. */
+    address: string | null;
+    notes: string | null;
+    /** Optional FK to events. ON DELETE SET NULL — the contact survives if
+     *  the linked event is deleted. */
+    linked_event_id: string | null;
+    created_at: string;
+    updated_at: string;
+};
+
+export type ContactInput = {
+    name: string;
+    phone: string;
+    company?: string | null;
+    descriptor?: string | null;
+    /** Pass null to clear an existing avatar; omit to leave it untouched on
+     *  update; pass a storage path to set/replace it. */
+    avatarUrl?: string | null;
+    // Phase 7 inputs. All optional — undefined leaves the existing value
+    // alone on update (same convention as avatarUrl). createContact treats
+    // undefined as the default for the inserting row.
+    category?: ContactCategory;
+    isFavorite?: boolean;
+    isEmergency?: boolean;
+    email?: string | null;
+    bestTime?: string | null;
+    address?: string | null;
+    notes?: string | null;
+    linkedEventId?: string | null;
+};
+
 export type CustodySchedule = {
     id: string;
     household_id: string;
@@ -180,6 +409,22 @@ export type CustodySchedule = {
     parent_a_profile_id: string;
     parent_b_profile_id: string;
     anchor_date: string; // YYYY-MM-DD
+    // Phase 2 columns (migration 0048). Older rows that pre-date the
+    // column adds get default values from the migration, so these are
+    // always non-null in practice — but typed as required so consumers
+    // are forced to think about them.
+    handoff_time: string; // HH:MM:SS (Postgres `time` literal)
+    /** 0–6, Monday-first per the editor's day-labels convention
+     *  (`['M','T','W','T','F','S','S']`). Migration 0049 normalized the
+     *  default to 6 (Sunday) to match the design source. */
+    handoff_day_index: number;
+    handoff_location_id: string | null;
+    auto_assign: boolean;
+    handoff_reminders: boolean;
+    notify_externals: boolean;
+    /** ISO timestamp; non-null = "Stop using a custody pattern" soft-stop
+     *  (#376). Resolvers should treat this as no-active-schedule. */
+    disabled_at: string | null;
     created_by: string;
     created_at: string;
     updated_at: string;
@@ -191,6 +436,14 @@ export type CustodyScheduleInput = {
     parentAProfileId: string;
     parentBProfileId: string;
     anchorDate: string;
+    // Phase 2 fields (#374, #375). All optional on the input — caller
+    // omits keys to keep the column's default / existing value.
+    handoffTime?: string; // 'HH:MM' or 'HH:MM:SS'
+    handoffDayIndex?: number;
+    handoffLocationId?: string | null;
+    autoAssign?: boolean;
+    handoffReminders?: boolean;
+    notifyExternals?: boolean;
 };
 
 export type CustodyOverride = {
@@ -199,7 +452,35 @@ export type CustodyOverride = {
     override_date: string; // YYYY-MM-DD
     custodian_profile_id: string;
     note: string | null;
+    /** Null = whole-household override. Non-null scopes the override to
+     *  one child (e.g. "Mei stays with Casey on Friday"). */
+    child_id: string | null;
     created_by: string;
+    created_at: string;
+    updated_at: string;
+};
+
+// Swap requests (#372). Read-only banner on Family Hub for now; the
+// full accept/decline flow lives in #399. Caregivers can read (banner
+// visibility) but only parents can request / decide.
+export type SwapRequestStatus =
+    | 'pending'
+    | 'accepted'
+    | 'declined'
+    | 'cancelled';
+
+export type SwapRequest = {
+    id: string;
+    household_id: string;
+    requested_by_profile_id: string;
+    /** Null = whole-household swap; non-null scopes to one child. */
+    affected_child_id: string | null;
+    from_date: string; // YYYY-MM-DD inclusive
+    to_date: string; // YYYY-MM-DD inclusive
+    note: string | null;
+    status: SwapRequestStatus;
+    decided_by_profile_id: string | null;
+    decided_at: string | null;
     created_at: string;
     updated_at: string;
 };
@@ -284,6 +565,35 @@ export async function updateMyColor(householdId: string, color: string): Promise
         p_household_id: householdId,
         p_color: color,
     });
+    if (error) throw error;
+}
+
+// Phase 13 RemoveCaregiverSheet: remove a member from a household. RLS in
+// migration 0002 (`household_members delete parents or self`) gates this to
+// parents-of-the-household OR the row's own profile_id, so this helper does
+// not need its own role guard — Supabase will reject the row-level write if
+// the caller isn't authorized. Callers should still avoid pointing the
+// affordance at self (the UI also disallows it via the kebab visibility).
+//
+// Side effects to be aware of:
+//   - household_members row is deleted; the user loses access via RLS
+//     immediately on subsequent queries.
+//   - Tasks assigned to this user via task_assignees remain in place but
+//     the join no longer resolves them — they effectively unassign back to
+//     "Anyone" via the resolver's fallback. That matches the design's
+//     "Her upcoming task assignments unassign back to 'Anyone'" copy.
+//   - Pending push notifications scheduled against this user's expo token
+//     still send unless explicitly cancelled — that's a follow-up the
+//     push token RPC will need (TODO when the inbox lands).
+export async function removeHouseholdMember(
+    householdId: string,
+    profileId: string,
+): Promise<void> {
+    const { error } = await supabase
+        .from('household_members')
+        .delete()
+        .eq('household_id', householdId)
+        .eq('profile_id', profileId);
     if (error) throw error;
 }
 
@@ -399,8 +709,224 @@ export async function updateChild(
     return data as Child;
 }
 
+/**
+ * Full-fields update for AddChild v2 (spec 07.2). Patches every column
+ * a parent can edit on the child profile — including the columns added
+ * by migration 0043. Pass `undefined` for any field you want to leave
+ * alone; explicit `null` clears the column.
+ *
+ * Junction tables (lives_with, allergies, medications) are handled
+ * separately via setChildLivingWith / addChildAllergy / addChildMedication
+ * helpers below — partial updates on those need their own affordances.
+ */
+export type ChildBasicsPatch = {
+    displayName?: string;
+    birthdate?: string | null;
+    notes?: string | null;
+    color?: string;
+    pronouns?: string | null;
+    nickname?: string | null;
+    school?: string | null;
+    grade?: string | null;
+    teacher?: string | null;
+    followsMainPattern?: boolean;
+    pediatricianContactId?: string | null;
+    caregiverVisibility?: ChildCaregiverVisibility;
+};
+
+export async function updateChildBasics(
+    id: string,
+    patch: ChildBasicsPatch,
+): Promise<Child> {
+    const update: Record<string, unknown> = {};
+    if (patch.displayName !== undefined) {
+        update.display_name = patch.displayName.trim();
+    }
+    if (patch.birthdate !== undefined) update.birthdate = patch.birthdate;
+    if (patch.notes !== undefined) {
+        update.notes = patch.notes?.trim() || null;
+    }
+    if (patch.color !== undefined) update.color = patch.color;
+    if (patch.pronouns !== undefined) {
+        update.pronouns = patch.pronouns?.trim() || null;
+    }
+    if (patch.nickname !== undefined) {
+        update.nickname = patch.nickname?.trim() || null;
+    }
+    if (patch.school !== undefined) {
+        update.school = patch.school?.trim() || null;
+    }
+    if (patch.grade !== undefined) {
+        update.grade = patch.grade?.trim() || null;
+    }
+    if (patch.teacher !== undefined) {
+        update.teacher = patch.teacher?.trim() || null;
+    }
+    if (patch.followsMainPattern !== undefined) {
+        update.follows_main_pattern = patch.followsMainPattern;
+    }
+    if (patch.pediatricianContactId !== undefined) {
+        update.pediatrician_contact_id = patch.pediatricianContactId;
+    }
+    if (patch.caregiverVisibility !== undefined) {
+        update.caregiver_visibility = patch.caregiverVisibility;
+    }
+    const { data, error } = await supabase
+        .from('children')
+        .update(update)
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    return data as Child;
+}
+
+/**
+ * Returns a single child row by id, or null when not found. Used by
+ * the /child/[id] edit screen to seed the form.
+ */
+export async function getChildById(id: string): Promise<Child | null> {
+    const { data, error } = await supabase
+        .from('children')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+    if (error) throw error;
+    return (data as Child | null) ?? null;
+}
+
+// ─── children_living_with junction (migration 0043) ────────────────────
+
+export async function listChildLivingWith(childId: string): Promise<string[]> {
+    const { data, error } = await supabase
+        .from('children_living_with')
+        .select('profile_id')
+        .eq('child_id', childId);
+    if (error) throw error;
+    return (data ?? []).map(
+        (r) => (r as { profile_id: string }).profile_id,
+    );
+}
+
+/**
+ * Bulk-replace the set of profile ids the child "lives with". Diffs
+ * against the current set so we don't churn rows that didn't change
+ * (lighter on RLS and on audit logs).
+ */
+export async function setChildLivingWith(
+    childId: string,
+    profileIds: ReadonlyArray<string>,
+): Promise<void> {
+    const desired = new Set(profileIds);
+    const current = new Set(await listChildLivingWith(childId));
+    const toAdd = [...desired].filter((id) => !current.has(id));
+    const toRemove = [...current].filter((id) => !desired.has(id));
+    if (toAdd.length > 0) {
+        const { error } = await supabase
+            .from('children_living_with')
+            .insert(
+                toAdd.map((profile_id) => ({ child_id: childId, profile_id })),
+            );
+        if (error) throw error;
+    }
+    if (toRemove.length > 0) {
+        const { error } = await supabase
+            .from('children_living_with')
+            .delete()
+            .eq('child_id', childId)
+            .in('profile_id', toRemove);
+        if (error) throw error;
+    }
+}
+
+// ─── children_allergies (migration 0043) ────────────────────────────
+
+export async function listChildAllergies(
+    childId: string,
+): Promise<ChildAllergy[]> {
+    const { data, error } = await supabase
+        .from('children_allergies')
+        .select('*')
+        .eq('child_id', childId)
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []) as ChildAllergy[];
+}
+
+export async function addChildAllergy(input: {
+    childId: string;
+    label: string;
+    severity: AllergySeverity | null;
+    notes?: string | null;
+}): Promise<ChildAllergy> {
+    const { data, error } = await supabase
+        .from('children_allergies')
+        .insert({
+            child_id: input.childId,
+            label: input.label.trim(),
+            severity: input.severity,
+            notes: input.notes?.trim() || null,
+        })
+        .select()
+        .single();
+    if (error) throw error;
+    return data as ChildAllergy;
+}
+
+export async function deleteChildAllergy(id: string): Promise<void> {
+    const { error } = await supabase
+        .from('children_allergies')
+        .delete()
+        .eq('id', id);
+    if (error) throw error;
+}
+
+// ─── children_medications (migration 0043) ──────────────────────────
+
+export async function listChildMedications(
+    childId: string,
+): Promise<ChildMedication[]> {
+    const { data, error } = await supabase
+        .from('children_medications')
+        .select('*')
+        .eq('child_id', childId)
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []) as ChildMedication[];
+}
+
+export async function addChildMedication(input: {
+    childId: string;
+    label: string;
+    dose?: string | null;
+    notes?: string | null;
+}): Promise<ChildMedication> {
+    const { data, error } = await supabase
+        .from('children_medications')
+        .insert({
+            child_id: input.childId,
+            label: input.label.trim(),
+            dose: input.dose?.trim() || null,
+            notes: input.notes?.trim() || null,
+        })
+        .select()
+        .single();
+    if (error) throw error;
+    return data as ChildMedication;
+}
+
+export async function deleteChildMedication(id: string): Promise<void> {
+    const { error } = await supabase
+        .from('children_medications')
+        .delete()
+        .eq('id', id);
+    if (error) throw error;
+}
+
 export async function deleteChild(id: string): Promise<void> {
     // event_children rows cascade-delete via the FK on child_id (see migration 0001).
+    // children_living_with / children_allergies / children_medications rows
+    // also cascade-delete via migration 0043 FKs.
     const { error } = await supabase.from('children').delete().eq('id', id);
     if (error) throw error;
 }
@@ -416,20 +942,73 @@ export async function deleteChild(id: string): Promise<void> {
 // viewed on a week starting Saturday) are included. Previously this branch
 // filtered on `starts_at >= rangeStart` alone and dropped such events.
 /**
- * Normalizes a Supabase row with an embedded `event_children` join into a flat Event
- * with a `child_ids: string[]` array. We do this in JS rather than in a Postgres view
- * because nested selects in supabase-js already give us the embedded array — we just
- * need to project it to the shape the client uses.
+ * Normalizes a Supabase row with embedded `event_children` and `events_responsible`
+ * joins into a flat Event. We do this projection in JS rather than via a Postgres
+ * view because nested selects in supabase-js already give us the embedded arrays
+ * shaped roughly right — we just need to flatten them to the Event type's shape.
+ *
+ * Both joins are optional in the source select: callers that don't need responsibles
+ * (e.g. the recurring-master fetch that gets re-fetched per occurrence via the
+ * resolver) can omit the join and we'll default to an empty list. Callers that
+ * need the multi-responsible UI (EventDetail, EventForm load) must select
+ * `events_responsible(profile_id, is_lead, created_at, event_id)` explicitly.
  */
-function attachChildIds(row: Record<string, unknown>): Event {
+function normalizeEventRow(row: Record<string, unknown>): Event {
     const eventChildren =
         (row.event_children as Array<{ child_id: string }> | null | undefined) ?? [];
     const child_ids = eventChildren.map((ec) => ec.child_id);
-    // Strip the nested array from the row before casting; the Event type doesn't carry it.
-    const { event_children: _omit, ...rest } = row;
-    void _omit;
-    return { ...(rest as Omit<Event, 'child_ids'>), child_ids };
+    const eventResponsiblesRaw =
+        (row.events_responsible as
+            | Array<{
+                  event_id?: string;
+                  profile_id: string;
+                  is_lead: boolean;
+                  created_at?: string;
+              }>
+            | null
+            | undefined) ?? [];
+    const eventId = (row.id as string) ?? '';
+    const responsibles: EventResponsible[] = eventResponsiblesRaw.map((r) => ({
+        event_id: r.event_id ?? eventId,
+        profile_id: r.profile_id,
+        is_lead: r.is_lead,
+        // created_at on the join row isn't always selected; default to the
+        // event's created_at so the field is never undefined.
+        created_at: r.created_at ?? (row.created_at as string) ?? '',
+    }));
+    // Strip nested arrays from the row before casting; Event carries the flat shapes.
+    const { event_children: _omitChildren, events_responsible: _omitResp, ...rest } =
+        row;
+    void _omitChildren;
+    void _omitResp;
+    return {
+        ...(rest as Omit<
+            Event,
+            'child_ids' | 'responsibles' | 'is_private' | 'notify_other_parent'
+        >),
+        child_ids,
+        responsibles,
+        // is_private was added in migration 0044 (#466). The column is NOT NULL
+        // DEFAULT false at the DB layer, but some select clauses don't request
+        // it explicitly — coalesce here so the Event type's `is_private: boolean`
+        // contract holds even on those reads. Treating omitted-or-null as `false`
+        // matches the DB default: a missing flag means "not private."
+        is_private: (rest as { is_private?: boolean | null }).is_private ?? false,
+        // notify_other_parent was added in migration 0046 (#322). Same coalesce
+        // pattern as is_private — missing means "creator default scope only,"
+        // which matches the DB default.
+        notify_other_parent:
+            (rest as { notify_other_parent?: boolean | null })
+                .notify_other_parent ?? false,
+    };
 }
+
+/**
+ * @deprecated Renamed to {@link normalizeEventRow} now that the function also
+ * projects events_responsible. Kept as an alias to avoid a sweeping rename in
+ * one commit; new code should call normalizeEventRow.
+ */
+const attachChildIds = normalizeEventRow;
 
 export async function getEventsForRange(
     householdId: string,
@@ -439,7 +1018,7 @@ export async function getEventsForRange(
     const [oneOffsRes, recurringRes] = await Promise.all([
         supabase
             .from('events')
-            .select('*, event_children(child_id)')
+            .select('*, event_children(child_id), events_responsible(profile_id, is_lead, created_at)')
             .eq('household_id', householdId)
             .is('recurrence_rule', null)
             .lt('starts_at', rangeEnd.toISOString())
@@ -447,7 +1026,7 @@ export async function getEventsForRange(
             .order('starts_at', { ascending: true }),
         supabase
             .from('events')
-            .select('*, event_children(child_id)')
+            .select('*, event_children(child_id), events_responsible(profile_id, is_lead, created_at)')
             .eq('household_id', householdId)
             .not('recurrence_rule', 'is', null)
             .lt('starts_at', rangeEnd.toISOString())
@@ -529,66 +1108,92 @@ export async function acceptInvitation(token: string): Promise<string> {
 }
 
 /**
- * Replaces the event_children rows for one event. DELETE-then-INSERT is simpler than
- * a diff/upsert here and the table is tiny per event (1-5 rows typically). RLS on the
- * join table mirrors event access, so this is gated by the caller's parenthood of the
- * household.
+ * Builds the responsibles list a writer should persist, applying back-compat
+ * fallback for callers that haven't migrated to the multi-responsible model.
  *
- * NOT atomic with the parent event upsert — if the second step fails the event exists
- * without its child links. We'd wrap both in a SECURITY DEFINER RPC for true atomicity
- * if this ever became a real problem (it won't at MVP scale).
+ *   - If `input.responsibles` is explicitly provided, use it as-is (including
+ *     empty array, which means "deliberately Anyone").
+ *   - Otherwise, derive from the legacy `responsibleProfileId`:
+ *       non-null → single-row list with isLead=true
+ *       null     → empty list (Anyone)
+ *
+ * Old client-side sequential writers (`setEventChildren`, `setEventResponsibles`,
+ * `leadProfileIdFromList`) were retired in migration 0041 — the atomic
+ * RPCs `create_event_with_relations` and `update_event_with_relations` handle
+ * lead derivation, normalization, and the DELETE-then-INSERT dance in a single
+ * transaction. We still need this helper to map from the back-compat
+ * `responsibleProfileId` input shape to the RPC's expected responsibles array.
  */
-async function setEventChildren(eventId: string, childIds: string[]): Promise<void> {
-    const { error: delError } = await supabase
-        .from('event_children')
-        .delete()
-        .eq('event_id', eventId);
-    if (delError) throw delError;
-    if (childIds.length === 0) return;
-    const rows = childIds.map((child_id) => ({ event_id: eventId, child_id }));
-    const { error: insError } = await supabase.from('event_children').insert(rows);
-    if (insError) throw insError;
+function resolveResponsiblesForWrite(
+    input: NewEventInput,
+): NewEventResponsibleInput[] {
+    if (input.responsibles !== undefined) return input.responsibles;
+    if (input.responsibleProfileId) {
+        return [{ profileId: input.responsibleProfileId, isLead: true }];
+    }
+    return [];
 }
 
 export async function createEvent(
     householdId: string,
     input: NewEventInput,
 ): Promise<Event> {
-    const userId = await currentUserId();
-
-    const { data, error } = await supabase
-        .from('events')
-        .insert({
-            household_id: householdId,
-            title: input.title,
-            description: input.description ?? null,
-            location: input.location ?? null,
-            location_id: input.locationId ?? null,
-            starts_at: input.startsAt.toISOString(),
-            ends_at: input.endsAt.toISOString(),
-            all_day: input.allDay ?? false,
-            created_by: userId,
-            responsible_profile_id: input.responsibleProfileId ?? null,
-            recurrence_rule: input.recurrenceRule ?? null,
-            event_type: input.eventType ?? null,
-            timezone: input.timezone ?? null,
-            responsible_alternation: input.responsibleAlternation ?? null,
-        })
-        .select()
-        .single();
-    if (error) throw error;
-    const event = data as Record<string, unknown>;
+    // Atomic single-round-trip via RPC (migration 0041). Replaces the
+    // previous three-step events.insert → setEventChildren →
+    // setEventResponsibles dance, which had a partial-write race when the
+    // second or third step failed (QA-found). The RPC wraps all three in
+    // a single transaction and mirrors the lead into the legacy
+    // responsible_profile_id column server-side, so we don't have to
+    // recompute it client-side and trust the order of operations.
+    const responsibles = resolveResponsiblesForWrite(input);
     const childIds = input.childIds ?? [];
-    if (childIds.length > 0) {
-        await setEventChildren(event.id as string, childIds);
-    }
-    return attachChildIds({ ...event, event_children: childIds.map((id) => ({ child_id: id })) });
+    const { data, error } = await supabase.rpc('create_event_with_relations', {
+        p_household_id: householdId,
+        p_title: input.title,
+        p_starts_at: input.startsAt.toISOString(),
+        p_ends_at: input.endsAt.toISOString(),
+        p_all_day: input.allDay ?? false,
+        p_description: input.description ?? null,
+        p_location: input.location ?? null,
+        p_location_id: input.locationId ?? null,
+        p_recurrence_rule: input.recurrenceRule ?? null,
+        p_event_type: input.eventType ?? null,
+        p_timezone: input.timezone ?? null,
+        p_responsible_alternation: input.responsibleAlternation ?? null,
+        p_child_ids: childIds,
+        p_responsibles: responsibles.map((r) => ({
+            profile_id: r.profileId,
+            is_lead: r.isLead,
+        })),
+        // Privacy opt-in (#466 / migration 0044+0045). Defaults to false
+        // so callers that pre-date the flag get the previous behavior.
+        p_is_private: input.isPrivate ?? false,
+        // "Also notify other parent" flag (#322 / migration 0046+0047).
+        // Same default-to-false rule.
+        p_notify_other_parent: input.notifyOtherParent ?? false,
+    });
+    if (error) throw error;
+    if (!data) throw new Error('create_event_with_relations returned no row');
+    // The RPC returns the bare events row (no embedded joins). Re-shape
+    // it to the normalized Event the client expects — we know the
+    // child_ids and responsibles we just persisted, no need to refetch.
+    return normalizeEventRow({
+        ...(data as Record<string, unknown>),
+        event_children: childIds.map((id) => ({ child_id: id })),
+        events_responsible: responsibles.map((r, i) => ({
+            profile_id: r.profileId,
+            // Mirror the RPC's lead-promotion: if no isLead flagged in
+            // input, the RPC marks the first entry as lead. Match here
+            // so the returned object is consistent with persisted state.
+            is_lead: responsibles.some((x) => x.isLead) ? r.isLead : i === 0,
+        })),
+    });
 }
 
 export async function getEvent(id: string): Promise<Event | null> {
     const { data, error } = await supabase
         .from('events')
-        .select('*, event_children(child_id)')
+        .select('*, event_children(child_id), events_responsible(profile_id, is_lead, created_at)')
         .eq('id', id)
         .maybeSingle();
     if (error) throw error;
@@ -597,30 +1202,48 @@ export async function getEvent(id: string): Promise<Event | null> {
 }
 
 export async function updateEvent(id: string, input: NewEventInput): Promise<Event> {
-    const { data, error } = await supabase
-        .from('events')
-        .update({
-            title: input.title,
-            description: input.description ?? null,
-            location: input.location ?? null,
-            location_id: input.locationId ?? null,
-            starts_at: input.startsAt.toISOString(),
-            ends_at: input.endsAt.toISOString(),
-            all_day: input.allDay ?? false,
-            responsible_profile_id: input.responsibleProfileId ?? null,
-            recurrence_rule: input.recurrenceRule ?? null,
-            event_type: input.eventType ?? null,
-            timezone: input.timezone ?? null,
-            responsible_alternation: input.responsibleAlternation ?? null,
-        })
-        .eq('id', id)
-        .select()
-        .single();
+    // Atomic single-round-trip via RPC (migration 0041) — same rationale
+    // as createEvent. The old sequential events.update →
+    // setEventChildren → setEventResponsibles path had a partial-write
+    // race: if step 3 failed after step 1 mirrored the new lead into the
+    // legacy column, the join table stayed empty/stale and downstream
+    // consumers (in-app multi-responsible UI, sunday-summary) diverged
+    // from what the user just saved.
+    const responsibles = resolveResponsiblesForWrite(input);
+    const childIds = input.childIds ?? [];
+    const { data, error } = await supabase.rpc('update_event_with_relations', {
+        p_event_id: id,
+        p_title: input.title,
+        p_starts_at: input.startsAt.toISOString(),
+        p_ends_at: input.endsAt.toISOString(),
+        p_all_day: input.allDay ?? false,
+        p_description: input.description ?? null,
+        p_location: input.location ?? null,
+        p_location_id: input.locationId ?? null,
+        p_recurrence_rule: input.recurrenceRule ?? null,
+        p_event_type: input.eventType ?? null,
+        p_timezone: input.timezone ?? null,
+        p_responsible_alternation: input.responsibleAlternation ?? null,
+        p_child_ids: childIds,
+        p_responsibles: responsibles.map((r) => ({
+            profile_id: r.profileId,
+            is_lead: r.isLead,
+        })),
+        // Privacy opt-in (#466 / migration 0044+0045). Same default
+        // semantics as createEvent.
+        p_is_private: input.isPrivate ?? false,
+        // "Also notify other parent" flag (#322 / migration 0046+0047).
+        p_notify_other_parent: input.notifyOtherParent ?? false,
+    });
     if (error) throw error;
-    await setEventChildren(id, input.childIds ?? []);
-    return attachChildIds({
+    if (!data) throw new Error('update_event_with_relations returned no row');
+    return normalizeEventRow({
         ...(data as Record<string, unknown>),
-        event_children: (input.childIds ?? []).map((cid) => ({ child_id: cid })),
+        event_children: childIds.map((cid) => ({ child_id: cid })),
+        events_responsible: responsibles.map((r, i) => ({
+            profile_id: r.profileId,
+            is_lead: responsibles.some((x) => x.isLead) ? r.isLead : i === 0,
+        })),
     });
 }
 
@@ -691,6 +1314,200 @@ export async function deleteLocation(id: string): Promise<void> {
     if (error) throw error;
 }
 
+// Contacts — household-scoped quick-dial directory (migration 0034). Read by
+// any household member; write parent-only (RLS enforces both). Sort is hand-
+// ordered via `sort_order`; new rows append with max + 1 so the user's
+// existing order doesn't shift when they add someone.
+
+export async function getContacts(householdId: string): Promise<Contact[]> {
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('household_id', householdId)
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return (data ?? []) as Contact[];
+}
+
+export async function createContact(
+    householdId: string,
+    input: ContactInput,
+): Promise<Contact> {
+    // Append: peek at the current max sort_order and add 1. Cheaper than
+    // running a trigger for what's a low-write surface (handful of contacts
+    // per household, lifetime).
+    const { data: maxRow } = await supabase
+        .from('contacts')
+        .select('sort_order')
+        .eq('household_id', householdId)
+        .order('sort_order', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    const nextOrder = ((maxRow?.sort_order as number | undefined) ?? -1) + 1;
+
+    const { data, error } = await supabase
+        .from('contacts')
+        .insert({
+            household_id: householdId,
+            name: input.name.trim(),
+            phone: input.phone.trim(),
+            company: input.company?.trim() || null,
+            descriptor: input.descriptor?.trim() || null,
+            // avatarUrl undefined on insert just stores null. Callers that
+            // want to attach a photo upload first, then pass the storage
+            // path in `avatarUrl`.
+            avatar_url: input.avatarUrl ?? null,
+            sort_order: nextOrder,
+            // Phase 7 fields. Defaults match the migration so undefined here
+            // produces the same row a pre-Phase-7 insert would have.
+            category: input.category ?? 'other',
+            is_favorite: input.isFavorite ?? false,
+            is_emergency: input.isEmergency ?? false,
+            email: input.email?.trim() || null,
+            best_time: input.bestTime?.trim() || null,
+            address: input.address?.trim() || null,
+            notes: input.notes?.trim() || null,
+            linked_event_id: input.linkedEventId ?? null,
+        })
+        .select()
+        .single();
+    if (error) throw error;
+    return data as Contact;
+}
+
+export async function updateContact(
+    id: string,
+    input: ContactInput,
+): Promise<Contact> {
+    // avatar_url has three states on update:
+    //   undefined → leave existing value alone
+    //   null      → clear the avatar (delete the file separately via
+    //               deleteContactAvatar if you want to free storage)
+    //   string    → replace with the new storage path
+    // Branching here so we don't accidentally null out an existing avatar
+    // when callers only meant to update name/phone.
+    const patch: Record<string, unknown> = {
+        name: input.name.trim(),
+        phone: input.phone.trim(),
+        company: input.company?.trim() || null,
+        descriptor: input.descriptor?.trim() || null,
+    };
+    if (input.avatarUrl !== undefined) {
+        patch.avatar_url = input.avatarUrl;
+    }
+    // Phase 7 fields. Every field follows the "undefined leaves it alone,
+    // explicit value overwrites" convention so callers can patch just one
+    // attribute (e.g. toggling favorite from a list row) without re-sending
+    // the rest. null is meaningful for the nullable text/FK fields — pass
+    // it explicitly to clear an existing value.
+    if (input.category !== undefined) patch.category = input.category;
+    if (input.isFavorite !== undefined) patch.is_favorite = input.isFavorite;
+    if (input.isEmergency !== undefined) patch.is_emergency = input.isEmergency;
+    if (input.email !== undefined) {
+        patch.email = input.email === null ? null : input.email.trim() || null;
+    }
+    if (input.bestTime !== undefined) {
+        patch.best_time = input.bestTime === null ? null : input.bestTime.trim() || null;
+    }
+    if (input.address !== undefined) {
+        patch.address = input.address === null ? null : input.address.trim() || null;
+    }
+    if (input.notes !== undefined) {
+        patch.notes = input.notes === null ? null : input.notes.trim() || null;
+    }
+    if (input.linkedEventId !== undefined) patch.linked_event_id = input.linkedEventId;
+    const { data, error } = await supabase
+        .from('contacts')
+        .update(patch)
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    return data as Contact;
+}
+
+/**
+ * Upload a contact avatar to the contact-avatars Storage bucket. Returns
+ * the storage path (suitable for storing in contacts.avatar_url) on success.
+ * Path layout is `{household_id}/{contact_id_or_temp}.{ext}` — household_id
+ * being the first path segment is what the bucket's RLS policies look at.
+ *
+ * For NEW contacts (no id yet), pass a placeholder id and rename after the
+ * insert returns its real id — OR just upload after the insert so you have
+ * a real contact_id. The latter is simpler and what the form does today.
+ */
+export async function uploadContactAvatar(
+    householdId: string,
+    contactId: string,
+    file: Blob | File | ArrayBuffer,
+    ext: string,
+): Promise<string> {
+    // Path includes a cache-busting query bit via the contact_id only — we
+    // overwrite the same path on re-upload so old image bytes drop out of
+    // the CDN. The `upsert: true` flag below makes that explicit.
+    const cleanExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const path = `${householdId}/${contactId}.${cleanExt}`;
+    const { error } = await supabase.storage
+        .from('contact-avatars')
+        .upload(path, file as Blob, {
+            upsert: true,
+            // contentType is sniffed by Supabase Storage for File / Blob inputs;
+            // setting it here keeps the metadata correct for ArrayBuffer paths.
+            contentType: ext === 'png' ? 'image/png' : 'image/jpeg',
+        });
+    if (error) throw error;
+    return path;
+}
+
+/**
+ * Mints a signed URL for an avatar storage path. URLs are time-limited so
+ * we don't have to mark the bucket public. Default expiry is one hour, which
+ * is long enough for a session of browsing the Contacts tab without burning
+ * URLs constantly.
+ */
+export async function getContactAvatarSignedUrl(
+    path: string,
+    expiresInSec = 3600,
+): Promise<string | null> {
+    const { data, error } = await supabase.storage
+        .from('contact-avatars')
+        .createSignedUrl(path, expiresInSec);
+    if (error) {
+        console.error('getContactAvatarSignedUrl failed', error);
+        return null;
+    }
+    return data?.signedUrl ?? null;
+}
+
+/**
+ * Removes an avatar file from Storage. Caller is responsible for also
+ * clearing contacts.avatar_url via updateContact({ avatarUrl: null }).
+ * Errors are logged but not thrown — leaving an orphan file in storage
+ * is harmless and shouldn't block the user-facing delete flow.
+ */
+export async function deleteContactAvatar(path: string): Promise<void> {
+    const { error } = await supabase.storage
+        .from('contact-avatars')
+        .remove([path]);
+    if (error) console.error('deleteContactAvatar failed', error);
+}
+
+export async function deleteContact(id: string): Promise<void> {
+    const { error } = await supabase.from('contacts').delete().eq('id', id);
+    if (error) throw error;
+}
+
+export async function getContact(id: string): Promise<Contact | null> {
+    const { data, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+    if (error) throw error;
+    return (data as Contact) ?? null;
+}
+
 // Custody schedule.
 
 export async function getCustodySchedule(
@@ -710,20 +1527,39 @@ export async function upsertCustodySchedule(
     input: CustodyScheduleInput,
 ): Promise<CustodySchedule> {
     const userId = await currentUserId();
+    // Build the row payload incrementally so that omitted optional fields
+    // (handoff_time, anchor parent, behavior toggles) don't accidentally
+    // overwrite existing column values back to defaults. Postgres
+    // .upsert() will only write keys present in the object — but to be
+    // explicit + safe-by-default for the existing call sites, we only
+    // include the new columns when the caller passes them.
+    const row: Record<string, unknown> = {
+        household_id: householdId,
+        pattern_id: input.patternId,
+        cycle_days: input.cycleDays,
+        parent_a_profile_id: input.parentAProfileId,
+        parent_b_profile_id: input.parentBProfileId,
+        anchor_date: input.anchorDate,
+        created_by: userId,
+        // Re-enable any prior soft-stop on save (#376). If the user is
+        // pressing Save in the editor, they want this pattern active.
+        // The Stop flow uses a dedicated `disableCustodySchedule` helper
+        // that doesn't go through here.
+        disabled_at: null,
+    };
+    if (input.handoffTime !== undefined) row.handoff_time = input.handoffTime;
+    if (input.handoffDayIndex !== undefined)
+        row.handoff_day_index = input.handoffDayIndex;
+    if (input.handoffLocationId !== undefined)
+        row.handoff_location_id = input.handoffLocationId;
+    if (input.autoAssign !== undefined) row.auto_assign = input.autoAssign;
+    if (input.handoffReminders !== undefined)
+        row.handoff_reminders = input.handoffReminders;
+    if (input.notifyExternals !== undefined)
+        row.notify_externals = input.notifyExternals;
     const { data, error } = await supabase
         .from('custody_schedules')
-        .upsert(
-            {
-                household_id: householdId,
-                pattern_id: input.patternId,
-                cycle_days: input.cycleDays,
-                parent_a_profile_id: input.parentAProfileId,
-                parent_b_profile_id: input.parentBProfileId,
-                anchor_date: input.anchorDate,
-                created_by: userId,
-            },
-            { onConflict: 'household_id' },
-        )
+        .upsert(row, { onConflict: 'household_id' })
         .select()
         .single();
     if (error) throw error;
@@ -732,6 +1568,22 @@ export async function upsertCustodySchedule(
 
 export async function deleteCustodySchedule(id: string): Promise<void> {
     const { error } = await supabase.from('custody_schedules').delete().eq('id', id);
+    if (error) throw error;
+}
+
+/**
+ * "Stop using a custody pattern" soft-stop (#376). Sets disabled_at so
+ * resolvers + UI treat the household as having no active pattern, while
+ * preserving the row + its historical assignments. Re-enabled by saving
+ * the pattern again via upsertCustodySchedule (which clears disabled_at).
+ */
+export async function disableCustodySchedule(
+    householdId: string,
+): Promise<void> {
+    const { error } = await supabase
+        .from('custody_schedules')
+        .update({ disabled_at: new Date().toISOString() })
+        .eq('household_id', householdId);
     if (error) throw error;
 }
 
@@ -986,10 +1838,21 @@ export async function getCustodyOverridesForRange(
     rangeStartDate: string, // YYYY-MM-DD inclusive
     rangeEndDate: string, // YYYY-MM-DD inclusive
 ): Promise<CustodyOverride[]> {
+    // Whole-household overrides only (child_id IS NULL). Migration
+    // 0048 added the column to enable per-child overrides as a future
+    // feature, but the per-child editor + resolver work is still
+    // deferred (#373). Until then, returning both shapes from this
+    // fetch breaks buildOverrideMap (date-only key → last-write-wins
+    // collision between household-wide + per-child rows on the same
+    // date). Filter at fetch time so callers don't have to know.
+    //
+    // When the per-child editor lands, this filter goes away and the
+    // resolver layer learns to thread `childId` through its lookups.
     const { data, error } = await supabase
         .from('custody_overrides')
         .select('*')
         .eq('household_id', householdId)
+        .is('child_id', null)
         .gte('override_date', rangeStartDate)
         .lte('override_date', rangeEndDate);
     if (error) throw error;
@@ -1001,8 +1864,18 @@ export async function upsertCustodyOverride(
     overrideDate: string,
     custodianProfileId: string,
     note: string | null,
+    childId: string | null = null,
 ): Promise<CustodyOverride> {
     const userId = await currentUserId();
+    // The 0048 migration splits the unique constraint into two partial
+    // indexes: one for whole-household overrides (child_id IS NULL) and
+    // one per-child. Supabase's onConflict expects a single matching
+    // unique target, so we route to the right one based on whether
+    // child_id is provided.
+    const conflictTarget =
+        childId === null
+            ? 'household_id,override_date'
+            : 'household_id,override_date,child_id';
     const { data, error } = await supabase
         .from('custody_overrides')
         .upsert(
@@ -1011,9 +1884,10 @@ export async function upsertCustodyOverride(
                 override_date: overrideDate,
                 custodian_profile_id: custodianProfileId,
                 note: note?.trim() || null,
+                child_id: childId,
                 created_by: userId,
             },
-            { onConflict: 'household_id,override_date' },
+            { onConflict: conflictTarget },
         )
         .select()
         .single();
@@ -1024,13 +1898,110 @@ export async function upsertCustodyOverride(
 export async function deleteCustodyOverride(
     householdId: string,
     overrideDate: string,
+    childId: string | null = null,
 ): Promise<void> {
-    const { error } = await supabase
+    let query = supabase
         .from('custody_overrides')
         .delete()
         .eq('household_id', householdId)
         .eq('override_date', overrideDate);
+    // Match the same scope as upsert — whole-household vs. per-child.
+    // .eq doesn't accept null; use .is() for the NULL match.
+    query = childId === null ? query.is('child_id', null) : query.eq('child_id', childId);
+    const { error } = await query;
     if (error) throw error;
+}
+
+// ─── Swap requests (#372) ──────────────────────────────────────────────
+
+/**
+ * List swap requests for a household, filtered by status. Default is
+ * 'pending' — the Family Hub banner uses this to drive its visibility.
+ * Sorted newest first so the banner always shows the most recent ask.
+ */
+export async function getSwapRequests(
+    householdId: string,
+    status: SwapRequestStatus | 'all' = 'pending',
+): Promise<SwapRequest[]> {
+    let query = supabase
+        .from('swap_requests')
+        .select('*')
+        .eq('household_id', householdId)
+        .order('created_at', { ascending: false });
+    if (status !== 'all') query = query.eq('status', status);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data ?? []) as SwapRequest[];
+}
+
+/**
+ * Create a pending swap request. Used by the future #399 review screen
+ * — exposed now so the table has a write path for tests + a manual
+ * smoke check before the UI lands.
+ */
+export async function createSwapRequest(input: {
+    householdId: string;
+    affectedChildId?: string | null;
+    fromDate: string;
+    toDate: string;
+    note?: string | null;
+}): Promise<SwapRequest> {
+    const userId = await currentUserId();
+    const { data, error } = await supabase
+        .from('swap_requests')
+        .insert({
+            household_id: input.householdId,
+            requested_by_profile_id: userId,
+            affected_child_id: input.affectedChildId ?? null,
+            from_date: input.fromDate,
+            to_date: input.toDate,
+            note: input.note?.trim() || null,
+            // Status defaults to 'pending' at the column level.
+        })
+        .select()
+        .single();
+    if (error) throw error;
+    return data as SwapRequest;
+}
+
+/**
+ * Mark a swap request as accepted or declined. Wired by #399; exposed
+ * now for completeness. The migration's check constraint enforces that
+ * decided_by + decided_at are both set on accept/decline.
+ */
+export async function decideSwapRequest(
+    id: string,
+    decision: 'accepted' | 'declined',
+): Promise<SwapRequest> {
+    const userId = await currentUserId();
+    const { data, error } = await supabase
+        .from('swap_requests')
+        .update({
+            status: decision,
+            decided_by_profile_id: userId,
+            decided_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    return data as SwapRequest;
+}
+
+/**
+ * Withdraw a still-pending swap request. The requester can call this
+ * before the other parent decides; RLS allows any parent to update,
+ * but the UI should gate it to the requester to keep semantics clean.
+ */
+export async function cancelSwapRequest(id: string): Promise<SwapRequest> {
+    const { data, error } = await supabase
+        .from('swap_requests')
+        .update({ status: 'cancelled' })
+        .eq('id', id)
+        .select()
+        .single();
+    if (error) throw error;
+    return data as SwapRequest;
 }
 
 export async function deleteEvent(id: string): Promise<void> {
@@ -1234,6 +2205,19 @@ export async function setTaskChildren(taskId: string, childIds: string[]): Promi
 // Tasks — household-scoped todo items, optionally tied to an event. Multi-assign via
 // the task_assignees junction (zero rows = "anyone").
 
+/**
+ * Per-task urgency. Five levels matching the v2 TaskDetail design's
+ * PrioritySheet (screens-task-edit.jsx). Stored as a Postgres enum
+ * (`task_priority`, migrations 0037 + 0038) so the schema constrains
+ * legal values at the DB layer:
+ *   * 'none'   — no priority indicator
+ *   * 'low'    — nice to have (quiet)
+ *   * 'normal' — default (quiet)
+ *   * 'high'   — surfaces above Normal; HIGH PRIORITY pill in hero
+ *   * 'urgent' — surfaces above everything; URGENT pill in hero
+ */
+export type TaskPriority = 'none' | 'low' | 'normal' | 'high' | 'urgent';
+
 export type Task = {
     id: string;
     household_id: string;
@@ -1241,6 +2225,8 @@ export type Task = {
     title: string;
     notes: string | null;
     due_at: string | null;
+    /** See TaskPriority. Defaults to 'normal' for every row at the DB level. */
+    priority: TaskPriority;
     /**
      * Absolute timestamp when a push reminder should fire. Null = no reminder. The
      * client computes this from a preset offset against due_at on save; edits to
@@ -1293,6 +2279,12 @@ export type NewTaskInput = {
      * clear, undefined to leave the existing value alone on update.
      */
     reminderAt?: string | null;
+    /**
+     * Task urgency. Undefined on update means "don't touch"; on create the DB
+     * default ('normal') takes over. Explicit values flow through to the
+     * `priority` column.
+     */
+    priority?: TaskPriority;
     assigneeProfileIds?: string[];
 };
 
@@ -1349,6 +2341,26 @@ export async function getEventTasks(eventId: string): Promise<Task[]> {
         .from('tasks')
         .select('*, task_assignees(profile_id), task_lists(list_id), task_children(child_id)')
         .eq('event_id', eventId)
+        .order('created_at', { ascending: true });
+    if (error) throw error;
+    return ((data ?? []) as Array<Record<string, unknown>>).map(attachTaskRelations);
+}
+
+/**
+ * All tasks (open AND completed) attached to ANY of the given event IDs.
+ * Used by the Home timeline so each event row can show a `done/total`
+ * completion counter and (when expanded) the full inline task list with
+ * completed tasks visible-but-ticked rather than filtered out. Single
+ * `IN ()` query — one round-trip for N events rather than N per-event
+ * fetches. Ordering matches getEventTasks (oldest first), grouping is
+ * the caller's job (Map<event_id, Task[]>).
+ */
+export async function getTasksForEvents(eventIds: string[]): Promise<Task[]> {
+    if (eventIds.length === 0) return [];
+    const { data, error } = await supabase
+        .from('tasks')
+        .select('*, task_assignees(profile_id), task_lists(list_id), task_children(child_id)')
+        .in('event_id', eventIds)
         .order('created_at', { ascending: true });
     if (error) throw error;
     return ((data ?? []) as Array<Record<string, unknown>>).map(attachTaskRelations);
@@ -1429,6 +2441,11 @@ export async function createTask(
             // Insert with reminded_at=null so the cron job picks this up at
             // reminder_at. Inserts never carry a "remembered" state.
             reminder_at: input.reminderAt ?? null,
+            // Omit when undefined so the DB default ('normal') applies.
+            // Explicit values pass through.
+            ...(input.priority !== undefined
+                ? { priority: input.priority }
+                : {}),
             created_by: userId,
         })
         .select()
@@ -1481,6 +2498,13 @@ export async function updateTask(id: string, input: NewTaskInput): Promise<Task>
     if (input.reminderAt !== undefined) {
         patch.reminder_at = input.reminderAt;
         patch.reminded_at = null;
+    }
+    // Priority: same "undefined skips, explicit value patches" semantics so
+    // the contract matches reminderAt / listIds / childIds. The Lists swipe
+    // snooze handler and the detail screen's snooze button both pass
+    // undefined here and rely on this to preserve priority across edits.
+    if (input.priority !== undefined) {
+        patch.priority = input.priority;
     }
     const { error } = await supabase.from('tasks').update(patch).eq('id', id);
     if (error) throw error;

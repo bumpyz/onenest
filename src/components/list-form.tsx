@@ -1,29 +1,65 @@
-// Shared add / edit form for task lists. Used by /list/new and /list/[id], mirroring
-// the ChildForm pattern. Name is required; color is picker-driven (palette swatches)
-// with the DB trigger filling in a default on create.
+// ListForm — CreateList / EditList surface, v2 scaffold (spec 05.8).
 //
-// The "Inbox" default list is special: the parent screen passes isDefault=true and we
-// disable the delete button (the auto-default-task trigger expects an Inbox to exist
-// per household). Renaming and color changes are still allowed — Inbox is a UX label,
-// not an immutable system row.
+// Design source: docs/design-handoffs/onenest-spec-v1/
+//   design_handoff_creation_flows/screens-creation.jsx::CreateList
+//   (~line 440).
+//
+// Sections, top to bottom (matches canvas 05.8):
+//   1. TitleInput "LIST NAME" — accent underline.
+//   2. Kind — 4-segment SegRow (Tasks / Grocery / Shopping / Packing)
+//      with explainer copy below. Currently no DB column backs this;
+//      the picker is a visual scaffold and the value isn't persisted
+//      until a follow-up schema migration adds `lists.kind`.
+//   3. Color + Icon — 8 swatches mapped to LIST_PALETTE + icon
+//      chevron row (icon picker is deferred — sub-row reads "Coming
+//      soon").
+//   4. For — multi-select kid chips. Setting kids here drives a
+//      downstream default; same schema gap as Kind (no FK to children
+//      from lists yet — visual scaffold).
+//   5. Shared with — member chips + Caregiver DashedAddChip + accent-
+//      tinted visibility banner. Schema gap as above.
+//   6. Start from — TmplRow radio rows (Blank / Soccer prep / School
+//      morning / Custom paste). Templates aren't backed yet; "Blank
+//      list" is the only functional option.
+//   7. Smart suggestion — dashed-border card (visual scaffold).
+//
+// The shape of `ListFormSubmit` stays minimal (`name` + `color`)
+// because that's what the current `lists` schema supports. The richer
+// fields will hook up via this same form once the migration lands.
 
 import { useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import {
+    ColorSwatch,
+    CreateTopBar,
+    DashedAddChip,
+    FormGroup,
+    FormRow,
+    FormSectionLabel,
+    PersonChip,
+    SegRow,
+    TitleInput,
+    TmplRow,
+} from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
 import { LIST_PALETTE } from '@/lib/colors';
 import { errorMessage } from '@/lib/errors';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
+// ─── Public types ───────────────────────────────────────────────────────
+
+// Kind enum is local for now — when `lists.kind` lands as a schema
+// column, lift this to db.ts as a real exported type.
+type ListKind = 'tasks' | 'grocery' | 'shopping' | 'packing';
+type TemplateId = 'blank' | 'soccer-prep' | 'school-morning' | 'custom-paste';
+
 export type ListFormValues = {
     name: string;
-    /**
-     * Hex #RRGGBB. Null on create (the DB trigger picks one) or when the user hasn't
-     * touched the palette yet; a real hex on edit (preloaded from the row).
-     */
+    /** Hex #RRGGBB. Null on create lets the DB trigger pick. */
     color: string | null;
 };
 
@@ -36,29 +72,30 @@ type Props = {
     headerTitle: string;
     submitLabel?: string;
     initialValues: ListFormValues;
-    /**
-     * True when editing the household's default Inbox list. Suppresses the delete
-     * button; the auto-default-task trigger relies on Inbox existing.
-     */
     isDefault?: boolean;
-    /**
-     * Open task count on this list. Used to customize the delete confirmation copy so
-     * the user knows what's about to happen to their tasks before they confirm. Pass
-     * undefined for create flows (no count to show).
-     */
     taskCount?: number;
-    /**
-     * UX-010 native chip-reorder path. The Lists tab's drag-to-reorder only works on
-     * web (pointer-event based). On any platform, these callbacks expose an
-     * equivalent "Move up" / "Move down" affordance from inside the edit screen.
-     * Pass undefined for create flows or for Inbox (which is pinned at index 0).
-     */
     onMoveUp?: () => Promise<void>;
     onMoveDown?: () => Promise<void>;
     onSubmit: (input: ListFormSubmit) => Promise<void>;
     onDelete?: () => Promise<void>;
     onCancel: () => void;
 };
+
+const KIND_OPTIONS: ReadonlyArray<{ id: ListKind; label: string }> = [
+    { id: 'tasks', label: 'Tasks' },
+    { id: 'grocery', label: 'Grocery' },
+    { id: 'shopping', label: 'Shopping' },
+    { id: 'packing', label: 'Packing' },
+];
+
+const KIND_COPY: Record<ListKind, string> = {
+    tasks: 'Tasks include due dates and assignments.',
+    grocery: 'Grocery items add quantity + store.',
+    shopping: 'Shopping items add price + retailer.',
+    packing: 'Packing items add a where-it’s-going destination.',
+};
+
+// ─── Component ─────────────────────────────────────────────────────────
 
 export function ListForm({
     headerTitle,
@@ -77,6 +114,9 @@ export function ListForm({
 
     const [name, setName] = useState(initialValues.name);
     const [color, setColor] = useState<string | null>(initialValues.color);
+    // Visual-only state — not persisted until schema lands.
+    const [kind, setKind] = useState<ListKind>('tasks');
+    const [template, setTemplate] = useState<TemplateId>('blank');
     const [submitting, setSubmitting] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [moving, setMoving] = useState(false);
@@ -100,9 +140,6 @@ export function ListForm({
         }
     };
 
-    /** UX-010: shared handler for the Move up / Move down buttons. Wraps the parent's
-     *  swap callback with busy-state + error reporting so the form behaves like the
-     *  rest of its actions. */
     const handleMove = async (direction: 'up' | 'down') => {
         const fn = direction === 'up' ? onMoveUp : onMoveDown;
         if (!fn || busy) return;
@@ -122,11 +159,6 @@ export function ListForm({
 
     const handleDelete = async () => {
         if (!onDelete || busy) return;
-        // Tailor the copy to whether there's actually anything at risk. Empty lists
-        // get a terse confirm; lists with open tasks spell out the Inbox-fallback
-        // semantic so the user isn't surprised. We use open count specifically (not
-        // total) — completed tasks falling back to Inbox is also true but uninteresting
-        // to mention as a warning.
         const count = taskCount ?? 0;
         const title = 'Delete this list?';
         const detail =
@@ -157,156 +189,245 @@ export function ListForm({
         }
     };
 
-    const inputStyle = {
-        color: colors.text,
-        borderColor: colors.backgroundSelected,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        fontSize: 16,
-        height: 44,
-    };
-
     return (
         <ThemedView style={styles.container}>
-            <SafeAreaView style={styles.safe}>
-                <View style={styles.headerBar}>
-                    <Pressable
-                        onPress={onCancel}
-                        disabled={busy}
-                        style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}>
-                        <ThemedText themeColor="textSecondary">Cancel</ThemedText>
-                    </Pressable>
-                    <ThemedText type="smallBold">{headerTitle}</ThemedText>
-                    <Pressable
-                        onPress={handleSubmit}
-                        disabled={!canSubmit}
-                        style={({ pressed }) => [
-                            styles.headerBtn,
-                            pressed && canSubmit && styles.pressed,
-                        ]}>
-                        <ThemedText
-                            style={{
-                                color: canSubmit ? '#6F7FA5' : colors.textSecondary,
-                                fontWeight: '600',
-                            }}>
-                            {submitting ? 'Saving…' : submitLabel}
-                        </ThemedText>
-                    </Pressable>
-                </View>
-
+            <SafeAreaView style={styles.safe} edges={['top']}>
+                <CreateTopBar
+                    title={headerTitle}
+                    saveLabel={submitting ? 'Saving…' : submitLabel}
+                    saveDisabled={!canSubmit}
+                    onCancel={onCancel}
+                    onSave={handleSubmit}
+                />
                 <ScrollView
                     contentContainerStyle={styles.scroll}
                     keyboardShouldPersistTaps="handled">
-                    {/* Live preview of the list chip so the user can see how it'll look
-                        in the tab strip before saving. */}
-                    <View style={styles.previewRow}>
-                        <View
-                            style={[
-                                styles.previewChip,
-                                {
-                                    backgroundColor: color ?? LIST_PALETTE[0],
-                                    borderColor: colors.backgroundSelected,
-                                },
-                            ]}>
-                            <ThemedText type="small" style={styles.previewChipText}>
-                                {name.trim() || 'List name'}
-                            </ThemedText>
-                        </View>
+                    <TitleInput
+                        label="LIST NAME"
+                        value={name}
+                        onChangeText={setName}
+                        placeholder="e.g. Soccer prep"
+                        autoFocus={!initialValues.name}
+                        autoCapitalize="words"
+                        editable={!busy}
+                    />
+
+                    {/* KIND */}
+                    <FormSectionLabel>Kind</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            <View style={styles.segWrap}>
+                                <SegRow
+                                    options={KIND_OPTIONS}
+                                    selected={kind}
+                                    onSelect={setKind}
+                                    disabled={busy}
+                                />
+                                <ThemedText
+                                    style={[
+                                        styles.helperCopy,
+                                        { color: colors.inkFaint },
+                                    ]}>
+                                    {KIND_COPY[kind]}
+                                </ThemedText>
+                                <ThemedText
+                                    style={[
+                                        styles.helperCopy,
+                                        {
+                                            color: colors.inkFaint,
+                                            fontFamily: FontFamily.monoMedium,
+                                            marginTop: 4,
+                                        },
+                                    ]}>
+                                    · List kind backend lands in a future
+                                    update — the selection isn't saved yet.
+                                </ThemedText>
+                            </View>
+                        </FormGroup>
                     </View>
 
-                    <View style={styles.field}>
-                        <ThemedText type="smallBold">Name</ThemedText>
-                        <TextInput
-                            value={name}
-                            onChangeText={setName}
-                            placeholder="e.g. Groceries"
-                            placeholderTextColor={colors.textSecondary}
-                            style={inputStyle}
-                            autoFocus
-                            autoCapitalize="words"
-                            editable={!busy}
-                        />
-                    </View>
-
-                    <View style={styles.field}>
-                        <ThemedText type="smallBold">Color</ThemedText>
-                        <View style={styles.swatchRow}>
-                            {LIST_PALETTE.map((c) => {
-                                const selected = color === c;
-                                return (
-                                    <Pressable
+                    {/* COLOR + ICON */}
+                    <FormSectionLabel>Color</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            <View style={styles.swatchRow}>
+                                {LIST_PALETTE.map((c) => (
+                                    <ColorSwatch
                                         key={c}
+                                        color={c}
+                                        selected={color === c}
                                         onPress={() => setColor(c)}
                                         disabled={busy}
-                                        style={({ pressed }) => [
-                                            styles.swatch,
-                                            {
-                                                backgroundColor: c,
-                                                borderColor: selected
-                                                    ? colors.text
-                                                    : 'transparent',
-                                            },
-                                            pressed && styles.pressed,
-                                        ]}
+                                        label={`Color ${c}`}
                                     />
-                                );
-                            })}
-                        </View>
+                                ))}
+                            </View>
+                            <FormRow
+                                label="Icon"
+                                value="Coming soon"
+                                muted
+                                chevron
+                                last
+                            />
+                        </FormGroup>
                     </View>
 
-                    {/* UX-010: Move up / Move down for native users (and as a
-                        keyboard-accessible alternative to drag on web). The parent
-                        only passes callbacks when the move is valid at the
-                        current position, so undefined → button disabled. Inbox
-                        gets neither callback (pinned at index 0). */}
-                    {onMoveUp || onMoveDown ? (
-                        <View style={styles.field}>
-                            <ThemedText type="smallBold">Order</ThemedText>
-                            <View style={styles.moveRow}>
-                                <Pressable
-                                    onPress={() => handleMove('up')}
-                                    disabled={!onMoveUp || busy}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Move list up"
-                                    accessibilityState={{ disabled: !onMoveUp || busy }}
-                                    style={({ pressed }) => [
-                                        styles.moveBtn,
+                    {/* FOR (kids) — schema-gated. Render the row muted
+                        "Coming soon" rather than ship chips that can't
+                        save. */}
+                    <FormSectionLabel>For</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            <FormRow
+                                label="Tag kids"
+                                value="Coming soon"
+                                muted
+                                chevron
+                            />
+                            <ExplainerRow
+                                colors={colors}
+                                text={
+                                    'New tasks added to this list will default to the tagged kids once the migration lands.'
+                                }
+                                last
+                            />
+                        </FormGroup>
+                    </View>
+
+                    {/* SHARED WITH — schema-gated. */}
+                    <FormSectionLabel>Shared with</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            <View style={styles.chipBlock}>
+                                <View style={styles.chipRow}>
+                                    <PersonChip
+                                        name="Me"
+                                        color={colors.accent}
+                                        selected
+                                    />
+                                    <DashedAddChip label="+ Caregiver" />
+                                </View>
+                                <View
+                                    style={[
+                                        styles.visibilityBanner,
                                         {
-                                            borderColor: colors.backgroundSelected,
-                                            opacity: !onMoveUp || busy ? 0.4 : 1,
+                                            backgroundColor:
+                                                colors.accent + '10',
                                         },
-                                        pressed && onMoveUp && !busy && styles.pressed,
                                     ]}>
-                                    <ThemedText type="small" style={styles.moveBtnText}>
-                                        ↑ Move up
+                                    <ThemedText
+                                        style={[
+                                            styles.visibilityText,
+                                            { color: colors.inkSec },
+                                        ]}>
+                                        Anyone shared can add tasks and tick
+                                        them off. External co-parents only see
+                                        tasks tagged for kids they share.
                                     </ThemedText>
-                                </Pressable>
-                                <Pressable
-                                    onPress={() => handleMove('down')}
-                                    disabled={!onMoveDown || busy}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Move list down"
-                                    accessibilityState={{ disabled: !onMoveDown || busy }}
-                                    style={({ pressed }) => [
-                                        styles.moveBtn,
-                                        {
-                                            borderColor: colors.backgroundSelected,
-                                            opacity: !onMoveDown || busy ? 0.4 : 1,
-                                        },
-                                        pressed && onMoveDown && !busy && styles.pressed,
-                                    ]}>
-                                    <ThemedText type="small" style={styles.moveBtnText}>
-                                        ↓ Move down
-                                    </ThemedText>
-                                </Pressable>
+                                </View>
                             </View>
+                        </FormGroup>
+                    </View>
+
+                    {/* START FROM */}
+                    <FormSectionLabel>Start from</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            <TmplRow
+                                title="Blank list"
+                                sub="Just the name and the kid"
+                                selected={template === 'blank'}
+                                onPress={() => setTemplate('blank')}
+                            />
+                            <TmplRow
+                                title="Soccer prep"
+                                sub="6 typical items · cleats, water, snack, shin guards…"
+                                badge="POPULAR"
+                                selected={template === 'soccer-prep'}
+                                onPress={() => setTemplate('soccer-prep')}
+                                disabled
+                            />
+                            <TmplRow
+                                title="School morning"
+                                sub="9 typical items · backpack, lunch, library book…"
+                                selected={template === 'school-morning'}
+                                onPress={() => setTemplate('school-morning')}
+                                disabled
+                            />
+                            <TmplRow
+                                title="Custom paste"
+                                sub="Paste a list · we'll split it into items"
+                                selected={template === 'custom-paste'}
+                                onPress={() => setTemplate('custom-paste')}
+                                disabled
+                                last
+                            />
+                        </FormGroup>
+                    </View>
+
+                    {/* ORDER (Move up / Move down) — preserved from the
+                        previous form for native users since the Lists
+                        tab's drag-to-reorder is web-only. Kept outside
+                        the v2 vocabulary as a transitional affordance
+                        until a real reorder picker lands. */}
+                    {onMoveUp || onMoveDown ? (
+                        <>
+                            <FormSectionLabel>Order</FormSectionLabel>
+                            <View style={styles.section}>
+                                <FormGroup flush>
+                                    <FormRow
+                                        label="Move up"
+                                        onPress={
+                                            onMoveUp
+                                                ? () => handleMove('up')
+                                                : undefined
+                                        }
+                                        disabled={!onMoveUp || busy}
+                                        chevron={!!onMoveUp}
+                                        value={onMoveUp ? '' : 'Top of list'}
+                                        muted={!onMoveUp}
+                                    />
+                                    <FormRow
+                                        label="Move down"
+                                        onPress={
+                                            onMoveDown
+                                                ? () => handleMove('down')
+                                                : undefined
+                                        }
+                                        disabled={!onMoveDown || busy}
+                                        chevron={!!onMoveDown}
+                                        value={
+                                            onMoveDown ? '' : 'Bottom of list'
+                                        }
+                                        muted={!onMoveDown}
+                                        last
+                                    />
+                                </FormGroup>
+                            </View>
+                        </>
+                    ) : null}
+
+                    {isDefault ? (
+                        <View style={styles.section}>
+                            <ThemedText
+                                style={[
+                                    styles.inboxNote,
+                                    { color: colors.inkFaint },
+                                ]}>
+                                Inbox is the default list and can't be deleted.
+                                New tasks land here unless you pick another
+                                list.
+                            </ThemedText>
                         </View>
                     ) : null}
 
                     {error ? (
-                        <ThemedText type="small" style={styles.errorText}>
+                        <ThemedText
+                            type="small"
+                            style={[
+                                styles.errorText,
+                                { color: BrandColors.error },
+                            ]}>
                             {error}
                         </ThemedText>
                     ) : null}
@@ -324,75 +445,84 @@ export function ListForm({
                             </ThemedText>
                         </Pressable>
                     ) : null}
-                    {isDefault ? (
-                        <ThemedText type="small" themeColor="textSecondary">
-                            Inbox is the default list and can&apos;t be deleted. New
-                            tasks land here unless you pick another list.
-                        </ThemedText>
-                    ) : null}
                 </ScrollView>
             </SafeAreaView>
         </ThemedView>
     );
 }
 
+function ExplainerRow({
+    text,
+    colors,
+    last,
+}: {
+    text: string;
+    colors: typeof Colors.light | typeof Colors.dark;
+    last?: boolean;
+}) {
+    return (
+        <View
+            style={[
+                styles.explainerRow,
+                !last && {
+                    borderTopColor: colors.hair,
+                    borderTopWidth: StyleSheet.hairlineWidth,
+                },
+            ]}>
+            <ThemedText
+                style={[
+                    styles.explainerText,
+                    { color: colors.inkFaint },
+                ]}>
+                {text}
+            </ThemedText>
+        </View>
+    );
+}
+
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    headerBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: Spacing.four,
-        paddingVertical: Spacing.three,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: '#ddd',
-    },
-    headerBtn: { paddingVertical: Spacing.one, paddingHorizontal: Spacing.two },
-    scroll: { padding: Spacing.four, gap: Spacing.four, paddingBottom: Spacing.six },
-    field: { gap: Spacing.two },
-    previewRow: { alignItems: 'flex-start' },
-    previewChip: {
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.one,
-    },
-    previewChipText: { color: '#2A2E3A', fontWeight: '600' },
+    scroll: { paddingBottom: Spacing.six },
+    section: { paddingHorizontal: 16, paddingBottom: 12 },
+
+    segWrap: { padding: 14 },
+    helperCopy: { fontSize: 11, lineHeight: 16, marginTop: 8 },
+
     swatchRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: Spacing.three,
-        paddingVertical: Spacing.one,
+        gap: 10,
+        padding: 14,
     },
-    swatch: {
-        width: 36,
-        height: 36,
-        borderRadius: 18,
-        borderWidth: 3,
+
+    chipBlock: { padding: 12, gap: 10 },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+    visibilityBanner: {
+        flexDirection: 'row',
+        gap: 7,
+        padding: 9,
+        borderRadius: 7,
     },
-    errorText: { color: '#B85D52' },
+    visibilityText: { fontSize: 11, lineHeight: 16, flex: 1 },
+
+    explainerRow: { paddingHorizontal: 14, paddingVertical: 10 },
+    explainerText: { fontSize: 11, lineHeight: 16 },
+
+    inboxNote: { fontSize: 12, lineHeight: 18 },
+    errorText: {
+        paddingHorizontal: 16,
+        paddingTop: Spacing.two,
+    },
+
     deleteBtn: {
         marginTop: Spacing.three,
+        marginHorizontal: 16,
         paddingVertical: Spacing.three,
         borderRadius: Spacing.two,
-        backgroundColor: '#F3D9D3',
+        backgroundColor: BrandColors.errorBackground,
         alignItems: 'center',
     },
-    deleteText: { color: '#B85D52', fontWeight: '600' },
-    // UX-010: Move up / Move down buttons. Side-by-side, equal width, subtle border.
-    // Lower visual weight than the destructive Delete button — these are routine.
-    moveRow: {
-        flexDirection: 'row',
-        gap: Spacing.two,
-    },
-    moveBtn: {
-        flex: 1,
-        paddingVertical: Spacing.three,
-        borderRadius: Spacing.two,
-        borderWidth: 1,
-        alignItems: 'center',
-    },
-    moveBtnText: { fontWeight: '600' },
+    deleteText: { color: BrandColors.error, fontWeight: '600' },
     pressed: { opacity: 0.7 },
 });

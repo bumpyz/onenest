@@ -98,7 +98,7 @@ export default function JoinScreen() {
                             This URL is missing an invitation token.
                         </ThemedText>
                         <Pressable onPress={() => router.replace('/')} style={styles.linkBtn}>
-                            <ThemedText style={{ color: '#6F7FA5' }}>Go home</ThemedText>
+                            <ThemedText style={{ color: '#1F2940' }}>Go home</ThemedText>
                         </Pressable>
                     </View>
                 </SafeAreaView>
@@ -147,7 +147,7 @@ export default function JoinScreen() {
                             {previewError ?? 'Invitation not found.'}
                         </ThemedText>
                         <Pressable onPress={() => router.replace('/')} style={styles.linkBtn}>
-                            <ThemedText style={{ color: '#6F7FA5' }}>Go home</ThemedText>
+                            <ThemedText style={{ color: '#1F2940' }}>Go home</ThemedText>
                         </Pressable>
                     </View>
                 </SafeAreaView>
@@ -174,7 +174,7 @@ export default function JoinScreen() {
                         disabled={accepting}
                         style={({ pressed }) => [
                             styles.acceptButton,
-                            { backgroundColor: '#6F7FA5' },
+                            { backgroundColor: '#1F2940' },
                             pressed && styles.pressed,
                         ]}>
                         <ThemedText style={styles.acceptText}>

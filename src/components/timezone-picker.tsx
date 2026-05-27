@@ -79,7 +79,7 @@ export function TimezonePicker({ value, onChange, onCancel, deviceTimezone }: Pr
                     ]}>
                     <ThemedText
                         type="small"
-                        style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                        style={{ color: colors.accent, fontWeight: '600' }}>
                         Match my device ({deviceTimezone})
                     </ThemedText>
                 </Pressable>
@@ -112,6 +112,7 @@ export function TimezonePicker({ value, onChange, onCancel, deviceTimezone }: Pr
                                 showSeparator={idx > 0}
                                 onPress={() => onChange(opt.iana)}
                                 borderColor={colors.backgroundSelected}
+                                accentColor={colors.accent}
                             />
                         ))
                     )}
@@ -141,12 +142,14 @@ function TimezoneRow({
     showSeparator,
     onPress,
     borderColor,
+    accentColor,
 }: {
     option: TimezoneOption;
     selected: boolean;
     showSeparator: boolean;
     onPress: () => void;
     borderColor: string;
+    accentColor: string;
 }) {
     return (
         <Pressable
@@ -157,7 +160,7 @@ function TimezoneRow({
                     borderTopWidth: StyleSheet.hairlineWidth,
                     borderTopColor: borderColor,
                 },
-                selected && { backgroundColor: '#6F7FA522' },
+                selected && { backgroundColor: '#1F294022' },
                 pressed && styles.pressed,
             ]}>
             <View style={styles.offsetCol}>
@@ -170,7 +173,7 @@ function TimezoneRow({
                 </ThemedText>
             </View>
             {selected ? (
-                <ThemedText type="small" style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                <ThemedText type="small" style={{ color: accentColor, fontWeight: '600' }}>
                     ✓
                 </ThemedText>
             ) : null}

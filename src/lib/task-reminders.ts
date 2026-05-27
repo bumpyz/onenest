@@ -17,6 +17,10 @@ export const REMINDER_PRESETS: ReminderPreset[] = [
     { id: '15m', label: '15 min before', offsetMin: 15 },
     { id: '30m', label: '30 min before', offsetMin: 30 },
     { id: '1h', label: '1 hour before', offsetMin: 60 },
+    // 2h added in v2 TaskDetail per design source
+    // (screens-task-edit.jsx ReminderSheet:730). Slots between 1h and 1d
+    // as the next-coarser step.
+    { id: '2h', label: '2 hours before', offsetMin: 120 },
     { id: '1d', label: '1 day before', offsetMin: 60 * 24 },
 ];
 

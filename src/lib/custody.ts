@@ -1,7 +1,7 @@
-import { differenceInCalendarDays, format, parseISO } from 'date-fns';
+import { differenceInCalendarDays, format, parseISO, subDays } from 'date-fns';
 import { DateTime } from 'luxon';
 
-import type { CustodyOverride, CustodySchedule } from './db';
+import type { CustodyOverride, CustodySchedule, Event } from './db';
 
 /** QA-017: YYYY-MM-DD key for a date interpreted in the given IANA timezone.
  *  Mirrors `dateKeyInTz` in supabase/functions/_shared/recurrence-resolver.ts
@@ -21,8 +21,15 @@ export function dateKeyInTz(date: Date, tz: string | null | undefined): string {
 // 'A' / 'B' refers to the two parents stored on the schedule as parent_a_profile_id /
 // parent_b_profile_id. Pattern presets are just A/B day arrays of cycle length 7 or 14.
 // All patterns are anchored to schedule.anchor_date as "day 0 of the cycle".
+//
+// 'AB' (#379, "Together this week" state) marks a day where BOTH parents are
+// present. None of the six built-in presets generate 'AB' days — they come
+// from manual edits (the editor's per-day picker, eventually) or from
+// future shared-day patterns. When the resolver hits an 'AB' day with no
+// override, it returns `bothPresent: true` and `profileId: null` so the
+// UI can render the shared-state affordance instead of picking one parent.
 
-export type CustodyLabel = 'A' | 'B';
+export type CustodyLabel = 'A' | 'B' | 'AB';
 
 export type CustodyPatternId =
     | '2-2-3'
@@ -107,6 +114,9 @@ export function cycleIndexForDate(
     if (tz) {
         // Luxon-based day delta in tz, mirroring
         // supabase/functions/_shared/recurrence-resolver.ts dayDeltaInTz.
+        // Used by the responsible-resolver path (events have a tz, so
+        // we key cycle math off the event's wall-clock day to stay in
+        // lockstep with the Deno port).
         const aDt = DateTime.fromISO(schedule.anchor_date, { zone: tz }).startOf('day');
         const bDt = DateTime.fromJSDate(date, { zone: 'utc' })
             .setZone(tz)
@@ -115,13 +125,29 @@ export function cycleIndexForDate(
             ? Math.round(bDt.diff(aDt, 'days').days)
             : differenceInCalendarDays(date, parseISO(schedule.anchor_date));
     } else {
+        // Calendar UI callers (strip / hub / week-view band) pass a
+        // local-midnight Date constructed via `addDays(startOfWeek(now),
+        // i)` etc. — they want LOCAL calendar-day cycle math, which is
+        // what `differenceInCalendarDays(date, parseISO(anchor))`
+        // produces.
+        //
+        // An earlier post-audit fix replaced this with a UTC default to
+        // close a DST drift that affected northern-tz callers twice a
+        // year. That fix backfired: Luxon `fromJSDate({zone:'utc'})`
+        // reinterprets the local-midnight Date's underlying epoch ms as
+        // UTC — so a Tokyo user (UTC+9) saw their cycle index shift by
+        // a day every day, not just at DST. Restoring the date-fns
+        // path means the DST drift is back as a known minor issue, but
+        // the common-case eastern-tz drift is gone. The proper
+        // long-term fix is to thread tz through every caller — flagged
+        // as a follow-up.
         const anchor = parseISO(schedule.anchor_date);
         delta = differenceInCalendarDays(date, anchor);
     }
     return ((delta % cycleLength) + cycleLength) % cycleLength;
 }
 
-/** Returns 'A' or 'B' for the given date. Pass tz to compute in the event's wall-clock. */
+/** Returns 'A' / 'B' / 'AB' for the given date. Pass tz to compute in the event's wall-clock. */
 export function custodyLabelOnDate(
     schedule: CustodySchedule,
     date: Date,
@@ -131,13 +157,20 @@ export function custodyLabelOnDate(
     return (schedule.cycle_days[idx] as CustodyLabel) ?? 'A';
 }
 
-/** Returns the profile_id of the custodian for the given date from the schedule alone (no overrides). */
+/**
+ * Returns the profile_id of the custodian for the given date from the
+ * schedule alone (no overrides). Returns `null` for 'AB' (both-present)
+ * days — callers that need a single id should treat null as "no specific
+ * custodian" (e.g. event auto-assign falls back to Anyone semantics).
+ */
 export function custodianProfileIdOnDate(
     schedule: CustodySchedule,
     date: Date,
     tz?: string | null,
-): string {
-    return custodyLabelOnDate(schedule, date, tz) === 'A'
+): string | null {
+    const label = custodyLabelOnDate(schedule, date, tz);
+    if (label === 'AB') return null;
+    return label === 'A'
         ? schedule.parent_a_profile_id
         : schedule.parent_b_profile_id;
 }
@@ -156,10 +189,18 @@ export function buildOverrideMap(
 }
 
 export type ResolvedCustody = {
-    profileId: string;
-    /** True when this day was reassigned via an override; false when it comes straight from the pattern. */
+    /** Null on 'AB' days when no override applies (#379 — both parents
+     *  present, no single custodian). Otherwise the resolved profile_id. */
+    profileId: string | null;
+    /** True when this day was reassigned via an override; false when it
+     *  comes straight from the pattern. */
     isOverride: boolean;
     override: CustodyOverride | null;
+    /** True when the day's pattern label is 'AB' (both parents home) AND
+     *  there's no override pinning it to a single custodian. Overrides
+     *  always pick a single parent, so an override on an 'AB' day flips
+     *  this to false. Consumers render the shared-state UI when true. */
+    bothPresent: boolean;
 };
 
 /**
@@ -181,16 +222,28 @@ export function resolveCustodianOnDate(
     const dateKey = dateKeyInTz(date, tz);
     const override = overrideMap.get(dateKey) ?? null;
     if (override) {
+        // Override always pins to a single parent — even on what would
+        // otherwise be a both-present 'AB' day. bothPresent therefore
+        // false; consumers wanting the shared-state UI should check
+        // pattern-derived state separately if needed (rare).
         return {
             profileId: override.custodian_profile_id,
             isOverride: true,
             override,
+            bothPresent: false,
         };
     }
+    const label = custodyLabelOnDate(schedule, date, tz);
     return {
-        profileId: custodianProfileIdOnDate(schedule, date, tz),
+        profileId:
+            label === 'AB'
+                ? null
+                : label === 'A'
+                  ? schedule.parent_a_profile_id
+                  : schedule.parent_b_profile_id,
         isOverride: false,
         override: null,
+        bothPresent: label === 'AB',
     };
 }
 
@@ -213,4 +266,85 @@ export function previewLabels(
         result.push((schedule.cycle_days[idx] as CustodyLabel) ?? 'A');
     }
     return result;
+}
+
+/**
+ * Computes how many alternation-driven event responsibilities would change
+ * if the pattern were swapped to a new schedule (#378 "real impact warning").
+ *
+ * Only counts events that:
+ *   - have a responsible_alternation rule (custody-following events)
+ *   - fall within the lookahead window (default 28 days — covers ~2 cycles
+ *     of the typical 14-day pattern without an expensive long-tail query)
+ *   - resolve to a DIFFERENT custodian under the draft vs. the current
+ *
+ * Returns 0-shape when both schedules resolve identically — the editor's
+ * sticky save bar uses this to hide the warning entirely when no real
+ * impact (matches the design's hide-when-zero spec).
+ *
+ * Sample dates are returned for a future expanded-list affordance; the
+ * current pill renders only the count.
+ */
+export function previewImpact(
+    currentSchedule: CustodySchedule | null,
+    draftSchedule: CustodySchedule,
+    eventsInRange: Array<
+        Pick<
+            Event,
+            | 'id'
+            | 'starts_at'
+            | 'timezone'
+            | 'responsible_alternation'
+            | 'responsible_profile_id'
+        >
+    >,
+    overrideMap: Map<string, CustodyOverride>,
+): { eventCount: number; sampleDates: string[] } {
+    // No effective current schedule means everything alternation-driven
+    // is currently unresolved (or hits a fallback) — the diff is too
+    // ambiguous to surface a meaningful count. Treat as "no impact" so
+    // the warning hides. The disabled_at branch closes the bug where
+    // re-enabling a soft-stopped pattern (#376) showed a spurious
+    // non-zero count: previewImpact was still resolving against the
+    // currently-disabled schedule's pattern even though the live
+    // resolver treats it as no-schedule (#379 audit HIGH).
+    if (!currentSchedule || currentSchedule.disabled_at) {
+        return { eventCount: 0, sampleDates: [] };
+    }
+    const sampleDates = new Set<string>();
+    let eventCount = 0;
+    for (const e of eventsInRange) {
+        if (!e.responsible_alternation) continue;
+        const occDate = new Date(e.starts_at);
+        // DST-safe: subDays walks calendar days in local time rather
+        // than subtracting a raw 86_400_000 ms. The old subtract-24h
+        // form landed on the wrong calendar day around spring-forward
+        // and fall-back boundaries; the actual resolver
+        // (responsible-resolver.ts) already uses subDays, so the
+        // impact preview diverged from real-save behavior across DST.
+        const lookupDate =
+            e.responsible_alternation === 'previous_day'
+                ? subDays(occDate, 1)
+                : occDate;
+        const before = resolveCustodianOnDate(
+            currentSchedule,
+            overrideMap,
+            lookupDate,
+            e.timezone,
+        );
+        const after = resolveCustodianOnDate(
+            draftSchedule,
+            overrideMap,
+            lookupDate,
+            e.timezone,
+        );
+        if (before.profileId !== after.profileId) {
+            eventCount += 1;
+            sampleDates.add(format(lookupDate, 'yyyy-MM-dd'));
+        }
+    }
+    return {
+        eventCount,
+        sampleDates: Array.from(sampleDates).sort().slice(0, 5),
+    };
 }

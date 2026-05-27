@@ -31,6 +31,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ChildBadge } from '@/components/child-badge';
+import { ListCardV2, NewListCard, SectionHeader, TaskRow } from '@/components/ds';
 import { LoadingScreen } from '@/components/loading-screen';
 import {
     ScrollOverflowChevron,
@@ -38,8 +39,8 @@ import {
 } from '@/components/scroll-overflow-indicator';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing } from '@/constants/theme';
-import { FAB_SHADOW, PILL_SHADOW } from '@/lib/platform-styles';
+import { Colors, FontFamily, Spacing, Typography } from '@/constants/theme';
+import { FAB_SHADOW, withAlpha } from '@/lib/platform-styles';
 import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholdTasks } from '@/hooks/use-household-tasks';
@@ -52,6 +53,7 @@ import {
     setTaskCompleted,
     setTaskLists,
     updateList,
+    updateTask,
     type List as TaskList,
     type Task,
 } from '@/lib/db';
@@ -106,7 +108,21 @@ export default function ListsScreen() {
     // View mode toggle. Lives above the chip strip; defaults to by-list since most
     // households think list-first ("what's in Groceries?") before child-first
     // ("what's pending for Anna?").
-    const [viewMode, setViewMode] = useState<ViewMode>('by-list');
+    // Phase 8.x audit: the design (direction-c-pro.jsx ProLists) doesn't
+    // include a by-list/by-child view toggle — lists are the canonical
+    // org axis and per-child filtering is expected to happen via the
+    // list ("Mei's school") or task tagging. Freeze viewMode to 'by-list'
+    // and skip the toggle JSX. Leaving the const so the conditional
+    // branches downstream still compile (a future revival of by-child
+    // would just flip this back to useState).
+    // Widen via `as ViewMode` so downstream `viewMode === 'by-child'`
+    // comparisons still typecheck (TS would otherwise narrow the const
+    // to the 'by-list' literal and flag every comparison as unreachable).
+    const viewMode = 'by-list' as ViewMode;
+    const setViewMode = (_: ViewMode) => {
+        /* by-child view removed per design intent */
+    };
+    void setViewMode;
     const [activeListId, setActiveListId] = useState<string | null>(null);
     // Active child id when in by-child mode. null = show every task tagged with at
     // least one child (rare; usually you'd pick a specific kid).
@@ -134,37 +150,56 @@ export default function ListsScreen() {
 
     const [quickAddText, setQuickAddText] = useState('');
     const [adding, setAdding] = useState(false);
-    const [scope, setScope] = useState<Scope>('mine');
+
+    // Search state — Option A (mode-swap). The header's search button
+    // flips `searchOpen` true, which collapses the quick-add row and
+    // slides a search input into the same slot. Typing populates
+    // `searchText` which narrows the visible task set across the entire
+    // household (not scoped to the active list — typing "soccer" while
+    // sitting on Inbox should still find soccer in Activities). Cancel
+    // clears both and restores the quick-add row.
+    // Why both states + an explicit "open" flag (not just non-empty
+    // text): the user might tap search, see an empty input, change
+    // their mind, and tap Cancel without typing anything. The
+    // open-but-empty case is real UX, not a transient.
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchText, setSearchText] = useState('');
+    const searchInputRef = useRef<TextInput | null>(null);
+    // Derived flag — search is "active" (filtering tasks) only when the
+    // input is open AND has non-whitespace text. Open-but-empty still
+    // hides the chip strip + cards (so the user has a clean canvas)
+    // but doesn't filter the task list (would otherwise show "0 of 0
+    // matches" which reads as broken).
+    const searchActive = searchOpen && searchText.trim().length > 0;
+    const openSearch = useCallback(() => {
+        setSearchOpen(true);
+        // Defer focus to the next paint so the TextInput is mounted
+        // before .focus() runs. Without the timeout, the focus call
+        // races the mount on cold open and the keyboard doesn't pop.
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+    }, []);
+    const cancelSearch = useCallback(() => {
+        setSearchOpen(false);
+        setSearchText('');
+    }, []);
+    // Phase 8.x audit: the design has no Mine/All scope toggle — Lists
+    // shows all household tasks period; per-person filtering is implicit
+    // in the assignee avatars on each row. Lock to 'all' and skip the
+    // toggle JSX. Same const-with-noop pattern as viewMode above to
+    // avoid touching every downstream consumer.
+    const scope = 'all' as Scope;
+    const setScope = (_: Scope) => {
+        /* Mine/All toggle removed per design intent */
+    };
+    void setScope;
     // Which row, if any, has the "add to other lists" panel expanded. Keeping it
     // single-row (only one expanded at a time) keeps the screen quiet — tapping a
     // different row's pill collapses the previous one. Session-scoped state.
     const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
-    // ─── Bulk-select mode ──────────────────────────────────────────────────────
-    // When selectionMode is on, row taps toggle membership in selectedTaskIds
-    // instead of navigating to the task/event. A bulk action bar pinned to the
-    // bottom of the screen surfaces actions for the selected rows.
-    const [selectionMode, setSelectionMode] = useState(false);
-    const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(
-        () => new Set(),
-    );
-    // The list picker inside the action bar opens inline when the user taps "Add
-    // to list…" — separate from the per-row expand state above.
-    const [bulkAddListOpen, setBulkAddListOpen] = useState(false);
-    // Resets selection state when the user exits select mode. Wrapped so the
-    // cancel button and the "after action" cleanup share a single path.
-    const exitSelectionMode = useCallback(() => {
-        setSelectionMode(false);
-        setSelectedTaskIds(new Set());
-        setBulkAddListOpen(false);
-    }, []);
-    const toggleTaskSelected = useCallback((taskId: string) => {
-        setSelectedTaskIds((prev) => {
-            const next = new Set(prev);
-            if (next.has(taskId)) next.delete(taskId);
-            else next.add(taskId);
-            return next;
-        });
-    }, []);
+    // (Phase 8.x audit: bulk-select mode removed. Design's ProLists has
+    // no Select entry point; per-row swipe panels handle the common
+    // Done/Snooze/Delete actions individually. The corresponding state,
+    // handlers, and bulk-action bar JSX were removed with the toggle.)
 
     // ─── Drag-to-reorder (web only) ─────────────────────────────────────────────
     // The chip strip renders in the lists[] order at all times — we don't shuffle
@@ -227,16 +262,32 @@ export default function ListsScreen() {
             if (Platform.OS !== 'web') return;
             if (e.button !== 0) return;
             if (!lists) return;
-            // Bail when the click landed on the pencil edit button — we want that to
-            // open /list/[id], not start a drag.
-            const target = e.target as HTMLElement | null;
-            if (target?.closest('[data-chip-edit]')) return;
+            // Phase 6.7 follow-up #326: pencil edit-button removed; the
+            // [data-chip-edit] bail-out has no matching DOM and is gone.
             const list = lists[fromIndex];
             if (!list || list.is_default) return; // Inbox not draggable
-            e.preventDefault();
-            setDrag({ fromIndex, dropIndex: fromIndex });
+            // Phase 6.7 pass-2 QA fix: don't preventDefault and don't enter
+            // drag state on pointerdown. That suppressed RN-web Pressable's
+            // synthesized click + interfered with the new onLongPress for
+            // chip context menu. Both are deferred until the pointer moves
+            // past DRAG_THRESHOLD_PX — a clean tap never enters drag state
+            // and never blocks tap/long-press.
+            const DRAG_THRESHOLD_PX = 5;
+            const startX = e.clientX;
+            let dragStarted = false;
+
+            const startDrag = () => {
+                if (dragStarted) return;
+                dragStarted = true;
+                setDrag({ fromIndex, dropIndex: fromIndex });
+            };
 
             const onMove = (ev: PointerEvent) => {
+                if (!dragStarted) {
+                    if (Math.abs(ev.clientX - startX) < DRAG_THRESHOLD_PX) return;
+                    startDrag();
+                    ev.preventDefault();
+                }
                 const cursorX = ev.clientX;
                 let drop = fromIndex;
                 // Walk the chips in their rendered order; the first chip whose mid-X
@@ -264,6 +315,7 @@ export default function ListsScreen() {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
                 activeDragHandlersRef.current = null;
+                if (!dragStarted) return; // clean tap or long-press — Pressable handles it
                 const curr = dragStateRef.current;
                 setDrag(null);
                 if (!curr || !lists) return;
@@ -345,22 +397,48 @@ export default function ListsScreen() {
     // it's in (so "Buy cake" in Urgent + Groceries counts in both chips). Inbox
     // absorbs tasks whose list_ids is empty (orphaned by a deleted list) so the
     // chip's count matches what the task pane actually shows.
-    const openCountByListId = useMemo<Map<string, number>>(() => {
-        const map = new Map<string, number>();
+    // Per-list summary — open count, done count, and progress fraction.
+    // Lists v2 (design_handoff_fab_rule): the "Your lists" horizontal
+    // card row uses all three; the chip strip below uses only `open`.
+    // Aggregating once here avoids walking `tasks` twice. Same multi-list
+    // semantics as before — a task in multiple lists contributes to each;
+    // Inbox absorbs tasks with empty list_ids.
+    type ListSummary = { open: number; done: number; progress: number };
+    const listSummaries = useMemo<Map<string, ListSummary>>(() => {
+        const map = new Map<string, ListSummary>();
         if (!tasks || !lists) return map;
         const inboxId = lists.find((l) => l.is_default)?.id ?? null;
+        const bump = (lid: string, kind: 'open' | 'done') => {
+            const curr = map.get(lid) ?? { open: 0, done: 0, progress: 0 };
+            curr[kind] += 1;
+            map.set(lid, curr);
+        };
         for (const t of tasks) {
-            if (t.completed_at) continue;
+            const kind = t.completed_at ? 'done' : 'open';
             if (t.list_ids.length === 0) {
-                if (inboxId) map.set(inboxId, (map.get(inboxId) ?? 0) + 1);
+                if (inboxId) bump(inboxId, kind);
                 continue;
             }
-            for (const lid of t.list_ids) {
-                map.set(lid, (map.get(lid) ?? 0) + 1);
-            }
+            for (const lid of t.list_ids) bump(lid, kind);
+        }
+        // Fill in progress = done / (open + done) for each list. Listed
+        // lists with zero tasks get an explicit zeroed entry so the card
+        // renders "0 open · 0 done" with a 0% bar instead of being missing.
+        for (const l of lists) {
+            const curr = map.get(l.id) ?? { open: 0, done: 0, progress: 0 };
+            const total = curr.open + curr.done;
+            curr.progress = total > 0 ? curr.done / total : 0;
+            map.set(l.id, curr);
         }
         return map;
     }, [tasks, lists]);
+    // Back-compat alias for the chip strip — derives open counts from
+    // listSummaries so the two surfaces can't drift.
+    const openCountByListId = useMemo<Map<string, number>>(() => {
+        const m = new Map<string, number>();
+        for (const [lid, s] of listSummaries) m.set(lid, s.open);
+        return m;
+    }, [listSummaries]);
 
     // Open-task count per child. Same pattern as openCountByListId; a task with
     // multiple child tags counts in each kid's chip independently.
@@ -382,6 +460,19 @@ export default function ListsScreen() {
     //   - by-child: tasks whose child_ids includes the active child.
     const listTasks = useMemo<Task[]>(() => {
         if (!tasks) return [];
+        // Search override — when the user is actively searching, ignore
+        // the chip-strip list filter and run against the entire
+        // household task set. Typing "soccer" while parked on Inbox
+        // should still find a soccer task in Activities; restricting
+        // search to the active list would read as broken UX. The chip
+        // strip is hidden while searching (see render below) so the
+        // user doesn't see a contradictory selection.
+        if (searchActive) {
+            const q = searchText.trim().toLowerCase();
+            return tasks.filter((t) =>
+                t.title.toLowerCase().includes(q),
+            );
+        }
         if (viewMode === 'by-child') {
             if (!activeChildId) return [];
             return tasks.filter((t) => t.child_ids.includes(activeChildId));
@@ -392,7 +483,7 @@ export default function ListsScreen() {
             if (activeList.is_default && t.list_ids.length === 0) return true;
             return false;
         });
-    }, [tasks, viewMode, activeList, activeChildId]);
+    }, [tasks, viewMode, activeList, activeChildId, searchActive, searchText]);
 
     // Apply the scope filter on top of the list filter. "All" passes through; "Mine"
     // keeps tasks assigned to me OR unassigned (the Anyone bucket — anyone in the
@@ -415,6 +506,58 @@ export default function ListsScreen() {
         () => visibleTasks.filter((t) => !!t.completed_at),
         [visibleTasks],
     );
+    // Due-date buckets per the redesign — Overdue (alert tint), Today, This
+    // week. Replaces the flat "Open · N" section that grouped everything
+    // together. Anything without a due date OR due > 6 days out falls into
+    // "Later" so the user can still see those tasks without them taking the
+    // Overdue / Today buckets' visual weight. Bucketing is computed off
+    // openTasks so the Completed group below stays intact.
+    type DueBucket = 'overdue' | 'today' | 'thisWeek' | 'later';
+    const taskBuckets = useMemo(() => {
+        const now = new Date();
+        const startOfTodayMs = new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate(),
+        ).getTime();
+        const startOfTomorrowMs = startOfTodayMs + 24 * 60 * 60 * 1000;
+        // +7 days from start-of-today gives us the inclusive "this week" cutoff:
+        // a task due 6 days out is still in [tomorrow, +6 days].
+        const endOfWeekMs = startOfTodayMs + 7 * 24 * 60 * 60 * 1000;
+        const buckets: Record<DueBucket, Task[]> = {
+            overdue: [],
+            today: [],
+            thisWeek: [],
+            later: [],
+        };
+        for (const t of openTasks) {
+            if (!t.due_at) {
+                buckets.later.push(t);
+                continue;
+            }
+            const dueMs = new Date(t.due_at).getTime();
+            if (dueMs < startOfTodayMs) buckets.overdue.push(t);
+            else if (dueMs < startOfTomorrowMs) buckets.today.push(t);
+            else if (dueMs < endOfWeekMs) buckets.thisWeek.push(t);
+            else buckets.later.push(t);
+        }
+        return buckets;
+    }, [openTasks]);
+    // Header counts strip per the redesign — "12 OPEN · 3 OVERDUE · 2 DONE TODAY".
+    // Computed off the same visibleTasks so the chip filter narrows the strip too.
+    const overdueCount = useMemo(() => {
+        const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
+        return openTasks.filter(
+            (t) => !!t.due_at && new Date(t.due_at).getTime() < startOfTodayMs,
+        ).length;
+    }, [openTasks]);
+    const doneTodayCount = useMemo(() => {
+        const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
+        return completedTasks.filter((t) => {
+            if (!t.completed_at) return false;
+            return new Date(t.completed_at).getTime() >= startOfTodayMs;
+        }).length;
+    }, [completedTasks]);
     // Count of tasks hidden by the Mine filter — surfaced in the All/Mine toggle so
     // the user knows there's more household work behind the filter without having to
     // toggle back to see.
@@ -459,26 +602,19 @@ export default function ListsScreen() {
     };
 
     const handleTapTask = (task: Task) => {
-        // Event-linked tasks live inside their event's form — sending the user there
-        // keeps the "single source of truth" cleaner than letting them edit one place
-        // and have it diverge from the other. Standalone tasks get their own modal.
-        //
-        // Caregiver exception: if the linked event is one they can't see (alternation
-        // event resolving to a parent), /event/[id] will render "Event not found".
-        // Skip the event route entirely for caregivers and land them on /task/[id]
-        // — they can read the task and complete it from there. They can't edit the
-        // event itself anyway, so they lose nothing.
-        if (task.event_id && !isCaregiver) {
-            router.push({
-                pathname: '/event/[id]',
-                params: { id: task.event_id },
-            });
-        } else {
-            router.push({
-                pathname: '/task/[id]',
-                params: { id: task.id },
-            });
-        }
+        // Always route a task tap to the task editor — that's the user's
+        // mental model ("tap task → edit task"). The earlier behavior
+        // detoured event-linked taps to the event editor under a "single
+        // source of truth" theory, but in practice users found it
+        // confusing: the row says a task title and tapping it opened an
+        // event-shaped form. The task editor at /task/[id] handles the
+        // linked-event context inline (shows the linked event chip;
+        // navigating to the event itself is an explicit action from
+        // there, not a side effect of the task tap).
+        router.push({
+            pathname: '/task/[id]',
+            params: { id: task.id },
+        });
     };
 
     const handleDeleteTask = async (task: Task) => {
@@ -490,78 +626,31 @@ export default function ListsScreen() {
         }
     };
 
-    /** Bulk: mark every selected task complete. Sequential awaits keep RLS retries
-     *  predictable; the count rarely exceeds a few dozen so parallelism isn't worth
-     *  the request-storm risk. */
-    const handleBulkComplete = async () => {
-        const ids = Array.from(selectedTaskIds);
-        if (ids.length === 0) return;
+    // Snooze a task by 1 day. Per the design (ProLists CSwipedTask, the
+    // middle warn-colored "+1d" panel), the swipe gesture surfaces a quick
+    // defer affordance alongside Done and Delete. If the task has no due
+    // date yet, snoozing schedules it for tomorrow — opinionated default
+    // that matches user intent ("not today, deal with it later").
+    //
+    // updateTask requires the full NewTaskInput shape (it's a partial-
+    // overwrite that replaces every field), so we preserve every other
+    // field from the loaded task and only mutate due_at.
+    const handleSnoozeTask = async (task: Task) => {
+        const base = task.due_at ? new Date(task.due_at) : new Date();
+        base.setDate(base.getDate() + 1);
         try {
-            for (const id of ids) {
-                await setTaskCompleted(id, true);
-            }
+            await updateTask(task.id, {
+                title: task.title,
+                notes: task.notes ?? undefined,
+                eventId: task.event_id ?? undefined,
+                dueAt: base.toISOString(),
+                assigneeProfileIds: task.assignee_profile_ids,
+                listIds: task.list_ids,
+                childIds: task.child_ids,
+            });
             await refetchTasks();
         } catch (err) {
-            console.error('bulk complete failed', err);
-        } finally {
-            exitSelectionMode();
-        }
-    };
-
-    const handleBulkDelete = async () => {
-        const ids = Array.from(selectedTaskIds);
-        if (ids.length === 0) return;
-        const title = `Delete ${ids.length} task${ids.length === 1 ? '' : 's'}?`;
-        const detail = "This can't be undone.";
-        // Native used to skip confirmation entirely — a single mistap wiped the
-        // selected tasks (UX-001). Mirror list-form's confirmation pattern:
-        // window.confirm on web, Alert.alert with a destructive button on native.
-        const confirmed = await new Promise<boolean>((resolve) => {
-            if (Platform.OS === 'web') {
-                resolve(
-                    typeof window !== 'undefined' &&
-                        window.confirm(`${title}\n\n${detail}`),
-                );
-                return;
-            }
-            Alert.alert(title, detail, [
-                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-                {
-                    text: 'Delete',
-                    style: 'destructive',
-                    onPress: () => resolve(true),
-                },
-            ]);
-        });
-        if (!confirmed) return;
-        try {
-            for (const id of ids) {
-                await deleteTask(id);
-            }
-            await refetchTasks();
-        } catch (err) {
-            console.error('bulk delete failed', err);
-        } finally {
-            exitSelectionMode();
-        }
-    };
-
-    /** Bulk add: append a list to every selected task's memberships (deduped). */
-    const handleBulkAddToList = async (listId: string) => {
-        const ids = Array.from(selectedTaskIds);
-        if (ids.length === 0 || !tasks) return;
-        try {
-            for (const id of ids) {
-                const t = tasks.find((x) => x.id === id);
-                if (!t) continue;
-                if (t.list_ids.includes(listId)) continue;
-                await setTaskLists(id, [...t.list_ids, listId]);
-            }
-            await refetchTasks();
-        } catch (err) {
-            console.error('bulk add to list failed', err);
-        } finally {
-            exitSelectionMode();
+            console.error('snooze task failed', err);
         }
     };
 
@@ -588,48 +677,301 @@ export default function ListsScreen() {
 
     return (
         <ThemedView style={styles.container}>
-            <SafeAreaView style={styles.safe}>
-                {/* No screen-level title — the active tab tint at the bottom
-                    signals which tab we're on, and the list-chip strip below
-                    carries the section context. Reclaim the vertical real
-                    estate for content. */}
+            <SafeAreaView style={styles.safe} edges={['top']}>
+                {/* Page header per the redesign — mono counts strip above a
+                    22px SemiBold "Lists" title, with a 30x30 search button
+                    on the trailing edge (direction-c-pro.jsx ~947-959).
+                    Tapping search opens an inline mode-swap input that
+                    replaces the quick-add row below (#380). The button
+                    visually highlights (accent fill) while search is
+                    open, so the user has a clear "back out" affordance
+                    paired with the Cancel link inside the search row. */}
+                <View style={styles.pageHeader}>
+                    <View style={styles.pageHeaderLeft}>
+                        {/* UX audit 3.1 — always show all three segments per
+                            the design (direction-c-pro.jsx:949-951). Zero
+                            counts are useful signal ("0 OVERDUE" = calm); the
+                            previous conditional hid them and matched the
+                            audit's "only 4 OPEN" screenshot. */}
+                        <ThemedText
+                            style={[
+                                styles.countsStrip,
+                                {
+                                    color: colors.textSecondary,
+                                    fontFamily: FontFamily.monoMedium,
+                                },
+                            ]}>
+                            {openTasks.length} OPEN · {overdueCount} OVERDUE ·{' '}
+                            {doneTodayCount} DONE TODAY
+                        </ThemedText>
+                        <ThemedText
+                            style={[
+                                Typography.titleSecondary,
+                                { color: colors.text, marginTop: 1 },
+                            ]}>
+                            Lists
+                        </ThemedText>
+                    </View>
+                    <Pressable
+                        onPress={searchOpen ? cancelSearch : openSearch}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                            searchOpen ? 'Close search' : 'Search tasks'
+                        }
+                        accessibilityState={{ selected: searchOpen }}
+                        style={({ pressed }) => [
+                            styles.headerSearchBtn,
+                            searchOpen
+                                ? {
+                                      backgroundColor: colors.accent,
+                                      borderColor: colors.accent,
+                                  }
+                                : {
+                                      backgroundColor: colors.backgroundElement,
+                                      borderColor: colors.hair,
+                                  },
+                            pressed && styles.pressed,
+                        ]}>
+                        <Feather
+                            name="search"
+                            size={14}
+                            color={searchOpen ? colors.onAccent : colors.text}
+                        />
+                    </Pressable>
+                </View>
 
-                {/* List chip strip. Horizontal scroll so households with many lists
-                    don't get truncated. flexGrow:0 because of the react-native-web
-                    quirk where horizontal ScrollViews try to fill the column. */}
-                {/* View-mode toggle — by-list vs by-child. Sits above the chip
-                    strip so the chip semantics ("which list" vs "which kid") are
-                    clear at a glance. Hidden when the household has no children
-                    since by-child would be empty. */}
-                {(children ?? []).length > 0 ? (
-                    <View style={styles.viewToggleRow}>
-                        {(['by-list', 'by-child'] as ViewMode[]).map((m) => {
-                            const selected = viewMode === m;
-                            return (
-                                <Pressable
-                                    key={m}
-                                    onPress={() => setViewMode(m)}
-                                    style={({ pressed }) => [
-                                        styles.scopeBtn,
-                                        selected && {
-                                            backgroundColor: '#6F7FA5',
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: selected ? '#fff' : colors.text,
-                                            fontWeight: '600',
-                                        }}>
-                                        {m === 'by-list' ? 'By list' : 'By child'}
-                                    </ThemedText>
-                                </Pressable>
-                            );
-                        })}
+                {/* (Phase 8.x audit: by-list / by-child view toggle removed.
+                    Design's ProLists has no such toggle — lists are the
+                    canonical org axis. Per-child filtering happens via
+                    list naming or task tags. The viewMode const is
+                    frozen above; toggle JSX is gone.) */}
+
+                {/* Mode-swap row — quick-add by default, search input when
+                    `searchOpen`. Same shell card geometry in both modes so
+                    the screen doesn't reflow when the user toggles search.
+                    Quick-add: per the design (ProLists direction-c-pro.jsx
+                    ~962-977) it sits between the page header and the chip
+                    strip, NOT below the chips. Caregivers don't see the
+                    quick-add row (RLS blocks INSERTs); the search row is
+                    available to them since search is read-only. */}
+                {searchOpen ? (
+                    <View
+                        style={[
+                            styles.quickAddRow,
+                            {
+                                backgroundColor: colors.backgroundElement,
+                                borderColor: colors.hair,
+                            },
+                        ]}>
+                        <Feather
+                            name="search"
+                            size={14}
+                            color={colors.textSecondary}
+                        />
+                        <TextInput
+                            ref={searchInputRef}
+                            value={searchText}
+                            onChangeText={setSearchText}
+                            placeholder="Search tasks…"
+                            placeholderTextColor={colors.inkFaint}
+                            returnKeyType="search"
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                            style={[
+                                styles.quickAddInput,
+                                {
+                                    color: colors.text,
+                                    fontFamily: FontFamily.monoRegular,
+                                },
+                                // RN-Web: strip the default browser
+                                // input outline so the field reads as
+                                // part of the bar shell. Same trick
+                                // we use in the Contacts search bar.
+                                Platform.OS === 'web'
+                                    ? ({ outlineStyle: 'none' } as object)
+                                    : null,
+                            ]}
+                        />
+                        <Pressable
+                            onPress={cancelSearch}
+                            accessibilityRole="button"
+                            accessibilityLabel="Cancel search"
+                            hitSlop={6}
+                            style={({ pressed }) => [
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={[
+                                    styles.searchCancelText,
+                                    {
+                                        color: colors.accent,
+                                        fontFamily: FontFamily.monoSemiBold,
+                                    },
+                                ]}>
+                                Cancel
+                            </ThemedText>
+                        </Pressable>
+                    </View>
+                ) : !isCaregiver ? (
+                    <View
+                        style={[
+                            styles.quickAddRow,
+                            {
+                                backgroundColor: colors.backgroundElement,
+                                borderColor: colors.hair,
+                            },
+                        ]}>
+                        <Feather
+                            name="plus"
+                            size={14}
+                            color={colors.textSecondary}
+                        />
+                        <TextInput
+                            value={quickAddText}
+                            onChangeText={setQuickAddText}
+                            onSubmitEditing={handleQuickAdd}
+                            placeholder={`add task to ${activeList?.name ?? 'list'}`}
+                            placeholderTextColor={colors.inkFaint}
+                            returnKeyType="done"
+                            editable={!adding}
+                            style={[
+                                styles.quickAddInput,
+                                {
+                                    color: colors.text,
+                                    fontFamily: FontFamily.monoRegular,
+                                },
+                            ]}
+                        />
+                        <Pressable
+                            onPress={handleQuickAdd}
+                            disabled={!quickAddText.trim() || adding}
+                            accessibilityRole="button"
+                            accessibilityLabel="Add task"
+                            style={({ pressed }) => [
+                                styles.kbdBadge,
+                                {
+                                    backgroundColor: withAlpha(
+                                        colors.accent,
+                                        0.12,
+                                    ),
+                                },
+                                (!quickAddText.trim() || adding) && {
+                                    opacity: 0.4,
+                                },
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={[
+                                    styles.kbdBadgeText,
+                                    {
+                                        color: colors.accent,
+                                        fontFamily: FontFamily.monoSemiBold,
+                                    },
+                                ]}>
+                                {'⌘'}N
+                            </ThemedText>
+                        </Pressable>
                     </View>
                 ) : null}
 
+                {/* "Your lists" horizontal-scroll card row — Lists v2
+                    (design_handoff_fab_rule). Each ListCardV2 carries
+                    list identity (color top bar + name), owner caption,
+                    open/done counts, and a progress bar. Tap routes to
+                    /list/[id] (read-mode detail). The trailing dashed
+                    "New list" card opens the create form. Hidden in
+                    by-child mode since the card vocabulary is list-axis
+                    only — child mode keeps just the chip strip below.
+                    Also hidden while search is open: the list-axis
+                    summary cards are noise when the user's mental
+                    model is "find tasks across everything." */}
+                {viewMode === 'by-list' && !searchOpen ? (
+                    <>
+                        <View style={styles.yourListsHeader}>
+                            <ThemedText
+                                style={[
+                                    styles.yourListsHeaderLabel,
+                                    {
+                                        color: colors.textSecondary,
+                                    },
+                                ]}>
+                                YOUR LISTS · {(lists ?? []).length}
+                            </ThemedText>
+                            {/* "+ NEW LIST" link — secondary affordance
+                                next to the kind-committed FAB. Tappable
+                                so users have two ways to reach the
+                                create form without crowding the chip
+                                strip. */}
+                            {showCreateAffordances ? (
+                                <Pressable
+                                    onPress={() => router.push('/list/new')}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="New list">
+                                    {({ pressed }) => (
+                                        <ThemedText
+                                            style={[
+                                                styles.yourListsNewLink,
+                                                {
+                                                    color: colors.accent,
+                                                    fontFamily:
+                                                        FontFamily.monoSemiBold,
+                                                    opacity: pressed ? 0.7 : 1,
+                                                },
+                                            ]}>
+                                            + NEW LIST
+                                        </ThemedText>
+                                    )}
+                                </Pressable>
+                            ) : null}
+                        </View>
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            style={styles.yourListsScroll}
+                            contentContainerStyle={styles.yourListsRow}>
+                            {(lists ?? []).map((l) => {
+                                const summary = listSummaries.get(l.id) ?? {
+                                    open: 0,
+                                    done: 0,
+                                    progress: 0,
+                                };
+                                return (
+                                    <ListCardV2
+                                        key={l.id}
+                                        color={l.color}
+                                        name={l.name}
+                                        owner={l.is_default ? 'Inbox' : 'Shared'}
+                                        open={summary.open}
+                                        done={summary.done}
+                                        progress={summary.progress}
+                                        onPress={() =>
+                                            router.push({
+                                                pathname: '/list/[id]',
+                                                params: { id: l.id },
+                                            })
+                                        }
+                                        colors={colors}
+                                    />
+                                );
+                            })}
+                            {showCreateAffordances ? (
+                                <NewListCard
+                                    onPress={() => router.push('/list/new')}
+                                    colors={colors}
+                                />
+                            ) : null}
+                        </ScrollView>
+                    </>
+                ) : null}
+
+                {/* List chip strip. Horizontal scroll so households with many
+                    lists don't get truncated. flexGrow:0 because of the
+                    react-native-web quirk where horizontal ScrollViews try
+                    to fill the column. Hidden while search is open — the
+                    chip is a list-axis filter that wouldn't honestly
+                    describe the search-results state below it (search
+                    runs across all lists). Restored on Cancel. */}
+                {!searchOpen ? (
                 <View style={styles.chipScrollWrapper}>
                 <ScrollView
                     horizontal
@@ -648,44 +990,60 @@ export default function ListsScreen() {
                         (children ?? []).map((c) => {
                             const selected = c.id === activeChildId;
                             const openCount = openCountByChildId.get(c.id) ?? 0;
+                            // Chip vocabulary per the redesign (direction-c-pro.jsx
+                            // CChip, ~880-894): active = filled accent + onAccent
+                            // text (carries the "current selection" signal as a
+                            // strong color block, not a list-color tint that would
+                            // visually clash with the list-identity dots). Inactive
+                            // = card surface + hair border, plus a small 6px color
+                            // dot that holds the per-child identity signal.
                             return (
                                 <Pressable
                                     key={`child-${c.id}`}
                                     onPress={() => setActiveChildId(c.id)}
                                     style={({ pressed }) => [
                                         styles.listChip,
-                                        selected && styles.listChipActive,
-                                        {
-                                            borderColor: c.color,
-                                            backgroundColor: selected
-                                                ? c.color
-                                                : 'transparent',
-                                        },
+                                        selected
+                                            ? {
+                                                  backgroundColor: colors.accent,
+                                                  borderColor: colors.accent,
+                                              }
+                                            : {
+                                                  backgroundColor:
+                                                      colors.backgroundElement,
+                                                  borderColor: colors.hair,
+                                              },
                                         pressed && styles.pressed,
                                     ]}>
+                                    {/* When selected the avatar already carries
+                                        identity color; when not selected we
+                                        still render it so the chip has a face. */}
                                     <ChildBadge
                                         name={c.display_name}
                                         color={c.color}
                                         size="sm"
                                     />
                                     <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: selected ? colors.textOnPastel : colors.text,
-                                            fontWeight: '600',
-                                        }}>
+                                        style={[
+                                            styles.chipLabel,
+                                            {
+                                                color: selected
+                                                    ? colors.onAccent
+                                                    : colors.text,
+                                            },
+                                        ]}>
                                         {c.display_name}
                                     </ThemedText>
                                     {openCount > 0 ? (
                                         <ThemedText
-                                            type="small"
-                                            style={{
-                                                color: selected
-                                                    ? '#2A2E3A'
-                                                    : colors.textSecondary,
-                                                fontWeight: '500',
-                                                opacity: 0.75,
-                                            }}>
+                                            style={[
+                                                styles.chipCount,
+                                                {
+                                                    color: selected
+                                                        ? colors.onAccent
+                                                        : colors.textSecondary,
+                                                },
+                                            ]}>
                                             · {openCount}
                                         </ThemedText>
                                     ) : null}
@@ -711,10 +1069,63 @@ export default function ListsScreen() {
                             nodes.push(
                                 <View
                                     key={`marker-${idx}`}
-                                    style={styles.dropMarker}
+                                    style={[
+                                        styles.dropMarker,
+                                        { backgroundColor: colors.accent },
+                                    ]}
                                 />,
                             );
                         }
+                        // Chip vocabulary per the redesign (direction-c-pro.jsx
+                        // CChip, ~880-894): active = filled accent + onAccent text
+                        // (the strong color block is the selection signal). Inactive
+                        // = card surface + hair border + a small 6px color dot that
+                        // carries the per-list identity. We deliberately do NOT fill
+                        // active chips with the list's own color — that would make
+                        // every chip in the strip a different hue and the "selected"
+                        // state would have to fight the identity signal for legibility.
+                        // Phase 6.7 follow-up (#326): Edit affordance moved
+                        // from a per-chip pencil button to a long-press /
+                        // right-click context menu. The pencil added ~14px
+                        // of horizontal real estate on every active chip
+                        // for an action most users only reach occasionally;
+                        // long-press is the iOS-native pattern and matches
+                        // the "quiet UI" intent of the chip vocabulary.
+                        // Lists v2 split (design_handoff_fab_rule):
+                        // chip taps select the active list (handled by
+                        // the outer Pressable's onPress). The long-press /
+                        // right-click menu now routes to the *edit* form
+                        // explicitly — read-mode detail lives at the
+                        // sibling /list/[id] route and is reached by
+                        // tapping a ListCardV2 in the "Your lists" row.
+                        const openListMenu = () => {
+                            if (Platform.OS === 'web') {
+                                router.push({
+                                    pathname: '/list/[id]/edit',
+                                    params: { id: l.id },
+                                });
+                            } else {
+                                Alert.alert(l.name, undefined, [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    {
+                                        text: 'View list',
+                                        onPress: () =>
+                                            router.push({
+                                                pathname: '/list/[id]',
+                                                params: { id: l.id },
+                                            }),
+                                    },
+                                    {
+                                        text: 'Edit list',
+                                        onPress: () =>
+                                            router.push({
+                                                pathname: '/list/[id]/edit',
+                                                params: { id: l.id },
+                                            }),
+                                    },
+                                ]);
+                            }
+                        };
                         nodes.push(
                             <View
                                 key={l.id}
@@ -729,70 +1140,77 @@ export default function ListsScreen() {
                                 style={styles.chipWrapper}>
                                 <Pressable
                                     onPress={() => setActiveListId(l.id)}
+                                    onLongPress={openListMenu}
+                                    delayLongPress={400}
+                                    {...(Platform.OS === 'web'
+                                        ? ({
+                                              onContextMenu: (
+                                                  e: { preventDefault: () => void },
+                                              ) => {
+                                                  e.preventDefault();
+                                                  openListMenu();
+                                              },
+                                          } as object)
+                                        : null)}
+                                    accessibilityHint="Long-press to edit"
                                     style={({ pressed }) => [
                                         styles.listChip,
-                                        selected && styles.listChipActive,
-                                        {
-                                            borderColor: l.color,
-                                            backgroundColor: selected
-                                                ? l.color
-                                                : 'transparent',
-                                            ...(Platform.OS === 'web' && !l.is_default
-                                                ? ({ cursor: 'grab' } as object)
-                                                : null),
-                                        },
+                                        selected
+                                            ? {
+                                                  backgroundColor: colors.accent,
+                                                  borderColor: colors.accent,
+                                              }
+                                            : {
+                                                  backgroundColor:
+                                                      colors.backgroundElement,
+                                                  borderColor: colors.hair,
+                                              },
+                                        Platform.OS === 'web' && !l.is_default
+                                            ? ({ cursor: 'grab' } as object)
+                                            : null,
                                         dragging && { opacity: 0.4 },
                                         pressed && styles.pressed,
                                     ]}>
+                                    {/* Identity dot for inactive chips. The active
+                                        chip's accent fill already says "selected"
+                                        loud enough — adding the dot there would
+                                        crowd the small chip with two color signals. */}
+                                    {!selected ? (
+                                        <View
+                                            style={[
+                                                styles.chipDot,
+                                                { backgroundColor: l.color },
+                                            ]}
+                                        />
+                                    ) : null}
                                     <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: selected ? colors.textOnPastel : colors.text,
-                                            fontWeight: '600',
-                                        }}>
+                                        style={[
+                                            styles.chipLabel,
+                                            {
+                                                color: selected
+                                                    ? colors.onAccent
+                                                    : colors.text,
+                                            },
+                                        ]}>
                                         {l.name}
                                     </ThemedText>
                                     {openCount > 0 ? (
                                         <ThemedText
-                                            type="small"
-                                            style={{
-                                                color: selected
-                                                    ? '#2A2E3A'
-                                                    : colors.textSecondary,
-                                                fontWeight: '500',
-                                                opacity: 0.75,
-                                            }}>
+                                            style={[
+                                                styles.chipCount,
+                                                {
+                                                    color: selected
+                                                        ? colors.onAccent
+                                                        : colors.textSecondary,
+                                                },
+                                            ]}>
                                             · {openCount}
                                         </ThemedText>
                                     ) : null}
-                                    {/* Pencil only on the selected chip — quiet UI
-                                        on unselected lists. data-chip-edit lets the
-                                        drag handler bail when the pointerdown landed
-                                        here. */}
-                                    {selected ? (
-                                        <Pressable
-                                            onPress={() =>
-                                                router.push({
-                                                    pathname: '/list/[id]',
-                                                    params: { id: l.id },
-                                                })
-                                            }
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`Edit list ${l.name}`}
-                                            {...({
-                                                dataSet: { chipEdit: 'true' },
-                                            } as object)}
-                                            style={({ pressed: p }) => [
-                                                styles.chipEditBtn,
-                                                p && styles.pressed,
-                                            ]}>
-                                            <Feather
-                                                name="edit-2"
-                                                size={12}
-                                                color="#2A2E3A"
-                                            />
-                                        </Pressable>
-                                    ) : null}
+                                    {/* (Phase 6.7 follow-up #326: per-chip pencil
+                                        removed. Edit is reachable via long-press
+                                        on native or right-click on web — see
+                                        openListMenu above.) */}
                                 </Pressable>
                             </View>,
                         );
@@ -807,27 +1225,19 @@ export default function ListsScreen() {
                     dragState.dropIndex === (lists?.length ?? 0) &&
                     dragState.dropIndex !== dragState.fromIndex &&
                     dragState.dropIndex !== dragState.fromIndex + 1 ? (
-                        <View key="marker-end" style={styles.dropMarker} />
+                        <View
+                            key="marker-end"
+                            style={[
+                                styles.dropMarker,
+                                { backgroundColor: colors.accent },
+                            ]}
+                        />
                     ) : null}
-                    {viewMode === 'by-list' && !isCaregiver ? (
-                    <Pressable
-                        onPress={() => router.push('/list/new')}
-                        style={({ pressed }) => [
-                            styles.listChip,
-                            {
-                                borderColor: colors.backgroundSelected,
-                                borderStyle: 'dashed',
-                                backgroundColor: 'transparent',
-                            },
-                            pressed && styles.pressed,
-                        ]}>
-                        <ThemedText
-                            type="small"
-                            style={{ color: '#6F7FA5', fontWeight: '600' }}>
-                            + New list
-                        </ThemedText>
-                    </Pressable>
-                    ) : null}
+                    {/* Inline "+ New list" chip was removed — the floating FAB in
+                        the bottom-right of this screen already creates new lists
+                        with the same one-tap reach as Home / Calendar / Contacts.
+                        Two affordances doing the same thing crowds the chip strip
+                        without adding capability. */}
                 </ScrollView>
                 <ScrollOverflowChevron
                     visible={chipOverflow.showLeftIndicator}
@@ -838,6 +1248,7 @@ export default function ListsScreen() {
                     side="right"
                 />
                 </View>
+                ) : null}
 
                 {/* Render the task pane when the active container exists for the
                     current view mode. by-list needs an activeList; by-child needs
@@ -845,139 +1256,22 @@ export default function ListsScreen() {
                 {(viewMode === 'by-list' && activeList) ||
                 (viewMode === 'by-child' && activeChildId) ? (
                     <>
-                        {/* All / Mine scope toggle. Mirrors Home's "tasks I care about"
-                            filter so the user has a single mental model across the app.
-                            "Mine" keeps unassigned (Anyone) tasks visible because they're
-                            implicitly available for anyone to grab. */}
-                        <View style={styles.scopeRow}>
-                            <View
-                                style={[
-                                    styles.scopeToggle,
-                                    { borderColor: colors.backgroundSelected },
-                                ]}>
-                                {(['mine', 'all'] as Scope[]).map((s) => {
-                                    const selected = scope === s;
-                                    return (
-                                        <Pressable
-                                            key={s}
-                                            onPress={() => setScope(s)}
-                                            style={({ pressed }) => [
-                                                styles.scopeBtn,
-                                                selected && {
-                                                    backgroundColor: '#6F7FA5',
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <ThemedText
-                                                type="small"
-                                                style={{
-                                                    color: selected ? '#fff' : colors.text,
-                                                    fontWeight: '600',
-                                                    textTransform: 'capitalize',
-                                                }}>
-                                                {s === 'mine' ? 'Mine' : 'All'}
-                                            </ThemedText>
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                            {hiddenByScope > 0 ? (
-                                // Tap the hint to switch to All so the user can see
-                                // what's been filtered out without hunting for the
-                                // segmented control.
-                                <Pressable
-                                    onPress={() => setScope('all')}
-                                    style={({ pressed }) => [
-                                        styles.hiddenHint,
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: '#6F7FA5',
-                                            fontWeight: '500',
-                                        }}>
-                                        {hiddenByScope} hidden — show all
-                                    </ThemedText>
-                                </Pressable>
-                            ) : null}
-                            {/* Right-aligned "Select" button to enter bulk mode.
-                                Pushes itself to the trailing edge with marginLeft:
-                                auto so it doesn't shift around when the hidden hint
-                                appears. Caregivers don't get bulk edit — the only
-                                task action they can perform is mark-complete, which
-                                doesn't benefit from multi-select since the row's
-                                checkbox already does the job. */}
-                            {!isCaregiver ? (
-                                <Pressable
-                                    onPress={() =>
-                                        selectionMode
-                                            ? exitSelectionMode()
-                                            : setSelectionMode(true)
-                                    }
-                                    style={({ pressed }) => [
-                                        styles.selectBtn,
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: '#6F7FA5',
-                                            fontWeight: '600',
-                                        }}>
-                                        {selectionMode ? 'Cancel' : 'Select'}
-                                    </ThemedText>
-                                </Pressable>
-                            ) : null}
-                        </View>
+                        {/* (Phase 8.x audit: Mine/All scope toggle removed —
+                            design's ProLists has no such toggle, and Lists
+                            shows all household tasks with per-person
+                            filtering implicit via the assignee avatar on
+                            each row. The bulk-mode "Select" button was
+                            also removed for the same reason: the design
+                            has no entry point for bulk select. Per-row
+                            swipe (Done / +1d / Delete) covers the common
+                            multi-task workflow at the row granularity the
+                            design supports.) */}
 
-                        {/* Quick-add input: title + Enter creates a task in the active
-                            list with no due date and no assignees. The user can tap the
-                            new row afterward to fill those in. Caregivers don't see
-                            this row — they can't create tasks (RLS blocks INSERTs
-                            anyway). */}
-                        {!isCaregiver ? (
-                        <View
-                            style={[
-                                styles.quickAddRow,
-                                { borderColor: colors.backgroundSelected },
-                            ]}>
-                            <TextInput
-                                value={quickAddText}
-                                onChangeText={setQuickAddText}
-                                onSubmitEditing={handleQuickAdd}
-                                placeholder={
-                                    viewMode === 'by-child' && activeChild
-                                        ? `Add a task for ${activeChild.display_name}…`
-                                        : `Add a task to ${activeList?.name ?? 'list'}…`
-                                }
-                                placeholderTextColor={colors.textSecondary}
-                                returnKeyType="done"
-                                editable={!adding}
-                                style={[
-                                    styles.quickAddInput,
-                                    { color: colors.text },
-                                ]}
-                            />
-                            <Pressable
-                                onPress={handleQuickAdd}
-                                disabled={!quickAddText.trim() || adding}
-                                style={({ pressed }) => [
-                                    styles.quickAddBtn,
-                                    {
-                                        opacity:
-                                            !quickAddText.trim() || adding ? 0.4 : 1,
-                                    },
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText
-                                    type="small"
-                                    style={{ color: '#fff', fontWeight: '600' }}>
-                                    Add
-                                </ThemedText>
-                            </Pressable>
-                        </View>
-                        ) : null}
+                        {/* (Phase 8.x audit: Quick-add bar moved out of this
+                            conditional and hoisted above the chip strip per
+                            design — see ProLists direction-c-pro.jsx where
+                            the Cmd-K input sits between the header and the
+                            list chips, NOT below them.) */}
 
                         <ScrollView
                             style={styles.tasksScroll}
@@ -988,97 +1282,135 @@ export default function ListsScreen() {
                                 above; only the row area shows the loading state. */}
                             {tasksLoading ? (
                                 <View style={styles.empty}>
-                                    <ActivityIndicator color="#6F7FA5" />
+                                    <ActivityIndicator color={colors.text} />
                                 </View>
                             ) : openTasks.length === 0 && completedTasks.length === 0 ? (
                                 <View style={styles.empty}>
                                     <ThemedText themeColor="textSecondary">
-                                        {isCaregiver
-                                            ? 'No tasks assigned to you here yet.'
-                                            : 'No tasks yet. Type one above to get started.'}
+                                        {searchActive
+                                            ? `No tasks match "${searchText.trim()}".`
+                                            : isCaregiver
+                                              ? 'No tasks assigned to you here yet.'
+                                              : 'No tasks yet. Type one above to get started.'}
                                     </ThemedText>
                                 </View>
                             ) : null}
 
-                            {openTasks.length > 0 ? (
-                                <ThemedText
-                                    type="smallBold"
-                                    themeColor="textSecondary"
-                                    style={styles.sectionLabel}>
-                                    Open · {openTasks.length}
-                                </ThemedText>
-                            ) : null}
-                            {openTasks.map((t) => (
-                                <TaskListRow
-                                    key={t.id}
-                                    task={t}
+                            {/* Due-date bucketed sections per the redesign
+                                (direction-c-pro.jsx ~989-1021). Each bucket
+                                renders its rows inside a single white card
+                                with hairline dividers between them — visually
+                                groups the rows so the section reads as one
+                                unit. Overdue's section header tints to
+                                colors.alert; the others use the default ink-
+                                secondary tracked-caps treatment. */}
+                            {taskBuckets.overdue.length > 0 ? (
+                                <TaskBucketSection
+                                    label="Overdue"
+                                    tasks={taskBuckets.overdue}
+                                    accentColor={colors.alert}
                                     members={members ?? []}
                                     colorMap={colorMap}
                                     allLists={lists ?? []}
                                     activeListId={activeList?.id ?? null}
-                                    expanded={expandedRowId === t.id}
-                                    onToggleExpanded={() =>
-                                        setExpandedRowId((curr) =>
-                                            curr === t.id ? null : t.id,
-                                        )
+                                    expandedRowId={expandedRowId}
+                                    setExpandedRowId={setExpandedRowId}
+                                    handleToggleTaskList={
+                                        handleToggleTaskList
                                     }
-                                    onToggleList={(listId) =>
-                                        handleToggleTaskList(t, listId)
+                                    handleToggleComplete={
+                                        handleToggleComplete
                                     }
-                                    selectionMode={selectionMode}
-                                    selected={selectedTaskIds.has(t.id)}
-                                    onToggleSelected={() =>
-                                        toggleTaskSelected(t.id)
-                                    }
-                                    onToggle={() => handleToggleComplete(t)}
-                                    onTap={() =>
-                                        selectionMode
-                                            ? toggleTaskSelected(t.id)
-                                            : handleTapTask(t)
-                                    }
-                                    onDelete={() => handleDeleteTask(t)}
+                                    handleTapTask={handleTapTask}
+                                    handleDeleteTask={handleDeleteTask}
+                                    handleSnoozeTask={handleSnoozeTask}
                                 />
-                            ))}
+                            ) : null}
+                            {taskBuckets.today.length > 0 ? (
+                                <TaskBucketSection
+                                    label="Today"
+                                    tasks={taskBuckets.today}
+                                    members={members ?? []}
+                                    colorMap={colorMap}
+                                    allLists={lists ?? []}
+                                    activeListId={activeList?.id ?? null}
+                                    expandedRowId={expandedRowId}
+                                    setExpandedRowId={setExpandedRowId}
+                                    handleToggleTaskList={
+                                        handleToggleTaskList
+                                    }
+                                    handleToggleComplete={
+                                        handleToggleComplete
+                                    }
+                                    handleTapTask={handleTapTask}
+                                    handleDeleteTask={handleDeleteTask}
+                                    handleSnoozeTask={handleSnoozeTask}
+                                />
+                            ) : null}
+                            {taskBuckets.thisWeek.length > 0 ? (
+                                <TaskBucketSection
+                                    label="This week"
+                                    tasks={taskBuckets.thisWeek}
+                                    members={members ?? []}
+                                    colorMap={colorMap}
+                                    allLists={lists ?? []}
+                                    activeListId={activeList?.id ?? null}
+                                    expandedRowId={expandedRowId}
+                                    setExpandedRowId={setExpandedRowId}
+                                    handleToggleTaskList={
+                                        handleToggleTaskList
+                                    }
+                                    handleToggleComplete={
+                                        handleToggleComplete
+                                    }
+                                    handleTapTask={handleTapTask}
+                                    handleDeleteTask={handleDeleteTask}
+                                    handleSnoozeTask={handleSnoozeTask}
+                                />
+                            ) : null}
+                            {taskBuckets.later.length > 0 ? (
+                                <TaskBucketSection
+                                    label="Later"
+                                    tasks={taskBuckets.later}
+                                    members={members ?? []}
+                                    colorMap={colorMap}
+                                    allLists={lists ?? []}
+                                    activeListId={activeList?.id ?? null}
+                                    expandedRowId={expandedRowId}
+                                    setExpandedRowId={setExpandedRowId}
+                                    handleToggleTaskList={
+                                        handleToggleTaskList
+                                    }
+                                    handleToggleComplete={
+                                        handleToggleComplete
+                                    }
+                                    handleTapTask={handleTapTask}
+                                    handleDeleteTask={handleDeleteTask}
+                                    handleSnoozeTask={handleSnoozeTask}
+                                />
+                            ) : null}
 
                             {completedTasks.length > 0 ? (
-                                <ThemedText
-                                    type="smallBold"
-                                    themeColor="textSecondary"
-                                    style={styles.sectionLabel}>
-                                    Completed · {completedTasks.length}
-                                </ThemedText>
-                            ) : null}
-                            {completedTasks.map((t) => (
-                                <TaskListRow
-                                    key={t.id}
-                                    task={t}
+                                <TaskBucketSection
+                                    label="Completed"
+                                    tasks={completedTasks}
                                     members={members ?? []}
                                     colorMap={colorMap}
                                     allLists={lists ?? []}
                                     activeListId={activeList?.id ?? null}
-                                    expanded={expandedRowId === t.id}
-                                    onToggleExpanded={() =>
-                                        setExpandedRowId((curr) =>
-                                            curr === t.id ? null : t.id,
-                                        )
+                                    expandedRowId={expandedRowId}
+                                    setExpandedRowId={setExpandedRowId}
+                                    handleToggleTaskList={
+                                        handleToggleTaskList
                                     }
-                                    onToggleList={(listId) =>
-                                        handleToggleTaskList(t, listId)
+                                    handleToggleComplete={
+                                        handleToggleComplete
                                     }
-                                    selectionMode={selectionMode}
-                                    selected={selectedTaskIds.has(t.id)}
-                                    onToggleSelected={() =>
-                                        toggleTaskSelected(t.id)
-                                    }
-                                    onToggle={() => handleToggleComplete(t)}
-                                    onTap={() =>
-                                        selectionMode
-                                            ? toggleTaskSelected(t.id)
-                                            : handleTapTask(t)
-                                    }
-                                    onDelete={() => handleDeleteTask(t)}
+                                    handleTapTask={handleTapTask}
+                                    handleDeleteTask={handleDeleteTask}
+                                    handleSnoozeTask={handleSnoozeTask}
                                 />
-                            ))}
+                            ) : null}
                         </ScrollView>
                     </>
                 ) : (
@@ -1088,160 +1420,34 @@ export default function ListsScreen() {
                         </ThemedText>
                     </View>
                 )}
-                {/* Bulk-action bar. Pinned to the bottom of the SafeAreaView so
-                    it doesn't scroll with the task list. Only renders in select
-                    mode; collapsed by default to keep the screen quiet. */}
-                {selectionMode ? (
-                    <View
-                        style={[
-                            styles.bulkBar,
-                            {
-                                borderTopColor: colors.backgroundSelected,
-                                backgroundColor: colors.background,
-                            },
-                        ]}>
-                        <View style={styles.bulkBarRow}>
-                            <ThemedText type="smallBold">
-                                {selectedTaskIds.size} selected
-                            </ThemedText>
-                            <View style={styles.bulkBarActions}>
-                                <Pressable
-                                    onPress={handleBulkComplete}
-                                    disabled={selectedTaskIds.size === 0}
-                                    style={({ pressed }) => [
-                                        styles.bulkBtn,
-                                        {
-                                            opacity:
-                                                selectedTaskIds.size === 0 ? 0.4 : 1,
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: '#6F7FA5',
-                                            fontWeight: '600',
-                                        }}>
-                                        ✓ Complete
-                                    </ThemedText>
-                                </Pressable>
-                                <Pressable
-                                    onPress={() =>
-                                        setBulkAddListOpen((v) => !v)
-                                    }
-                                    disabled={
-                                        selectedTaskIds.size === 0 ||
-                                        (lists?.length ?? 0) === 0
-                                    }
-                                    style={({ pressed }) => [
-                                        styles.bulkBtn,
-                                        {
-                                            opacity:
-                                                selectedTaskIds.size === 0
-                                                    ? 0.4
-                                                    : 1,
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: '#6F7FA5',
-                                            fontWeight: '600',
-                                        }}>
-                                        + Add to list…
-                                    </ThemedText>
-                                </Pressable>
-                                <Pressable
-                                    onPress={handleBulkDelete}
-                                    disabled={selectedTaskIds.size === 0}
-                                    style={({ pressed }) => [
-                                        styles.bulkBtn,
-                                        {
-                                            opacity:
-                                                selectedTaskIds.size === 0 ? 0.4 : 1,
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: '#B85D52',
-                                            fontWeight: '600',
-                                        }}>
-                                        Delete
-                                    </ThemedText>
-                                </Pressable>
-                            </View>
-                        </View>
-                        {/* Inline list picker for "Add to list…" — chips appear
-                            above the action row when expanded. Tap a chip to
-                            append it to every selected task's memberships and
-                            exit select mode.
-                            UX-023: chips reflect current membership across the
-                            selected tasks. "All" = every selected task is
-                            already in this list (filled — tap is a no-op);
-                            "some/none" = at least one selected task isn't in
-                            it (outlined — tap adds them). Matches the per-row
-                            "+ lists" picker convention so a user who learned
-                            "filled = already attached" reads it consistently. */}
-                        {bulkAddListOpen ? (
-                            <View style={styles.bulkListPicker}>
-                                {(lists ?? []).map((l) => {
-                                    const allHaveIt =
-                                        selectedTaskIds.size > 0 &&
-                                        (tasks ?? [])
-                                            .filter((t) =>
-                                                selectedTaskIds.has(t.id),
-                                            )
-                                            .every((t) =>
-                                                t.list_ids.includes(l.id),
-                                            );
-                                    return (
-                                        <Pressable
-                                            key={`bulk-pick-${l.id}`}
-                                            onPress={() =>
-                                                handleBulkAddToList(l.id)
-                                            }
-                                            style={({ pressed }) => [
-                                                styles.metaChip,
-                                                {
-                                                    borderColor: l.color,
-                                                    backgroundColor: allHaveIt
-                                                        ? l.color
-                                                        : 'transparent',
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <ThemedText
-                                                type="small"
-                                                style={{
-                                                    color: allHaveIt
-                                                        ? '#2A2E3A'
-                                                        : colors.text,
-                                                    fontWeight: '600',
-                                                }}>
-                                                {l.name}
-                                            </ThemedText>
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        ) : null}
-                    </View>
-                ) : null}
+                {/* (Phase 8.x audit: bulk-action bar removed alongside the
+                    Select button — design's ProLists doesn't surface a
+                    bulk-select mode, and the per-row swipe panels (Done
+                    / +1d / Delete) cover the common multi-task workflow
+                    at the row granularity the design supports.) */}
             </SafeAreaView>
-            {/* UX-004: floating action button for "+ new list", mirroring the FAB
-                pattern on Home and Calendar so the create mental model is
-                consistent across tabs. Hidden while the bulk-action bar is up
-                so the two anchored controls don't fight for the bottom-right. */}
-            {!selectionMode && showCreateAffordances ? (
+            {/* FAB — per the v2 FAB consistency rule
+                (docs/design-handoffs/onenest-spec-v2/design_handoff_fab_rule/README.md):
+                Lists is a kind-committed tab (tasks are the content), so the
+                FAB short-circuits straight to /task/new and the label names
+                the kind. The secondary "+ NEW LIST" affordance lives in the
+                "Your lists" section header (Phase B of the v2 spec); for
+                now the long-press / context-menu on a list chip still
+                surfaces list editing, but the FAB no longer creates lists. */}
+            {showCreateAffordances ? (
                 <Pressable
-                    onPress={() => router.push('/list/new')}
+                    onPress={() => router.push('/task/new')}
                     accessibilityRole="button"
-                    accessibilityLabel="Create new list"
-                    style={({ pressed }) => [styles.fab, pressed && styles.pressed]}>
-                    <ThemedText style={styles.fabText}>+</ThemedText>
+                    accessibilityLabel="Create new task"
+                    style={({ pressed }) => [
+                        styles.fab,
+                        { backgroundColor: colors.accent },
+                        pressed && styles.pressed,
+                    ]}>
+                    <Feather name="plus" size={18} color={colors.onAccent} />
+                    <ThemedText style={[styles.fabText, { color: colors.onAccent }]}>
+                        New task
+                    </ThemedText>
                 </Pressable>
             ) : null}
         </ThemedView>
@@ -1249,343 +1455,199 @@ export default function ListsScreen() {
 }
 
 /**
- * A single row in the Lists tab. Checkbox + title + meta chips. The whole row body is
- * tappable for navigation; the checkbox stops propagation so toggling complete doesn't
- * also fire the row tap.
+ * A bucketed group of task rows — `Overdue` / `Today` / `This week` / `Later` /
+ * `Completed`. Renders a SectionHeader above a single white card containing
+ * the rows, with hairline dividers between them.  The accentColor prop tints
+ * the section header (used by Overdue → colors.alert).
+ *
+ * Lives here so the bulk of the lists.tsx render block stays readable — the
+ * Section + Card wrapper would otherwise repeat five times inline.
  */
-function TaskListRow({
-    task,
+function TaskBucketSection({
+    label,
+    tasks,
+    accentColor,
     members,
     colorMap,
     allLists,
     activeListId,
-    expanded,
-    onToggleExpanded,
-    onToggleList,
-    selectionMode,
-    selected,
-    onToggleSelected,
-    onToggle,
-    onTap,
-    onDelete,
+    expandedRowId,
+    setExpandedRowId,
+    handleToggleTaskList,
+    handleToggleComplete,
+    handleTapTask,
+    handleDeleteTask,
+    handleSnoozeTask,
 }: {
-    task: Task;
+    label: string;
+    tasks: Task[];
+    accentColor?: string;
     members: { profile_id: string; display_name: string }[];
     colorMap: Map<string, string>;
-    /** All household lists — needed both for cross-list color chips in the meta row
-     *  and for the expanded "add to other lists" picker below the row. */
     allLists: TaskList[];
-    /** The list this row is currently being viewed under; used to skip rendering a
-     *  redundant "also in X" chip when X === the list we're already in. */
     activeListId: string | null;
-    expanded: boolean;
-    onToggleExpanded: () => void;
-    onToggleList: (listId: string) => void;
-    /** True when the parent screen is in bulk-select mode. Renders a selection
-     *  checkbox prefix and tints the row when selected. */
-    selectionMode: boolean;
-    selected: boolean;
-    onToggleSelected: () => void;
-    onToggle: () => void;
-    onTap: () => void;
-    onDelete: () => void;
+    expandedRowId: string | null;
+    setExpandedRowId: (updater: (curr: string | null) => string | null) => void;
+    handleToggleTaskList: (task: Task, listId: string) => void;
+    handleToggleComplete: (task: Task) => void;
+    handleTapTask: (task: Task) => void;
+    handleDeleteTask: (task: Task) => void;
+    handleSnoozeTask: (task: Task) => void;
 }) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
-    const done = !!task.completed_at;
-    const dueLabel = task.due_at
-        ? format(new Date(task.due_at), 'EEE, MMM d')
-        : null;
-
-    // Leading color band: primary assignee's color, or accentMuted for Anyone.
-    // Drains to backgroundSelected on completion so the row reads as "done"
-    // in coordination with the strikethrough + opacity drop on the title.
-    // Shares the hand-off-card vocabulary used inside Home's Day Cards so
-    // tasks feel like the same object across both surfaces.
-    const primaryAssigneeId = task.assignee_profile_ids[0];
-    const liveBandColor = primaryAssigneeId
-        ? colorForResponsible(primaryAssigneeId, colorMap)
-        : UNASSIGNED_COLOR;
-    const bandColor = done ? colors.backgroundSelected : liveBandColor;
-
     return (
-        <Pressable
-            onPress={onTap}
-            style={({ pressed }) => [
-                styles.taskRow,
-                { borderColor: colors.backgroundSelected },
-                done && { backgroundColor: colors.backgroundElement, opacity: 0.7 },
-                // Tint selected rows so the multi-select state is unambiguous —
-                // distinct from the completed-row tint (which uses backgroundElement).
-                selected && { backgroundColor: 'rgba(111, 127, 165, 0.15)' },
-                pressed && styles.pressed,
-            ]}>
-            {/* Leading color band — full bleed from card top to card bottom.
-                Hand-off-card vocabulary. Positioned absolutely so it doesn't
-                push the row's content right; the row's paddingLeft already
-                leaves it ~10px of breathing room before the checkbox. */}
-            <View
-                pointerEvents="none"
-                style={[styles.taskRowBand, { backgroundColor: bandColor }]}
-            />
-            {/* Selection checkbox (only in bulk mode). Sits to the left of the
-                complete checkbox so the two states are visually separate. Stops
-                propagation so the click doesn't also fire the row's onTap. */}
-            {selectionMode ? (
-                <Pressable
-                    onPress={(e) => {
-                        e.stopPropagation();
-                        onToggleSelected();
-                    }}
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: selected }}
-                    accessibilityLabel={
-                        selected ? 'Deselect task' : 'Select task'
-                    }
-                    style={({ pressed }) => [
-                        styles.checkbox,
-                        {
-                            backgroundColor: selected ? '#6F7FA5' : 'transparent',
-                            borderColor: selected
-                                ? '#6F7FA5'
-                                : colors.backgroundSelected,
-                        },
-                        pressed && styles.pressed,
-                    ]}>
-                    {selected ? (
-                        <ThemedText style={styles.checkmark}>✓</ThemedText>
-                    ) : null}
-                </Pressable>
-            ) : null}
-            <Pressable
-                onPress={onToggle}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: done }}
-                accessibilityLabel={
-                    done ? 'Mark task incomplete' : 'Mark task complete'
-                }
-                style={({ pressed }) => [
-                    styles.checkbox,
-                    {
-                        backgroundColor: done ? '#6F7FA5' : 'transparent',
-                        borderColor: done ? '#6F7FA5' : colors.backgroundSelected,
-                    },
-                    pressed && styles.pressed,
-                ]}>
-                {done ? <ThemedText style={styles.checkmark}>✓</ThemedText> : null}
-            </Pressable>
-
-            <View style={styles.taskBody}>
-                <ThemedText
-                    style={[
-                        styles.taskTitle,
-                        done && {
-                            textDecorationLine: 'line-through',
-                            color: colors.textSecondary,
-                        },
-                    ]}
-                    numberOfLines={2}>
-                    {task.title}
-                </ThemedText>
-
-                {/* Meta chips row: due / event / assignees / cross-list pills.
-                    Always rendered when there are lists in the household so the
-                    "+ lists" toggle is reachable on every row — without that, the
-                    "add to other lists" affordance would only exist on rows that
-                    already have meta content. */}
-                {dueLabel ||
-                task.event_id ||
-                task.assignee_profile_ids.length > 0 ||
-                allLists.length > 0 ? (
-                    <View style={styles.metaRow}>
-                        {dueLabel ? (
-                            <View
-                                style={[
-                                    styles.metaChip,
-                                    { borderColor: colors.backgroundSelected },
-                                ]}>
-                                <ThemedText
-                                    type="small"
-                                    themeColor="textSecondary">
-                                    {dueLabel}
-                                </ThemedText>
-                            </View>
-                        ) : null}
-                        {task.event_id ? (
-                            <View
-                                style={[
-                                    styles.metaChip,
-                                    { borderColor: colors.backgroundSelected },
-                                ]}>
-                                <Feather
-                                    name="calendar"
-                                    size={11}
-                                    color={colors.textSecondary}
-                                />
-                                <ThemedText
-                                    type="small"
-                                    themeColor="textSecondary">
-                                    Event
-                                </ThemedText>
-                            </View>
-                        ) : null}
-                        {task.assignee_profile_ids.map((pid) => {
-                            const member = members.find((m) => m.profile_id === pid);
-                            const color = colorForResponsible(pid, colorMap);
-                            const initial =
-                                member?.display_name?.charAt(0).toUpperCase() ?? '·';
-                            return (
-                                <View
-                                    key={pid}
-                                    style={[
-                                        styles.assigneeDot,
-                                        { backgroundColor: color },
-                                    ]}>
-                                    <ThemedText style={styles.assigneeDotText}>
-                                        {initial}
-                                    </ThemedText>
-                                </View>
-                            );
-                        })}
-                        {/* Cross-list pills: show every OTHER list this task is in
-                            (skip the one we're viewing under, since it'd be
-                            redundant). Each pill carries a trailing × so the
-                            tap-to-remove affordance is explicit — without it the
-                            pills looked identical to the read-only "Event" / due
-                            chips next to them and a tap silently removed the
-                            membership (UX-003). */}
-                        {task.list_ids
-                            .filter((lid) => lid !== activeListId)
-                            .map((lid) => {
-                                const l = allLists.find((x) => x.id === lid);
-                                if (!l) return null;
-                                return (
-                                    <Pressable
-                                        key={`meta-list-${lid}`}
-                                        onPress={(e) => {
-                                            // Stop the parent row's onTap from firing
-                                            // — we want to toggle membership here, not
-                                            // navigate.
-                                            e.stopPropagation();
-                                            onToggleList(lid);
-                                        }}
-                                        accessibilityLabel={`Remove from ${l.name}`}
-                                        style={({ pressed }) => [
-                                            styles.metaChip,
-                                            {
-                                                borderColor: l.color,
-                                                backgroundColor: l.color,
-                                            },
-                                            pressed && styles.pressed,
-                                        ]}>
-                                        <ThemedText
-                                            type="small"
-                                            style={{
-                                                color: '#2A2E3A',
-                                                fontWeight: '500',
-                                            }}>
-                                            {l.name}
-                                        </ThemedText>
-                                        <ThemedText
-                                            type="small"
-                                            style={styles.crossListRemoveX}>
-                                            ×
-                                        </ThemedText>
-                                    </Pressable>
-                                );
-                            })}
-                        {/* "+ lists" expansion toggle. Always available when there's
-                            at least one list in the household. Lets the user open
-                            an inline picker without leaving the row. */}
-                        {allLists.length > 0 ? (
-                            <Pressable
-                                onPress={(e) => {
-                                    e.stopPropagation();
-                                    onToggleExpanded();
-                                }}
-                                style={({ pressed }) => [
-                                    styles.metaChip,
-                                    {
-                                        borderColor: colors.backgroundSelected,
-                                        borderStyle: expanded ? 'solid' : 'dashed',
-                                    },
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText
-                                    type="small"
-                                    style={{
-                                        color: '#6F7FA5',
-                                        fontWeight: '600',
-                                    }}>
-                                    {expanded ? '× lists' : '+ lists'}
-                                </ThemedText>
-                            </Pressable>
-                        ) : null}
+        <View style={styles.bucketSection}>
+            <View style={styles.bucketHeaderRow}>
+                {/* Overdue gets its own accent color (alert red) per the design;
+                    other buckets fall back to SectionHeader's default ink-secondary
+                    tint. We hand-roll the label here for Overdue to inject the
+                    color override; otherwise we use SectionHeader for shape +
+                    count consistency. */}
+                {accentColor ? (
+                    <>
+                        {/* paddingHorizontal: Spacing.one on both children so
+                            this hand-rolled Overdue row visually aligns with
+                            SectionHeader's internal horizontal padding (used
+                            by the other buckets below). Without it, OVERDUE
+                            sat 4px to the left of TODAY / THIS WEEK / etc. */}
+                        <ThemedText
+                            style={[
+                                Typography.sectionHeader,
+                                {
+                                    color: accentColor,
+                                    paddingHorizontal: Spacing.one,
+                                },
+                            ]}>
+                            {label.toUpperCase()}
+                        </ThemedText>
+                        <ThemedText
+                            style={[
+                                styles.bucketCount,
+                                {
+                                    color: colors.textSecondary,
+                                    fontFamily: FontFamily.monoMedium,
+                                    paddingHorizontal: Spacing.one,
+                                },
+                            ]}>
+                            {tasks.length}
+                        </ThemedText>
+                    </>
+                ) : (
+                    <View style={styles.bucketHeaderShim}>
+                        <SectionHeader label={label} count={tasks.length} />
                     </View>
-                ) : null}
-
-                {/* Expanded list picker — shows every list with its membership
-                    state, tap to toggle. Wraps so a household with many lists
-                    doesn't push the row width past the screen. */}
-                {expanded ? (
-                    <View
-                        style={[
-                            styles.listPickerPanel,
-                            { borderColor: colors.backgroundSelected },
-                        ]}>
-                        {allLists.map((l) => {
-                            const selected = task.list_ids.includes(l.id);
-                            return (
-                                <Pressable
-                                    key={`pick-${l.id}`}
-                                    onPress={(e) => {
-                                        e.stopPropagation();
-                                        onToggleList(l.id);
-                                    }}
-                                    style={({ pressed }) => [
-                                        styles.metaChip,
-                                        {
-                                            borderColor: l.color,
-                                            backgroundColor: selected
-                                                ? l.color
-                                                : 'transparent',
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color: selected ? colors.textOnPastel : colors.text,
-                                            fontWeight: '500',
-                                        }}>
-                                        {l.name}
-                                    </ThemedText>
-                                </Pressable>
-                            );
-                        })}
-                    </View>
-                ) : null}
+                )}
             </View>
-
-            <Pressable
-                onPress={onDelete}
-                accessibilityRole="button"
-                accessibilityLabel="Delete task"
-                style={({ pressed }) => [
-                    styles.deleteBtn,
-                    pressed && styles.pressed,
+            <View
+                style={[
+                    styles.bucketCard,
+                    {
+                        backgroundColor: colors.backgroundElement,
+                        borderColor: colors.hair,
+                    },
                 ]}>
-                <ThemedText style={{ color: '#B85D52', fontWeight: '600' }}>
-                    ✕
-                </ThemedText>
-            </Pressable>
-        </Pressable>
+                {tasks.map((t, idx) => (
+                    <TaskRow
+                        key={t.id}
+                        task={t}
+                        members={members}
+                        colorMap={colorMap}
+                        allLists={allLists}
+                        activeListId={activeListId}
+                        expanded={expandedRowId === t.id}
+                        onToggleExpanded={() =>
+                            setExpandedRowId((curr) =>
+                                curr === t.id ? null : t.id,
+                            )
+                        }
+                        onToggleList={(listId) =>
+                            handleToggleTaskList(t, listId)
+                        }
+                        onToggle={() => handleToggleComplete(t)}
+                        onTap={() => handleTapTask(t)}
+                        onDelete={() => handleDeleteTask(t)}
+                        onSnooze={() => handleSnoozeTask(t)}
+                        // Last row in the bucket skips its bottom divider —
+                        // the card's own bottom edge is the visual end.
+                        isLast={idx === tasks.length - 1}
+                    />
+                ))}
+            </View>
+        </View>
     );
 }
 
+
 const styles = StyleSheet.create({
     container: { flex: 1 },
+    // SafeAreaView edges={['top']} handles the notch; the page header below
+    // carries its own padding. Removed the bare Spacing.four top padding that
+    // was a workaround for the now-restored screen title.
     safe: { flex: 1 },
+    // Mist Forest page-level header — counts strip + 22px title on the
+    // left, 30x30 search button on the right (direction-c-pro.jsx
+    // ~947-964). The search button toggles a mode-swap input below.
+    pageHeader: {
+        paddingHorizontal: 20,
+        paddingTop: 12,
+        paddingBottom: 6,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    pageHeaderLeft: { flex: 1 },
+    countsStrip: {
+        fontSize: 10,
+        letterSpacing: -0.2,
+    },
+    headerSearchBtn: {
+        width: 30,
+        height: 30,
+        borderRadius: 8,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    // Search row's trailing "Cancel" link. Mono semibold accent — same
+    // vocabulary as the "+ NEW LIST" link so the affordance reads as a
+    // peer chrome control, not a destructive button.
+    searchCancelText: {
+        fontSize: 12,
+        letterSpacing: -0.2,
+    },
+    // "Your lists" card-row header — caps section label on the left,
+    // mono accent "+ NEW LIST" link on the right. Lives between the
+    // Cmd-K quick-add row and the chip strip.
+    yourListsHeader: {
+        paddingHorizontal: 20,
+        paddingTop: 4,
+        paddingBottom: 6,
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+    },
+    yourListsHeaderLabel: {
+        fontSize: 11,
+        fontWeight: '600',
+        letterSpacing: 0.4,
+    },
+    yourListsNewLink: {
+        fontSize: 10,
+        fontWeight: '600',
+        letterSpacing: -0.1,
+    },
+    // Horizontal-scroll row holding ListCardV2 cards + the trailing
+    // NewListCard. flexGrow:0 mirrors chipScroll for the same RN-web
+    // height quirk.
+    yourListsScroll: { flexGrow: 0, flexShrink: 0 },
+    yourListsRow: {
+        flexDirection: 'row',
+        gap: 10,
+        paddingHorizontal: 16,
+        paddingBottom: 14,
+        alignItems: 'stretch',
+    },
     // flexGrow:0 stops the horizontal ScrollView from greedily eating column height
     // on react-native-web (same workaround as the calendar's filter pill row).
     chipScroll: { flexGrow: 0, flexShrink: 0 },
@@ -1599,30 +1661,53 @@ const styles = StyleSheet.create({
         paddingVertical: Spacing.two,
         alignItems: 'center',
     },
-    // Chip Strip 2.0: the active chip is "pulled forward" out of the row —
-    // bigger, weightier, shadow lifted off the page; inactive chips recede
-    // (slight opacity drop + thinner border weight). The active chip's color
-    // fill + the dimmed inactive chips together give the spine its sense of
-    // current selection without a colored connector tab (which would need
-    // overflow:visible on the parent ScrollView and is fragile cross-platform).
+    // Chip vocabulary from the design (direction-c-pro.jsx CChip ~881-894):
+    // pill-shaped 0.5px hair border, exact `padding: '4px 10px'`. Active
+    // chips fill with accent + drop the border into the same color; inactive
+    // chips sit on the card surface with a leading 6px identity dot. No
+    // PILL_SHADOW lift, no inactive opacity dim — neither is in the spec,
+    // and the accent-fill alone carries the selection signal cleanly. The
+    // paddingVertical landed at literal 4 (not Spacing.one + 2 = 6) so the
+    // chip's height matches the design — the previous +2 padded chips
+    // significantly taller than the source.
     listChip: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: Spacing.one,
-        borderWidth: 1,
+        gap: 5,
+        borderWidth: StyleSheet.hairlineWidth,
         borderRadius: 999,
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.one + 2,
-        opacity: 0.85,
+        paddingHorizontal: 10,
+        paddingVertical: 4,
     },
-    listChipActive: {
-        // Active: heavier border + a bit more vertical padding so the chip
-        // sits ~3px taller than its neighbors, lifted by PILL_SHADOW. Full
-        // opacity restored on top of the listChip base.
-        borderWidth: 1.5,
-        paddingVertical: Spacing.two + 1,
-        opacity: 1,
-        ...PILL_SHADOW,
+    // Chip label typography per direction-c-pro.jsx CChip (~887):
+    // `fontSize: 11.5, fontWeight: 600, letterSpacing: -0.1`. We bypass
+    // ThemedText's `type="small"` preset (which is 14/500) so the chip
+    // text matches the design's compact mono-adjacent tag-like weight.
+    // Used by both list chips and child chips so the strip reads
+    // consistently across view modes.
+    chipLabel: {
+        fontSize: 11.5,
+        fontWeight: '600',
+        letterSpacing: -0.1,
+    },
+    // Open-count suffix ("· 4") that follows the label. Same size +
+    // letter-spacing as the label so the two read as one continuous
+    // chip caption, but slightly lighter (weight 500 + 75% opacity) so
+    // the label remains the dominant glyph. Lives inside the chip body
+    // and inherits the chip's gap:5 — no extra margin needed.
+    chipCount: {
+        fontSize: 11.5,
+        fontWeight: '500',
+        letterSpacing: -0.1,
+        opacity: 0.75,
+    },
+    // 6px identity dot rendered inside inactive chips. Carries the per-list
+    // (or per-child) color signal without filling the chip body. Hidden on
+    // the active chip — see the chip render site for why.
+    chipDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
     },
     // Each chip is wrapped so we can render an optional drop marker as its sibling
     // without breaking the flex layout. The wrapper itself has no margin/padding;
@@ -1632,232 +1717,131 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: Spacing.two,
     },
-    // Drop-position indicator during a drag. Slate-blue vertical bar tall enough to
-    // span the chip height; pointerEvents="none" via inline because RN's View doesn't
-    // accept it as a style key — we don't need it since absolute positioning isn't
-    // in play, the bar takes its own slot in the row.
+    // Drop-position indicator during a drag. Vertical accent bar tall enough
+    // to span the chip height. backgroundColor is set inline at the render
+    // site so it tracks colors.accent (brighter green in dark mode).
     dropMarker: {
         width: 3,
         height: 28,
-        backgroundColor: '#6F7FA5',
         borderRadius: 2,
     },
-    chipEditBtn: {
-        padding: 2,
-        borderRadius: 4,
-    },
-    scopeRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.three,
-        paddingHorizontal: Spacing.four,
-        paddingBottom: Spacing.two,
-    },
-    // View-mode toggle (by-list / by-child) — a slim segmented control above the
-    // chip strip. Same visual treatment as the scope toggle below for consistency.
-    viewToggleRow: {
-        flexDirection: 'row',
-        gap: Spacing.two,
-        paddingHorizontal: Spacing.four,
-        paddingBottom: Spacing.two,
-    },
-    // Segmented control. Border on the outer wrapper + selected fill on the active
-    // pill gives a single connected pill-pair without per-button borders.
-    scopeToggle: {
-        flexDirection: 'row',
-        borderWidth: 1,
-        borderRadius: 999,
-        overflow: 'hidden',
-    },
-    scopeBtn: {
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.one,
-    },
-    // The "N hidden" inline action sits next to the segmented control. No border
-    // so it reads as text-action rather than a competing chip.
-    hiddenHint: {
-        paddingHorizontal: Spacing.two,
-        paddingVertical: Spacing.one,
-    },
-    // The Select button sits at the right edge of the scope row. marginLeft:auto
-    // pushes it past the optional "N hidden" hint without depending on its
-    // presence for layout.
-    selectBtn: {
-        marginLeft: 'auto',
-        paddingHorizontal: Spacing.two,
-        paddingVertical: Spacing.one,
-    },
-    // Bulk-action bar pinned to the bottom of the safe area. Border-top sets it
-    // apart from the scrolling task list above without needing a shadow.
-    bulkBar: {
-        borderTopWidth: StyleSheet.hairlineWidth,
-        paddingHorizontal: Spacing.four,
-        paddingVertical: Spacing.three,
-        gap: Spacing.two,
-    },
-    bulkBarRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    bulkBarActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.three,
-    },
-    bulkBtn: {
-        paddingHorizontal: Spacing.two,
-        paddingVertical: Spacing.one,
-    },
-    // Inline chip strip that pops up above the action row when "Add to list…" is
-    // toggled. Wraps so households with many lists don't overflow.
-    bulkListPicker: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: Spacing.one,
-        paddingTop: Spacing.two,
-    },
+    // (Phase 6.7 follow-up #326: chipEditBtn removed with the pencil button.)
+    // (Phase 8.x audit: scopeRow / viewToggleRow / scopeToggle / scopeBtn /
+    // hiddenHint / selectBtn / bulkBar / bulkBarRow / bulkBarActions /
+    // bulkBtn / bulkBtnInline / bulkListPicker were removed alongside the
+    // Mine/All toggle, by-list/by-child toggle, Select button, and
+    // bulk-action bar — none in the design source, none reachable now.)
+
+    // Cmd-N quick-add bar. 0.5px hair border + 10px radius per the redesign
+    // (vs. the old 1px + Spacing.two radius "form input" treatment). Sits on
+    // backgroundElement so it lifts off the page bg the same way cards do.
     quickAddRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: Spacing.two,
-        marginHorizontal: Spacing.four,
-        marginBottom: Spacing.two,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-        paddingHorizontal: Spacing.two,
+        gap: 10,
+        marginHorizontal: Spacing.three,
+        marginBottom: Spacing.three,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 10,
+        paddingHorizontal: 12,
+        paddingVertical: 9,
     },
     quickAddInput: {
         flex: 1,
-        fontSize: 15,
-        paddingVertical: Spacing.two,
+        fontSize: 12,
+        letterSpacing: -0.2,
+        // Trim platform-default vertical padding; the row's paddingVertical
+        // already gives the input its breathing room and the design renders
+        // the placeholder snug against the leading "+".
+        paddingVertical: 0,
     },
-    quickAddBtn: {
-        backgroundColor: '#6F7FA5',
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.one + 2,
-        borderRadius: Spacing.one + 2,
+    // Trailing ⌘N kbd-style pill. Tiny mono badge with an accent-tinted bg,
+    // matches the design's "this is a keyboard shortcut hint" treatment in
+    // the AI Cmd-K input pattern.
+    kbdBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
+        paddingHorizontal: 5,
+        paddingVertical: 2,
+        borderRadius: 3,
+    },
+    kbdBadgeText: {
+        fontSize: 9.5,
+        letterSpacing: -0.2,
     },
     tasksScroll: { flex: 1 },
     tasksContent: {
-        paddingHorizontal: Spacing.four,
+        paddingHorizontal: Spacing.three,
         paddingBottom: Spacing.six,
-        gap: Spacing.two,
-    },
-    sectionLabel: {
-        marginTop: Spacing.three,
-        marginBottom: Spacing.one,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
     },
     empty: {
         padding: Spacing.six,
         alignItems: 'center',
     },
-    // Task row — wrapped in the hand-off-card surface vocabulary. 12px radius,
-    // backgroundElement fill (provided by parent unless completed/selected
-    // overrides it), overflow:hidden so the leading band tucks into the
-    // rounded corners. paddingLeft pushed out by the band width + breathing
-    // room so the checkbox doesn't crash into the colored stripe.
-    taskRow: {
+    // Due-date bucket section ("Overdue" / "Today" / "This week" / etc.).
+    // Sits as a stand-alone unit: caps section header + count above, white
+    // card with hairline dividers between rows below. paddingTop spaces it
+    // from the preceding bucket — the old gap:Spacing.two on tasksContent
+    // gave every row+section the same spacing, which doesn't match the
+    // design's "header floats slightly above its card" pattern.
+    bucketSection: {
+        paddingTop: Spacing.three,
+    },
+    // paddingHorizontal dropped — SectionHeader owns its own horizontal
+    // padding (`Spacing.one` baked into its row), and we were doubling it
+    // for non-Overdue buckets while the Overdue branch (hand-rolled label)
+    // only got the row's 4px. Net result was misaligned bucket headers.
+    // Letting SectionHeader own the padding fixes both branches.
+    bucketHeaderRow: {
         flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: Spacing.two,
-        paddingVertical: Spacing.two + 2,
-        paddingRight: Spacing.two + 2,
-        paddingLeft: Spacing.two + 2 + 6, // band (3) + breathing room (~7)
-        borderRadius: 12,
-        borderWidth: 1,
-        overflow: 'hidden',
-        // position:relative so the absolutely-positioned leading band
-        // anchors to this row, not the parent ScrollView.
-        position: 'relative',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        paddingBottom: Spacing.two,
     },
-    // 3px leading color band — full bleed top to bottom, tinted to the
-    // primary assignee. See TaskListRow where bandColor is computed.
-    taskRowBand: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        width: 3,
+    // Shim wraps SectionHeader so its internal horizontal padding doesn't
+    // double up with bucketHeaderRow's. SectionHeader is fixed-shape but it
+    // owns its own justify-between; we drop the row's flex on it via
+    // flex:1 here so it spans the available width.
+    bucketHeaderShim: { flex: 1 },
+    bucketCount: {
+        fontSize: 11,
+        letterSpacing: -0.2,
     },
-    checkbox: {
-        width: 22,
-        height: 22,
-        borderRadius: 4,
-        borderWidth: 2,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: 2,
-    },
-    checkmark: { color: '#fff', fontSize: 14, fontWeight: '700' },
-    taskBody: { flex: 1, gap: 4 },
-    taskTitle: { fontSize: 15, lineHeight: 20 },
-    metaRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.one,
-        flexWrap: 'wrap',
-    },
-    metaChip: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: Spacing.two,
-        paddingVertical: 1,
-    },
-    // Trailing × glyph on cross-list pills. Slightly bolder + opacity-dimmed so
-    // it reads as "tap target inside this pill" without competing with the list
-    // name. Matches the affordance pattern of close-buttons in browser tabs.
-    crossListRemoveX: {
-        color: '#2A2E3A',
-        fontSize: 13,
-        fontWeight: '700',
-        opacity: 0.6,
-        marginLeft: 2,
-    },
-    // Expanded inline list picker below a task row's meta chips. Outlined panel
-    // groups the chips visually so they don't blur into the meta row above.
-    listPickerPanel: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: Spacing.one,
-        marginTop: Spacing.two,
-        padding: Spacing.two,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-    },
-    assigneeDot: {
-        width: 20,
-        height: 20,
+    // White card wrapping each bucket's rows. 10px radius + 0.5px hair
+    // border per direction-c-pro.jsx (~992, ~1002, ~1014). overflow:hidden
+    // keeps the row hairline dividers inside the card's rounded corners.
+    bucketCard: {
         borderRadius: 10,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    assigneeDotText: { color: '#fff', fontSize: 10, fontWeight: '700' },
-    deleteBtn: {
-        width: 32,
-        height: 32,
-        alignItems: 'center',
-        justifyContent: 'center',
+        borderWidth: StyleSheet.hairlineWidth,
+        overflow: 'hidden',
     },
     pressed: { opacity: 0.7 },
     // UX-004: FAB anchored bottom-right. Mirrors src/app/(app)/index.tsx fab/fabText
     // so the create affordance reads identically on Home, Calendar, and Lists.
+    // FAB pill — same vocabulary as Home / Calendar / Contacts. Background +
+    // text color are applied inline at the render site so they track
+    // colors.accent / colors.onAccent across themes.
     fab: {
         position: 'absolute',
-        right: Spacing.four,
-        bottom: Spacing.six,
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        backgroundColor: '#6F7FA5',
+        right: 16,
+        // Matches Home's fabPill `bottom: 16` (index.tsx). The legacy 96
+        // here was protecting against a tab-bar overlap that no longer
+        // applies — the bottom tab bar sits below the screen area, not
+        // overlaid on it, so the FAB only needs ~16px of breathing room
+        // from the screen-area bottom edge.
+        bottom: 16,
+        height: 44,
+        paddingHorizontal: 16,
+        borderRadius: 22,
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
+        gap: 8,
         ...FAB_SHADOW,
     },
-    fabText: { color: '#fff', fontSize: 28, lineHeight: 32 },
+    fabText: {
+        fontFamily: FontFamily.sansSemiBold,
+        fontSize: 13,
+        letterSpacing: -0.2,
+    },
 });

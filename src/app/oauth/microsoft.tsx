@@ -138,7 +138,7 @@ export default function MicrosoftOAuthCallback() {
                     <Pressable
                         onPress={() => router.replace('/settings')}
                         style={({ pressed }) => [styles.linkBtn, pressed && styles.pressed]}>
-                        <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                        <ThemedText style={{ color: '#1F2940', fontWeight: '600' }}>
                             Back to Settings
                         </ThemedText>
                     </Pressable>

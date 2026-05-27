@@ -10,6 +10,8 @@
 
 import { StyleSheet, Text, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
+import { FontFamily } from '@/constants/theme';
+
 type Size = 'sm' | 'md' | 'lg';
 
 type Props = {
@@ -62,6 +64,11 @@ const styles = StyleSheet.create({
         // Dark text on the pastel backgrounds reads more reliably than white at small
         // sizes. Stays legible on every CHILDREN_PALETTE color.
         color: '#1A1A1A',
+        // fontFamily explicit — raw <Text> doesn't inherit Geist, so without
+        // this the initial falls back to the platform system sans (SF Pro /
+        // Roboto / system-ui). ChildBadge sits on every event row + calendar
+        // block so this is the highest-traffic Geist-leak in the app.
+        fontFamily: FontFamily.sansBold,
         fontWeight: '700',
         // Letter-spacing tightens the single character so it visually centers in the circle.
         letterSpacing: 0,

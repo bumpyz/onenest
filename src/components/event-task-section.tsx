@@ -20,7 +20,7 @@ import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { DateField, TimeField } from '@/components/datetime-fields';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, Spacing } from '@/constants/theme';
 import { UNASSIGNED_COLOR, colorForResponsible } from '@/lib/colors';
 import type { Child, HouseholdMember, List } from '@/lib/db';
 import { useAppColorScheme } from '@/providers/theme-provider';
@@ -96,6 +96,13 @@ type Props = {
      */
     defaultChildIds: string[];
     /**
+     * Default list ids applied when "+ Add a task" creates a new row. Set
+     * to `[defaultListId]` when the user picks a To-do list above the
+     * Quick tasks editor (Attach section, canvas 04.2). Empty array =
+     * land in Inbox (DB trigger default). Editable per task afterward.
+     */
+    defaultListIds?: string[];
+    /**
      * Default due_at applied when the user taps "+ Add a task" — for event-linked tasks
      * this is the event's start time. Null for standalone tasks (no default).
      */
@@ -120,6 +127,7 @@ export function EventTaskSection({
     lists,
     children: householdChildren,
     defaultChildIds,
+    defaultListIds,
     defaultDueAt,
     disabled = false,
     onCompleteImmediate,
@@ -138,6 +146,10 @@ export function EventTaskSection({
                 // inherits the event's context (e.g. "buy ballet shoes" on Anna's
                 // ballet event auto-tags Anna). User can toggle off per task.
                 childIds: defaultChildIds,
+                // Seed from the picked To-do list when set (canvas 04.2
+                // Attach section). Empty when the user hasn't picked a
+                // list — DB trigger then lands the task in Inbox.
+                listIds: defaultListIds ?? [],
             }),
         ]);
     };
@@ -281,10 +293,10 @@ export function EventTaskSection({
                                     styles.checkbox,
                                     {
                                         backgroundColor: done
-                                            ? '#6F7FA5'
+                                            ? colors.accent
                                             : 'transparent',
                                         borderColor: done
-                                            ? '#6F7FA5'
+                                            ? colors.accent
                                             : colors.backgroundSelected,
                                     },
                                     pressed && styles.pressed,
@@ -316,7 +328,7 @@ export function EventTaskSection({
                                 ]}>
                                 <ThemedText
                                     type="small"
-                                    style={{ color: '#B85D52', fontWeight: '600' }}>
+                                    style={{ color: BrandColors.error, fontWeight: '600' }}>
                                     ✕
                                 </ThemedText>
                             </Pressable>
@@ -430,7 +442,7 @@ export function EventTaskSection({
                                                 type="small"
                                                 style={{
                                                     color: selected
-                                                        ? '#2A2E3A'
+                                                        ? colors.accent
                                                         : colors.text,
                                                     fontWeight: '500',
                                                 }}>
@@ -561,7 +573,7 @@ export function EventTaskSection({
                     { borderColor: colors.backgroundSelected },
                     pressed && styles.pressed,
                 ]}>
-                <ThemedText type="small" style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                <ThemedText type="small" style={{ color: colors.accent, fontWeight: '600' }}>
                     + Add a task
                 </ThemedText>
             </Pressable>

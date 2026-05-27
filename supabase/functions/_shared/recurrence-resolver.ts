@@ -43,7 +43,11 @@ export type CustodySchedule = {
     parent_a_profile_id: string;
     parent_b_profile_id: string;
     anchor_date: string; // YYYY-MM-DD
-    cycle_days: string[]; // 'A' | 'B' entries
+    cycle_days: string[]; // 'A' | 'B' | 'AB' entries (post-migration 0048)
+    /** #376: soft-stop. When non-null the schedule is treated as inactive —
+     *  callers should skip auto-assignment lookups. Optional + nullable so
+     *  pre-0048 callers stay compatible. */
+    disabled_at?: string | null;
 };
 
 export type CustodyOverride = {
@@ -195,9 +199,13 @@ function custodianProfileIdOnDate(
     schedule: CustodySchedule,
     date: Date,
     tz: string | null,
-): string {
+): string | null {
     const idx = cycleIndexForDate(schedule, date, tz);
     const label = schedule.cycle_days[idx] ?? 'A';
+    // #379: 'AB' both-present days return null — no specific custodian.
+    // The caller (resolveResponsibleProfileId-equivalent on the Deno side)
+    // already treats null as "Anyone" / unassigned semantics.
+    if (label === 'AB') return null;
     return label === 'A'
         ? schedule.parent_a_profile_id
         : schedule.parent_b_profile_id;
@@ -234,10 +242,13 @@ function resolveCustodianOnDate(
     overrideMap: Map<string, CustodyOverride>,
     date: Date,
     tz: string | null,
-): string {
+): string | null {
     const key = dateKeyInTz(date, tz);
     const override = overrideMap.get(key);
     if (override) return override.custodian_profile_id;
+    // #379: 'AB' both-present days return null from
+    // custodianProfileIdOnDate. The Deno responsible-resolver treats
+    // null as "Anyone" / unassigned, matching the client behavior.
     return custodianProfileIdOnDate(schedule, date, tz);
 }
 
@@ -283,11 +294,19 @@ export function resolveResponsibleProfileId(args: ResolveResponsibleArgs): strin
     if (occOverride) return occOverride.responsible_profile_id;
 
     if (event.responsible_alternation) {
-        if (!custodySchedule) return event.responsible_profile_id;
+        // #376: a soft-stopped schedule (disabled_at non-null) is treated
+        // the same as no-schedule. Falls through to the static field;
+        // sunday-summary will no longer try to auto-assign through a
+        // disabled pattern.
+        if (!custodySchedule || custodySchedule.disabled_at) {
+            return event.responsible_profile_id;
+        }
         const lookupDate =
             event.responsible_alternation === 'previous_day'
                 ? new Date(occurrenceDate.getTime() - 24 * 60 * 60 * 1000)
                 : occurrenceDate;
+        // #379: 'AB' both-present days return null from resolveCustodianOnDate.
+        // Null is "Anyone" / unassigned — same semantic as the client resolver.
         return resolveCustodianOnDate(
             custodySchedule,
             custodyOverrides,

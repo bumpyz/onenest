@@ -208,7 +208,7 @@ export function PlacesAutocomplete({
 
                     {!loading && error ? (
                         <View style={styles.row}>
-                            <ThemedText type="small" style={{ color: '#B85D52' }}>
+                            <ThemedText type="small" style={{ color: '#D9533F' }}>
                                 {error}
                             </ThemedText>
                         </View>
@@ -229,7 +229,7 @@ export function PlacesAutocomplete({
                                       pressed && { opacity: 0.6 },
                                   ]}>
                                   <ThemedText type="smallBold">
-                                      📍 {s.mainText || s.text}
+                                      {s.mainText || s.text}
                                   </ThemedText>
                                   {s.secondaryText ? (
                                       <ThemedText

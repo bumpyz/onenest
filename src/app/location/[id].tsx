@@ -11,16 +11,20 @@ import {
 } from '@/components/location-form';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
+import { Colors, Spacing } from '@/constants/theme';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLocations } from '@/hooks/use-locations';
 import { deleteLocation, updateLocation } from '@/lib/db';
+import { useAppColorScheme } from '@/providers/theme-provider';
 import { useAuth } from '@/providers/auth-provider';
 
 export default function EditLocationScreen() {
     const router = useRouter();
     const params = useLocalSearchParams<{ id?: string | string[] }>();
     const id = Array.isArray(params.id) ? params.id[0] : params.id;
+
+    const scheme = useAppColorScheme();
+    const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
     const { session, isLoading: authLoading } = useAuth();
     const { households, isLoading: householdsLoading } = useHouseholds();
@@ -63,9 +67,11 @@ export default function EditLocationScreen() {
                             It may have been deleted.
                         </ThemedText>
                         <Pressable
-                            onPress={() => router.replace('/settings')}
+                            onPress={() => router.replace('/settings/locations')}
                             style={styles.linkBtn}>
-                            <ThemedText style={{ color: '#6F7FA5' }}>Back to Settings</ThemedText>
+                            <ThemedText style={{ color: colors.accent }}>
+                                Back to Locations
+                            </ThemedText>
                         </Pressable>
                     </View>
                 </SafeAreaView>

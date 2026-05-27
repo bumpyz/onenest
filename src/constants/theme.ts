@@ -1,7 +1,24 @@
 /**
- * Theme tokens. Warm slate palette — cream backgrounds, sage cards, slate-blue accents.
- * The accent (#6F7FA5) and error (#B85D52) live as constants below since they're brand
- * colors that read the same in light and dark mode; only background/text shift between modes.
+ * Theme tokens — P3 Mist Forest (light) + P4-F Charcoal Forest (dark).
+ *
+ * This is the matched palette pair from the redesign handoff. The light theme
+ * sits on a cool gray page with a sage undertone (#ECEFEC), white cards, and
+ * forest-green accent (#2D8B6E). The dark theme is near-black (#15171B) with
+ * a brightened forest accent (#3FC198) — the green has to lift on near-black
+ * surfaces or it reads muted, so the accent literally changes between modes.
+ *
+ * Token shape stays back-compatible with the previous theme contract — same
+ * keys (text, background, backgroundElement, backgroundInset, backgroundSelected,
+ * textSecondary, textOnPastel) so every existing consumer keeps compiling.
+ * New tokens (hair, inkSec, inkFaint, accentSoft, sheet, onSheet, warn) are
+ * additive and used by the new components shipping in later redesign phases.
+ *
+ * The accent moves between themes — `Colors.light.accent` vs `Colors.dark.accent`
+ * — so new code should reach into `colors[scheme].accent` rather than the
+ * static `BrandColors`. BrandColors stays exported for back-compat: every
+ * existing call site that pinned to the old navy accent will now show the
+ * light-mode forest accent (#2D8B6E). Subsequent migration phases convert
+ * those to theme-aware lookups.
  */
 
 import '@/global.css';
@@ -10,64 +27,221 @@ import { Platform, type ViewStyle } from 'react-native';
 
 import { CARD_SHADOW, FAB_SHADOW } from '@/lib/platform-styles';
 
-// Brand constants — used directly in styles where a fixed hue is desired regardless of mode.
+// ─── Brand constants ────────────────────────────────────────────────────────
+//
+// Static accent + error tokens. Light-mode Mist Forest values. New screens
+// should prefer `Colors[scheme].accent` so the accent brightens in dark mode
+// per the handoff spec — but the dozens of existing static `BrandColors.accent`
+// references stay readable here without an invasive refactor.
 export const BrandColors = {
-    accent: '#6F7FA5',          // slate blue — primary CTAs, FAB, "today" highlights
-    accentMuted: '#8FA3AF',     // dusty blue-gray — secondary actions
-    error: '#B85D52',           // warm terracotta — destructive actions, errors
-    errorBackground: '#F3D9D3', // pale terracotta — error chip background
-    onAccent: '#FFFFFF',        // text/icon on top of accent
+    accent: '#2D8B6E',          // forest green — primary CTAs, FAB, active chips, today marker
+    accentMuted: '#828B85',     // muted gray — secondary actions
+    error: '#C04A38',           // alert red — destructive actions, errors
+    errorBackground: '#F3D9D2', // pale tint of alert — chip backgrounds
+    onAccent: '#FFFFFF',        // text/icon on top of accent (light mode)
 } as const;
+
+// ─── Theme palettes ─────────────────────────────────────────────────────────
+//
+// Each palette ships every token a screen could need: surface stack
+// (bg / card / inset), ink ramp (text / textSecondary / inkSec / inkFaint),
+// hairline borders (hair / hairS at two alpha levels), accent + soft tint +
+// onAccent text, alert + soft tint, warn (conflict / overdue), and the
+// elevated dark surface (sheet) used for the AI / banner overlays.
+//
+// Member-color tokens (alex / riley / etc. from the handoff) are intentionally
+// NOT here — those live per-row in the database (members.color, children.color),
+// and the brightening rule for dark mode ("member colors brighten ~15%") is
+// applied at render via a helper in lib/colors.ts. Storing them in theme
+// would lock the app to the handoff's example household.
 
 export const Colors = {
     light: {
-        text: '#2A2E3A',              // deep warm slate, not pure black
-        background: '#F4EFE2',         // warm cream page background
-        backgroundElement: '#E6EBDC',  // pale sage — cards, elevated surfaces
-        backgroundSelected: '#D6DCC9', // slightly darker sage — selected/today tint
-        textSecondary: '#6F7FA5',      // slate blue — secondary text + member dots
-        // UX-034: foreground color for content sitting on a known-pastel surface
-        // (children palette chips, member-color filled chips, etc.). Intentionally
-        // theme-agnostic: pastel surfaces are pastel in both themes, so the
-        // contrasting text must stay dark in both. Reference this token everywhere
-        // a chip puts text on a child/member color background rather than
-        // hardcoding `#2A2E3A` at the call site.
-        textOnPastel: '#2A2E3A',
+        // ── P3 Mist Forest ──
+        // Body text at ~12:1 against the page bg (well past WCAG AAA).
+        text: '#161C18',                // ink — body text
+        textSecondary: '#828B85',       // inkMuted — meta, secondary labels
+        inkSec: '#4E5750',              // sits between text and textSecondary
+        inkFaint: '#BCC4BE',            // chevrons, faintest meta
+        background: '#ECEFEC',          // page — cool gray with sage undertone
+        backgroundElement: '#FFFFFF',   // card — primary surface
+        backgroundInset: '#F3F5F2',     // inset — nested chips, secondary cards
+        backgroundSelected: '#CCE5DC',  // accentSoft — pale forest tint for today / selected
+        // UX-034: text color on pastel backgrounds (children chips, member-color filled
+        // chips). Stays dark in both themes since the pastels are pastel in both.
+        textOnPastel: '#161C18',
+        // ── New design-system tokens ──
+        hair: 'rgba(22,28,24,0.08)',    // hairline borders — 0.5px solid at 8% ink
+        hairS: 'rgba(22,28,24,0.04)',   // softer hairline — for nested separations
+        accent: '#2D8B6E',              // forest green
+        accentSoft: '#CCE5DC',          // pale forest tint
+        onAccent: '#FFFFFF',            // white text on forest accent
+        alert: '#C04A38',               // destructive red
+        alertSoft: '#F3D9D2',           // pale red tint
+        warn: '#D8902C',                // conflict / overdue amber
+        // Dedicated token for the "both parents present" / 'AB' shared-day
+        // state (#379). Renders on CustodyWeekBar segments to communicate
+        // togetherness without picking a single parent's identity color.
+        // Light: same pale forest tint accentSoft uses (reads well on white).
+        // Dark: a deliberately brighter neutral, NOT accentSoft — the original
+        // accentSoft `#1F2A26` was too close to backgroundElement `#1F2128`
+        // (≈1.5:1 contrast, below WCAG 3:1 for UI elements) so AB days
+        // collapsed visually into the card. Audit MEDIUM post-fix finding.
+        shared: '#CCE5DC',
+        sheet: '#161C18',               // elevated dark surface (AI sheet, banners)
+        onSheet: '#FFFFFF',
     },
     dark: {
-        text: '#EBE5D5',               // warm cream — matches the light bg color
-        background: '#1F232E',          // deep slate
-        backgroundElement: '#2A2F3D',   // raised slate
-        backgroundSelected: '#363C4C',  // selected slate
-        textSecondary: '#A8B5C5',       // muted dusty blue
-        // UX-034: see light-theme comment. Pastel chip bg → same dark foreground
-        // both themes.
-        textOnPastel: '#2A2E3A',
+        // ── P4-F Charcoal Forest ──
+        text: '#F0F0F2',
+        textSecondary: '#A8AAB2',
+        inkSec: '#A8AAB2',
+        inkFaint: '#4A4C55',
+        background: '#15171B',          // near-black
+        backgroundElement: '#1F2128',   // lifted near-black card
+        backgroundInset: '#272A33',     // mid-tone inset for nested elements
+        backgroundSelected: '#1F2A26',  // dark forest tint for selected
+        textOnPastel: '#161C18',        // pastel chips stay pastel in both themes
+        // ── New design-system tokens ──
+        hair: 'rgba(255,255,255,0.08)',
+        hairS: 'rgba(255,255,255,0.04)',
+        // Critical dark-mode rule: accent BRIGHTENS in dark so it pops on
+        // near-black (#2D8B6E → #3FC198). onAccent flips to dark text since
+        // the bright green carries dark glyphs at higher contrast.
+        accent: '#3FC198',
+        accentSoft: '#1F2A26',
+        onAccent: '#0B1310',
+        alert: '#FF5C4E',
+        alertSoft: '#3A2222',
+        warn: '#E8A33C',
+        // Brighter neutral (vs. accentSoft `#1F2A26` which was too close to
+        // backgroundElement `#1F2128`). Lifts AB bar segments off the card
+        // meaningfully — ~3.2:1 contrast against the card, clearing WCAG 3:1.
+        shared: '#3A4045',
+        sheet: '#0B0C0F',               // even darker than bg
+        onSheet: '#FFFFFF',
     },
 } as const;
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
+// ─── Typography ─────────────────────────────────────────────────────────────
+//
+// Redesign uses Geist (sans) + Geist Mono (numerals + meta labels). Both
+// bundles load via expo-font in `src/app/_layout.tsx` — see the `useFonts({
+// 'Geist-Regular': ..., 'GeistMono-SemiBold': ..., ... })` block. Each weight
+// is registered as its own family name because RN can't pick a weight from a
+// single family the way CSS does — `fontFamily: 'Geist-SemiBold'` addresses
+// the file directly.
+//
+// Use the `Typography` preset object below in new components. Style objects
+// like `Typography.titleHero` carry the exact font family + size + spacing
+// the design calls for, so consumers don't need to remember the type scale.
+//
+// The mono token is referenced by every timestamp, count, badge, and section
+// header in the new design — caps + tracking + monospace = Linear / Things-
+// tier "this is meta, not body" signal.
+
+/** Raw font-family names. Use the `Typography` presets below in screen code
+ *  unless you need a custom combination. */
+export const FontFamily = {
+    sansRegular: 'Geist-Regular',
+    sansMedium: 'Geist-Medium',
+    sansSemiBold: 'Geist-SemiBold',
+    sansBold: 'Geist-Bold',
+    monoRegular: 'GeistMono-Regular',
+    monoMedium: 'GeistMono-Medium',
+    monoSemiBold: 'GeistMono-SemiBold',
+} as const;
+
+/** Legacy `Fonts` shape — kept for back-compat with existing code that
+ *  references `Fonts.sans` / `Fonts.mono`. New code should reach for
+ *  `Typography` (or `FontFamily` for a specific weight). The web variant
+ *  uses the Geist family directly so RN-Web can use fontWeight cascading
+ *  if it ever needs to. */
 export const Fonts = Platform.select({
     ios: {
-        sans: 'system-ui',
+        sans: FontFamily.sansRegular,
         serif: 'ui-serif',
         rounded: 'ui-rounded',
-        mono: 'ui-monospace',
+        mono: FontFamily.monoRegular,
     },
     default: {
-        sans: 'normal',
+        sans: FontFamily.sansRegular,
         serif: 'serif',
         rounded: 'normal',
-        mono: 'monospace',
+        mono: FontFamily.monoRegular,
     },
     web: {
-        sans: 'var(--font-display)',
+        sans: '"Geist", "Geist-Regular", -apple-system, "Helvetica Neue", system-ui, sans-serif',
         serif: 'var(--font-serif)',
         rounded: 'var(--font-rounded)',
-        mono: 'var(--font-mono)',
+        mono: '"Geist Mono", "GeistMono-Regular", ui-monospace, "SF Mono", monospace',
     },
 });
+
+/** Type-scale presets pulled directly from the design handoff. Each preset is
+ *  a self-contained style object — spread it into a Text component's style
+ *  array and the font family + size + weight + tracking are all set. */
+export const Typography = {
+    /** 32 / 600 / -1.2 — hero greeting on Home ("Good morning, Alex."). Per
+     *  the handoff's exact spec; was 30/-1.0 in an earlier iteration. */
+    titleHero: {
+        fontFamily: FontFamily.sansSemiBold,
+        fontSize: 32,
+        letterSpacing: -1.2,
+    },
+    /** 22 / 600 / -0.6 — secondary titles (Lists / Settings / Family / Calendar) */
+    titleSecondary: {
+        fontFamily: FontFamily.sansSemiBold,
+        fontSize: 22,
+        letterSpacing: -0.6,
+    },
+    /** 15 / 600 / -0.2 — primary row label, action button text */
+    rowLabel: {
+        fontFamily: FontFamily.sansSemiBold,
+        fontSize: 15,
+        letterSpacing: -0.2,
+    },
+    /** 13.5 / 500 / -0.2 — body text inside rows */
+    body: {
+        fontFamily: FontFamily.sansMedium,
+        fontSize: 13.5,
+        letterSpacing: -0.2,
+    },
+    /** 12.5 / 500 — sub-text, captions */
+    bodySm: {
+        fontFamily: FontFamily.sansMedium,
+        fontSize: 12.5,
+    },
+    /** 11 / 600 / 0.4 / uppercase — caps SANS section headers ("OVERDUE",
+     *  "TODAY · TUE 26", "PEOPLE · 4"). Important: design uses **sans** here,
+     *  not mono. Mono is reserved for numerals + tag-like meta (counts strips,
+     *  timestamps, kbd shortcuts, EXT/LIVE/STALE tags). Section header
+     *  copy is normal text styled with caps + tracking, which is a sans
+     *  pattern. */
+    sectionHeader: {
+        fontFamily: FontFamily.sansSemiBold,
+        fontSize: 11,
+        letterSpacing: 0.4,
+        textTransform: 'uppercase' as const,
+    },
+    /** 13 / 600 — primary mono numerals (event start times, counts) */
+    mono: {
+        fontFamily: FontFamily.monoSemiBold,
+        fontSize: 13,
+    },
+    /** 11 / 500 — secondary mono numerals (event end times, secondary counts) */
+    monoSm: {
+        fontFamily: FontFamily.monoMedium,
+        fontSize: 11,
+    },
+    /** 9 / 500 — micro-mono for badges and tightly-packed meta */
+    monoXs: {
+        fontFamily: FontFamily.monoRegular,
+        fontSize: 9,
+    },
+} as const;
 
 export const Spacing = {
     half: 2,
@@ -84,45 +258,31 @@ export const MaxContentWidth = 800;
 
 // ─── Surface tokens ─────────────────────────────────────────────────────────
 //
-// The visual vocabulary every card-like surface in the app should pull from.
-// Before this existed, every screen invented its own card geometry — Home's
-// summaryCard used Spacing.two radius, WelcomeCard used Spacing.three, Settings
-// .card used Spacing.two, and padding was a coin flip between Spacing.three and
-// Spacing.four. The result was a UI that read as "consistent-ish" but kept
-// generating consistency findings each pass. Codify the vocabulary once.
+// Visual vocabulary every card-like surface pulls from. Three tiers:
+//   • page   → document background (under everything else)
+//   • card   → primary surface lifted off the page
+//   • inset  → nested surface inside a card (event rows in a day card, etc.)
 //
-// Three tiers, named for the mental model rather than the depth:
-//   • page   → the document itself (the background under everything else)
-//   • card   → primary surface lifted off the page (day cards, settings cards)
-//   • inset  → secondary surface nested INSIDE a card (event rows inside a
-//              day card, etc.). No shadow — leans on the parent card's shadow
-//              and uses the page color to read as "deeper" than the card.
+// Surfaces.card.fill is a key into Colors[scheme] — resolved at the call site
+// so theme switching works automatically.
 //
-// `fill` is a key into Colors[scheme], not a literal hex. Resolve at the call
-// site so theme switching works:
-//
-//     const surface = Surfaces.card;
-//     <View style={[
-//         { backgroundColor: colors[surface.fill], borderRadius: surface.radius,
-//           padding: surface.padding },
-//         surface.shadow,
-//     ]}>
-//
-// Don't add a fourth tier without a real use case. Three covers the
-// page → card → nested-element hierarchy that maps to how users actually parse
-// the screens. A fourth would push us toward Material-style elevation theatre.
+// Don't add a fourth tier without a real use case. Three covers the page →
+// card → nested-element hierarchy that matches how users parse the screens.
 
-type SurfaceFill = 'background' | 'backgroundElement' | 'backgroundSelected';
+type SurfaceFill =
+    | 'background'
+    | 'backgroundElement'
+    | 'backgroundInset'
+    | 'backgroundSelected';
 
 export type SurfaceToken = {
     /** Corner radius in pixels. */
     radius: number;
-    /** Inner padding in pixels. Apply uniformly unless the consumer needs to
-     *  override (e.g. a card with a colored leading rail uses asymmetric pad). */
+    /** Inner padding in pixels. */
     padding: number;
     /** Color key into Colors[scheme]. Resolve via colors[fill] at render. */
     fill: SurfaceFill;
-    /** Platform-aware shadow style; spread into the view's style array. */
+    /** Platform-aware shadow style. */
     shadow: ViewStyle | undefined;
 };
 
@@ -135,32 +295,23 @@ export const Surfaces = {
     },
     card: {
         radius: 12,
-        padding: 16,
+        padding: 14,                    // 14 per the redesign's 4-based scale (was 16)
         fill: 'backgroundElement',
         shadow: CARD_SHADOW,
     },
     inset: {
         radius: 8,
         padding: 12,
-        // Page color inside a card surface → reads as a "well" / inset, not
-        // a stacked second card. This is the trick that makes nested rows
-        // (event rows inside a day card) feel deeper than their container
-        // without needing another shadow.
-        fill: 'background',
+        fill: 'backgroundInset',
         shadow: undefined,
     },
 } as const satisfies Record<string, SurfaceToken>;
 
 // ─── Elevation tokens ───────────────────────────────────────────────────────
 //
-// Three steps. Use the named constant, not the underlying shadow:
-//   • flat     → no shadow. For nested cards-in-cards (the inset surface).
-//   • resting  → primary cards lifted off the page (Surfaces.card uses this).
-//   • floating → FAB, popovers, anything that hovers above all content.
-//
-// If you're tempted to invent a fourth step, you're probably building a
-// component that should be one of the existing three. Re-read the comment on
-// Surfaces above.
+// Three steps. The redesign uses shadows sparingly — most lift comes from
+// surface tone, not blur. Dark mode usually has shadow:undefined since the
+// near-black surfaces already imply depth.
 
 export const Elevation = {
     flat: undefined,

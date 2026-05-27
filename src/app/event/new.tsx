@@ -10,10 +10,10 @@ import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
 import { useLocations } from '@/hooks/use-locations';
-import { useMyProfile } from '@/hooks/use-my-profile';
 import { useMyRole } from '@/hooks/use-my-role';
-import { createEvent, createTask } from '@/lib/db';
+import { createEvent, createList, createTask } from '@/lib/db';
 import { resolveLocationId } from '@/lib/locations';
+import { resolveDefaultTimezone } from '@/lib/timezones';
 import { useAuth } from '@/providers/auth-provider';
 
 function defaultStartTime(now: Date): string {
@@ -68,8 +68,11 @@ export default function NewEventScreen() {
     const { schedule: custodySchedule, isLoading: custodyLoading } = useCustodySchedule(
         household?.id,
     );
-    const { lists, isLoading: listsLoading } = useLists(household?.id);
-    const { profile, isLoading: profileLoading } = useMyProfile();
+    const {
+        lists,
+        isLoading: listsLoading,
+        refetch: refetchLists,
+    } = useLists(household?.id);
     const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
 
     // Tracks the event id we created on a previous submit attempt that failed
@@ -82,14 +85,14 @@ export default function NewEventScreen() {
         if (!user) return null;
         const now = new Date();
         const fallbackStart = defaultStartTime(now);
-        // Prefer the user's configured default tz (Settings → Default timezone). If
-        // unset, fall back to the device's current tz. Either way, recurrence expansion
-        // uses this to keep wall-clock times stable across DST boundaries.
-        const deviceTz =
-            typeof Intl !== 'undefined'
-                ? Intl.DateTimeFormat().resolvedOptions().timeZone
-                : null;
-        const tz = profile?.default_timezone ?? deviceTz;
+        // Phase 6.6.1: resolve tz directly from the device (Intl) with a
+        // California fallback on web when Intl is unavailable. The previous
+        // profile.default_timezone read is dropped — there's no longer a
+        // Settings picker to write to that column, so reading from it would
+        // return null for all users. resolveDefaultTimezone() lives in
+        // lib/timezones.ts; recurrence expansion still uses this tz to keep
+        // wall-clock times stable across DST.
+        const tz = resolveDefaultTimezone();
         // Pre-fill from drag-to-create params when valid; otherwise default to today
         // and the next round hour. Bad params silently fall through so a typo'd URL
         // can't crash the form.
@@ -111,13 +114,27 @@ export default function NewEventScreen() {
             locationMapsUrl: '',
             notes: '',
             responsibleProfileId: user.id,
+            // Multi-responsible — seed with the current user as the sole
+            // tagged responsible + lead. Same default as the prior
+            // single-select picker (creator is responsible by default),
+            // expressed in the new model so EventForm picks it up
+            // directly without back-compat fallback.
+            responsibles: [{ profileId: user.id, isLead: true }],
             recurrenceRule: null,
             eventType: null,
             timezone: tz,
             childIds: [],
             alternation: null,
+            // Privacy opt-in (#466) defaults to false on create — events
+            // are visible to the whole household unless the user
+            // explicitly toggles "Mark private" in the form.
+            isPrivate: false,
+            // "Also notify other parent" (#322) defaults to false; the
+            // creator's notification scope applies unless the user
+            // explicitly broadcasts.
+            notifyOtherParent: false,
         };
-    }, [user, profile, paramDate, paramStartTime, paramEndTime]);
+    }, [user, paramDate, paramStartTime, paramEndTime]);
 
     if (
         authLoading ||
@@ -127,7 +144,6 @@ export default function NewEventScreen() {
         childrenLoading ||
         custodyLoading ||
         listsLoading ||
-        profileLoading ||
         roleLoading
     ) {
         return <LoadingScreen />;
@@ -203,6 +219,15 @@ export default function NewEventScreen() {
             showAlternationChips={showAlternationChips}
             onSubmit={handleSubmit}
             onCancel={() => router.back()}
+            // #468 — inline-create handler for the To-do list picker.
+            // Creates a household list with the typed name, refetches
+            // so the picker's lists prop includes it on next render,
+            // and returns the new row so EventForm can auto-select it.
+            onCreateList={async (name) => {
+                const created = await createList(household.id, { name });
+                await refetchLists();
+                return created;
+            }}
         />
     );
 }

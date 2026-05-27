@@ -203,6 +203,47 @@ export function labelForPreset(preset: RecurrencePresetId): string {
 }
 
 /**
+ * Compact, uppercased descriptor for an RRULE — feeds the EventDetail hero pretitle
+ * (e.g. "WEEKLY · MAY 26 · 2026") and any other surface that needs a one-line
+ * recurrence label. Returns null for non-recurring rules so callers can render
+ * just the date.
+ *
+ * Cases:
+ *   none / null rule          → null
+ *   daily / weekly / monthly  → "DAILY" / "WEEKLY" / "MONTHLY"
+ *   weekdays                  → "EVERY WEEKDAY"
+ *   custom + BYDAY=MO,WE,FR   → "MON · WED · FRI"
+ *   custom with no parseable
+ *   weekday list              → "CUSTOM" (fallback — matches RECURRENCE_PRESET_OPTIONS)
+ *
+ * UNTIL clauses are intentionally omitted from this label — they're surfaced
+ * separately (e.g. the "Ends on …" row in EventForm) so the pretitle stays
+ * short. If a future surface needs "WEEKLY UNTIL JUN 30" we can branch on a
+ * caller-supplied option without changing the default contract.
+ */
+export function formatRecurrenceLabel(rule: string | null | undefined): string | null {
+    if (!rule) return null;
+    const parsed = parseRecurrence(rule);
+    if (parsed.preset === 'none') return null;
+    if (parsed.preset === 'custom' && parsed.byday.length > 0) {
+        // Canonical day order (Sun → Sat) matches WEEKDAY_OPTIONS so the
+        // label reads in week order regardless of how BYDAY was authored.
+        const order = WEEKDAY_OPTIONS.map((o) => o.code);
+        const sorted = [...parsed.byday].sort(
+            (a, b) => order.indexOf(a) - order.indexOf(b),
+        );
+        return sorted
+            .map(
+                (code) =>
+                    WEEKDAY_OPTIONS.find((o) => o.code === code)?.label.toUpperCase() ??
+                    code,
+            )
+            .join(' · ');
+    }
+    return labelForPreset(parsed.preset).toUpperCase();
+}
+
+/**
  * Given a master event with a recurrence_rule, returns the occurrences that fall in
  * [rangeStart, rangeEnd). Each occurrence is a copy of the master with starts_at / ends_at
  * shifted to the occurrence time. id is preserved — multiple instances share the master id.

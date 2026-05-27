@@ -10,7 +10,7 @@ import {
 
 import { DateField } from '@/components/datetime-fields';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, Spacing } from '@/constants/theme';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { colorForResponsible } from '@/lib/colors';
 import {
@@ -160,7 +160,7 @@ export function CustodyScheduleSection({
     }, [pattern, anchorDate]);
 
     const parentColors = (() => {
-        const a = parentA ? colorForResponsible(parentA.profile_id, colorMap) : '#6F7FA5';
+        const a = parentA ? colorForResponsible(parentA.profile_id, colorMap) : colors.accent;
         const b = parentB ? colorForResponsible(parentB.profile_id, colorMap) : '#E94B6A';
         return { A: a, B: b };
     })();
@@ -252,7 +252,7 @@ export function CustodyScheduleSection({
                                 { borderColor: colors.backgroundSelected },
                                 pressed && styles.pressed,
                             ]}>
-                            <ThemedText type="small" style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                            <ThemedText type="small" style={{ color: colors.accent, fontWeight: '600' }}>
                                 Change pattern
                             </ThemedText>
                         </Pressable>
@@ -263,7 +263,7 @@ export function CustodyScheduleSection({
                                 { borderColor: colors.backgroundSelected },
                                 pressed && styles.pressed,
                             ]}>
-                            <ThemedText type="small" style={{ color: '#B85D52', fontWeight: '600' }}>
+                            <ThemedText type="small" style={{ color: BrandColors.error, fontWeight: '600' }}>
                                 Remove
                             </ThemedText>
                         </Pressable>
@@ -297,7 +297,7 @@ export function CustodyScheduleSection({
                                         styles.chip,
                                         {
                                             borderColor: colors.backgroundSelected,
-                                            backgroundColor: selected ? '#6F7FA5' : 'transparent',
+                                            backgroundColor: selected ? colors.accent : 'transparent',
                                         },
                                         pressed && styles.pressed,
                                     ]}>
@@ -418,7 +418,7 @@ export function CustodyScheduleSection({
                         style={({ pressed }) => [
                             styles.primaryBtn,
                             {
-                                backgroundColor: canSave ? '#6F7FA5' : colors.backgroundSelected,
+                                backgroundColor: canSave ? colors.accent : colors.backgroundSelected,
                             },
                             pressed && canSave && styles.pressed,
                         ]}>
@@ -532,7 +532,7 @@ const styles = StyleSheet.create({
     },
     previewLabel: { color: '#fff', fontSize: 12, fontWeight: '700' },
     previewDate: { fontSize: 10 },
-    errorText: { color: '#B85D52' },
+    errorText: { color: BrandColors.error },
     pressed: { opacity: 0.7 },
 });
 

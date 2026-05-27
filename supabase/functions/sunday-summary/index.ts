@@ -179,6 +179,33 @@ Deno.serve(async () => {
     }
     const masterEvents: Event[] = (eventsRaw ?? []) as Event[];
 
+    // Multi-responsible (migration 0039): each event can have N tagged
+    // adults via events_responsible. Pull them in parallel and group by
+    // event_id so we can attach the full list to each expanded occurrence.
+    // Leaving the legacy responsible_profile_id read in place above means
+    // unmigrated rows (no events_responsible entries) still resolve via
+    // the lead-mirrored column — back-compat path.
+    const eventIds = masterEvents.map((e) => e.id);
+    const taggedByEventId = new Map<string, string[]>();
+    if (eventIds.length > 0) {
+        const { data: respRaw, error: respErr } = await supabase
+            .from('events_responsible')
+            .select('event_id, profile_id, is_lead')
+            .in('event_id', eventIds);
+        if (respErr) {
+            console.error('sunday-summary: events_responsible query failed', respErr);
+        }
+        for (const r of (respRaw ?? []) as Array<{
+            event_id: string;
+            profile_id: string;
+            is_lead: boolean;
+        }>) {
+            const arr = taggedByEventId.get(r.event_id) ?? [];
+            arr.push(r.profile_id);
+            taggedByEventId.set(r.event_id, arr);
+        }
+    }
+
     // 3b. Fetch custody schedules and overrides for the relevant households so the
     //     resolver can answer alternation events. Schedules are at most one per
     //     household; overrides we scope to the window plus one day buffer (an
@@ -203,6 +230,15 @@ Deno.serve(async () => {
     const { data: custodyOverridesRaw, error: custodyOverridesErr } = await supabase
         .from('custody_overrides')
         .select('household_id, override_date, custodian_profile_id')
+        // Whole-household overrides only. Migration 0048 added `child_id`
+        // to support future per-child overrides (#373), but the resolver
+        // map below keys overrides by (household_id, date) without a
+        // child axis — including per-child rows would let one kid's
+        // override overwrite another's via last-write-wins. Mirrors the
+        // client-side filter in `getCustodyOverridesForRange`. Latent
+        // per-child rows must not leak in until the per-child resolver
+        // story is built.
+        .is('child_id', null)
         .in('household_id', allHouseholdIds)
         .gte('override_date', bufferStartIso)
         .lte('override_date', horizonDateIso);
@@ -274,6 +310,13 @@ Deno.serve(async () => {
          *  never be the resolved responsible for these (alternation always picks
          *  a custody parent), so they're filtered out of caregiver digests. */
         has_alternation: boolean;
+        /** Multi-responsible: every adult tagged on this event (from
+         *  events_responsible). Empty when the event hasn't been touched by
+         *  the new model yet — in that case `responsible_profile_id` alone
+         *  is the resolved lead (back-compat). Each tagged adult sees this
+         *  event in their digest; the lead gets the primary push, others get
+         *  a secondary FYI (push routing handled elsewhere). */
+        tagged_profile_ids: string[];
     };
     const occurrences: ResolvedOccurrence[] = [];
     for (const master of masterEvents) {
@@ -300,6 +343,14 @@ Deno.serve(async () => {
                 ends_at: occ.ends_at,
                 responsible_profile_id: resolved,
                 has_alternation: !!master.responsible_alternation,
+                // Multi-responsible: attach the full tagged list from the
+                // master event. Each entry in this list sees the occurrence
+                // in their digest (parent semantics — the per-profile loop
+                // below treats this as "I'm tagged on this event"). When
+                // empty, the loop falls back to the single resolved lead
+                // (back-compat with pre-0039 rows).
+                tagged_profile_ids:
+                    taggedByEventId.get(master.id) ?? [],
             });
         }
     }
@@ -364,32 +415,86 @@ Deno.serve(async () => {
         let openTaskCount = 0;
         for (const occ of occurrences) {
             if (!householdIds.has(occ.household_id)) continue;
+            // Multi-responsible: an occurrence is visible to a profile if
+            // they're tagged on it (in events_responsible) OR — for back
+            // compat with rows that haven't been touched by the new model
+            // — if the legacy responsible_profile_id matches. The union
+            // covers both. Empty union → unassigned, falls into the
+            // role-specific branches below.
+            const taggedSet = occ.tagged_profile_ids;
+            const isTagged =
+                taggedSet.includes(profileId) ||
+                (taggedSet.length === 0 &&
+                    occ.responsible_profile_id === profileId);
             const role = roleByProfileHousehold.get(
                 `${profileId}|${occ.household_id}`,
             );
             if (role === 'caregiver') {
+                // Caregivers see events they're tagged on (multi-resp model)
+                // OR events nobody owns yet (responsible null AND no
+                // alternation). Alternation events always resolve to a
+                // custody parent — caregivers never the resolved owner.
                 const visible =
-                    occ.responsible_profile_id === profileId ||
-                    (occ.responsible_profile_id === null && !occ.has_alternation);
+                    isTagged ||
+                    (taggedSet.length === 0 &&
+                        occ.responsible_profile_id === null &&
+                        !occ.has_alternation);
                 if (!visible) continue;
                 eventCount += 1;
                 // No conflict / unassigned tallies — caregivers don't manage
-                // either. (A caregiver-assigned event also can't conflict with
+                // either. (A caregiver-tagged event also can't conflict with
                 // a parent's external busy block, since the resolver runs
-                // against the responsible_profile_id only.)
+                // against tagged adults only.)
                 continue;
             }
             eventCount += 1;
-            if (!occ.responsible_profile_id) {
+            // Unassigned tally — neither tagged adults nor a legacy lead.
+            // Surfaces as "N for Anyone" in the digest so someone claims it.
+            if (taggedSet.length === 0 && !occ.responsible_profile_id) {
                 unassigned += 1;
                 continue;
             }
+            // Conflict — overlap between THIS parent's external busy block
+            // and this event, but only if they're actually tagged on it.
+            // (A parent shouldn't get a conflict flag for an event they're
+            // not on — the multi-responsible model's "Riley is responsible
+            // for the birthday, Alex is not tagged" case shouldn't ding
+            // Alex for an unrelated overlap on her work calendar.)
+            if (!isTagged) continue;
             const hasOverlap = externalEvents.some(
                 (ext) =>
-                    ext.profile_id === occ.responsible_profile_id &&
+                    ext.profile_id === profileId &&
                     overlaps(occ.starts_at, occ.ends_at, ext.starts_at, ext.ends_at),
             );
-            if (hasOverlap) conflicts += 1;
+            if (hasOverlap) {
+                conflicts += 1;
+                continue;
+            }
+            // Event-vs-event conflict tally — when the profile is tagged
+            // on this occurrence AND on at least one OTHER occurrence
+            // that overlaps in time, the in-app conflict ribbon flags
+            // it. The Sunday push needs to count it too, otherwise the
+            // digest reads "0 conflicts" while the user sees a red
+            // ribbon on Home. We bound the inner loop at the current
+            // occurrence's index range — N is typically ≤ 30 events per
+            // week per household so O(N²) is fine here.
+            const hasEventEventOverlap = occurrences.some((other) => {
+                if (other === occ) return false;
+                // Same-household check (the original outer loop only
+                // walks events in `profileId`'s households, so `other`
+                // is also in one of those — but doesn't have to be the
+                // SAME household as `occ`; cross-household conflicts on
+                // a multi-tagged parent are real).
+                if (!householdIds.has(other.household_id)) return false;
+                if (!other.tagged_profile_ids.includes(profileId)) return false;
+                return overlaps(
+                    occ.starts_at,
+                    occ.ends_at,
+                    other.starts_at,
+                    other.ends_at,
+                );
+            });
+            if (hasEventEventOverlap) conflicts += 1;
         }
         for (const t of openTasks) {
             if (!householdIds.has(t.household_id)) continue;

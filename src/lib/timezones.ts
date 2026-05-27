@@ -127,3 +127,33 @@ export function listTimezones(): TimezoneOption[] {
 export function lookupTimezone(iana: string): TimezoneOption | null {
     return listTimezones().find((o) => o.iana === iana) ?? null;
 }
+
+/**
+ * Resolve the timezone to use for new events.
+ *
+ * Policy (Phase 6.6.1):
+ *   1. Native: Intl.DateTimeFormat().resolvedOptions().timeZone gives the
+ *      device's actual tz (e.g. "America/New_York"). React Native polyfills
+ *      Intl, so this works on both iOS and Android.
+ *   2. Web: same Intl call — every modern browser reports the host's tz.
+ *   3. Fallback when Intl reports something nonsensical or undefined
+ *      (extremely rare): "America/Los_Angeles" — California Pacific time
+ *      per the product call. The fallback is a sane default for a US-based
+ *      app's web build that loses tz detection.
+ *
+ * This replaces the previous flow where users picked + stored a default tz
+ * in profiles.default_timezone via a Settings picker. The column is now
+ * legacy — we ignore it on read. Existing events keep their stored tz, so
+ * no migration is needed.
+ */
+export function resolveDefaultTimezone(): string {
+    if (typeof Intl !== 'undefined') {
+        try {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            if (tz && tz.length > 0) return tz;
+        } catch {
+            // Fall through to the static default below.
+        }
+    }
+    return 'America/Los_Angeles';
+}

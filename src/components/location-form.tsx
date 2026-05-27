@@ -1,19 +1,43 @@
 // Shared add / edit form for saved locations. Mounted by two routes:
 //   - /location/new            → create mode, no Delete button
 //   - /location/[id]           → edit mode, Delete button at the bottom
-// Replaces the inline cards-with-Edit/Delete pattern that lived inside Settings, which
-// was getting unwieldy as the list grew. Same idea as event-form.tsx — one component,
-// two callers.
+//
+// Restyled to match the v2 creation-flow vocabulary used by every other
+// form surface in the app (ChildForm, ContactForm, TaskForm, EventForm):
+//
+//   • CreateTopBar  — sticky Cancel / centered title / accent Save pill
+//   • TitleInput    — "NAME" label + 22/600 value with accent underline
+//   • FormSectionLabel + FormGroup(flush) — every grouped section
+//   • CIRow         — inline icon + value + caps mono label per row
+//
+// Replaces the previous old-style header (Save pill in a generic bar)
+// + FormCard with bordered TextInputs — that pattern is gone from every
+// other edit screen, leaving Edit location as the odd one out.
 
-import { useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
+import { useMemo, useState } from 'react';
+import {
+    Alert,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import {
+    CIRow,
+    CreateTopBar,
+    FormGroup,
+    FormSectionLabel,
+    TitleInput,
+} from '@/components/ds';
 import { MapPreview } from '@/components/map-preview';
 import { PlacesAutocomplete } from '@/components/places-autocomplete';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
 import type { LocationPlaceInput } from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
 import { useAppColorScheme } from '@/providers/theme-provider';
@@ -66,6 +90,23 @@ export function LocationForm({
     const busy = submitting || deleting;
     const canSubmit = name.trim().length > 0 && !busy;
 
+    // PlacesAutocomplete's effect fires on every `value` change including the
+    // initial render. On the Edit screen that means typing isn't required —
+    // simply opening the form would dispatch a Google autocomplete request
+    // for the already-saved address and pop a dropdown the user didn't ask
+    // for (showing the existing address verbatim as a redundant suggestion).
+    // `skipFetchValues` short-circuits the fetch when the input matches one
+    // of these entries case-insensitively, so the dropdown stays closed
+    // until the user actually edits the address. Memoized per the
+    // QA-007 / #236 fix so the effect doesn't loop.
+    const skipFetchValues = useMemo<readonly string[]>(
+        () =>
+            initialValues.address && initialValues.address.trim().length > 0
+                ? [initialValues.address]
+                : [],
+        [initialValues.address],
+    );
+
     const handleSubmit = async () => {
         if (!canSubmit) return;
         setSubmitting(true);
@@ -90,7 +131,9 @@ export function LocationForm({
         const confirmed =
             Platform.OS === 'web'
                 ? typeof window !== 'undefined' &&
-                  window.confirm('Delete this location? Events using it will keep their existing label, but the saved place will be removed.')
+                  window.confirm(
+                      'Delete this location? Events using it will keep their existing label, but the saved place will be removed.',
+                  )
                 : await new Promise<boolean>((resolve) => {
                       Alert.alert(
                           'Delete this location?',
@@ -115,17 +158,6 @@ export function LocationForm({
         }
     };
 
-    const inputStyle = {
-        color: colors.text,
-        borderColor: colors.backgroundSelected,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        fontSize: 16,
-        height: 44,
-    };
-
     // The map preview wants either a picked place_id OR a free-text query fallback. We
     // prefer the place_id (precise pin) but fall back to whatever's in the address field
     // for legacy rows that never went through Google.
@@ -133,120 +165,186 @@ export function LocationForm({
     const previewQuery =
         pickedPlace?.formattedAddress?.trim() || address.trim() || null;
 
+    // PlacesAutocomplete needs an explicit inputStyle since it doesn't
+    // own its visual frame. Match the CIRow's value-cell vocabulary
+    // (14/0/sansRegular) so the address row reads consistently with the
+    // Maps URL row below it. The icon column + caps label are rendered
+    // by the wrapper, NOT by PlacesAutocomplete itself — the autocomplete
+    // just owns the input + suggestions dropdown.
+    const addressInputStyle = {
+        flex: 1,
+        fontSize: 13,
+        letterSpacing: -0.2,
+        paddingVertical: 0,
+        fontWeight: '500' as const,
+        color: colors.text,
+        fontFamily: FontFamily.sansRegular,
+    };
+
     return (
         <ThemedView style={styles.container}>
-            <SafeAreaView style={styles.safe}>
-                <View style={styles.headerBar}>
-                    <Pressable
-                        onPress={onCancel}
-                        disabled={busy}
-                        style={({ pressed }) => [styles.headerBtn, pressed && styles.pressed]}>
-                        <ThemedText themeColor="textSecondary">Cancel</ThemedText>
-                    </Pressable>
-                    <ThemedText type="smallBold">{headerTitle}</ThemedText>
-                    <Pressable
-                        onPress={handleSubmit}
-                        disabled={!canSubmit}
-                        style={({ pressed }) => [
-                            styles.headerBtn,
-                            pressed && canSubmit && styles.pressed,
-                        ]}>
-                        <ThemedText
-                            style={{
-                                color: canSubmit ? '#6F7FA5' : colors.textSecondary,
-                                fontWeight: '600',
-                            }}>
-                            {submitting ? 'Saving…' : submitLabel}
-                        </ThemedText>
-                    </Pressable>
-                </View>
+            <SafeAreaView style={styles.safe} edges={['top']}>
+                <CreateTopBar
+                    title={headerTitle}
+                    saveLabel={submitting ? 'Saving…' : submitLabel}
+                    saveDisabled={!canSubmit}
+                    onCancel={onCancel}
+                    onSave={handleSubmit}
+                />
 
                 <ScrollView
                     contentContainerStyle={styles.scroll}
                     keyboardShouldPersistTaps="handled">
-                    <View style={styles.field}>
-                        <ThemedText type="smallBold">Name</ThemedText>
-                        <TextInput
-                            value={name}
-                            onChangeText={setName}
-                            placeholder="e.g. Home, School, Soccer field"
-                            placeholderTextColor={colors.textSecondary}
-                            style={inputStyle}
-                            autoFocus
-                            autoCapitalize="words"
-                            editable={!busy}
-                        />
-                    </View>
+                    {/* TITLE — "NAME" with accent underline. Mirrors
+                        ContactForm / ChildForm. Sentence-case + word-cap
+                        autocapitalize so "Home", "School", "Soccer field"
+                        all read right. */}
+                    <TitleInput
+                        label="NAME"
+                        value={name}
+                        onChangeText={setName}
+                        placeholder="e.g. Home, School, Soccer field"
+                        autoFocus={!initialValues.name}
+                        autoCapitalize="words"
+                        editable={!busy}
+                    />
 
-                    <View style={styles.field}>
-                        <ThemedText type="smallBold">Address (optional)</ThemedText>
-                        <PlacesAutocomplete
-                            value={address}
-                            onChangeText={(t) => {
-                                setAddress(t);
-                                // Editing away from the picked place clears the place_id so
-                                // we don't save a stale link. The user can re-pick or just
-                                // leave it as free text.
-                                if (
-                                    pickedPlace &&
-                                    t.trim().toLowerCase() !==
-                                        (pickedPlace.formattedAddress ?? '')
-                                            .trim()
-                                            .toLowerCase()
-                                ) {
-                                    setPickedPlace(null);
-                                }
-                            }}
-                            onPickPlace={(details) => {
-                                // Replace the address with Google's canonical formatted
-                                // version, fill the Maps URL, and capture the place_id so
-                                // saveLocation can dedup against future picks of the same
-                                // spot.
-                                setAddress(details.formattedAddress || details.displayName);
-                                setMapsUrl(details.googleMapsUri);
-                                setPickedPlace({
-                                    placeId: details.placeId,
-                                    formattedAddress: details.formattedAddress,
-                                });
-                            }}
-                            placeholder="Search a place"
-                            placeholderTextColor={colors.textSecondary}
-                            inputStyle={inputStyle}
-                            editable={!busy}
-                        />
-                    </View>
+                    {/* WHERE — address autocomplete + (when set) map
+                        preview + Google Maps link. Three rows inside one
+                        flush group so the hairlines read as one
+                        continuous card. */}
+                    <FormSectionLabel>Where</FormSectionLabel>
+                    <View style={styles.section}>
+                        <FormGroup flush>
+                            {/* Address row — composed like CIRow but
+                                wraps PlacesAutocomplete instead of a
+                                plain TextInput so users can pick from
+                                Google's suggestion list. The caps label
+                                ("ADDRESS") on the right matches every
+                                other row's right-anchor convention. */}
+                            <View
+                                style={[
+                                    styles.row,
+                                    {
+                                        borderBottomColor: colors.hair,
+                                        borderBottomWidth:
+                                            StyleSheet.hairlineWidth,
+                                    },
+                                ]}>
+                                <View style={styles.iconCol}>
+                                    <Feather
+                                        name="map-pin"
+                                        size={14}
+                                        color={colors.inkSec}
+                                    />
+                                </View>
+                                <View style={styles.inputCell}>
+                                    <PlacesAutocomplete
+                                        value={address}
+                                        onChangeText={(t) => {
+                                            setAddress(t);
+                                            // Editing away from the picked place clears the place_id so
+                                            // we don't save a stale link. The user can re-pick or just
+                                            // leave it as free text.
+                                            if (
+                                                pickedPlace &&
+                                                t.trim().toLowerCase() !==
+                                                    (pickedPlace.formattedAddress ?? '')
+                                                        .trim()
+                                                        .toLowerCase()
+                                            ) {
+                                                setPickedPlace(null);
+                                            }
+                                        }}
+                                        onPickPlace={(details) => {
+                                            // Replace the address with Google's canonical formatted
+                                            // version, fill the Maps URL, and capture the place_id so
+                                            // saveLocation can dedup against future picks of the same
+                                            // spot.
+                                            setAddress(
+                                                details.formattedAddress ||
+                                                    details.displayName,
+                                            );
+                                            setMapsUrl(details.googleMapsUri);
+                                            setPickedPlace({
+                                                placeId: details.placeId,
+                                                formattedAddress:
+                                                    details.formattedAddress,
+                                            });
+                                        }}
+                                        placeholder="Search a place"
+                                        placeholderTextColor={colors.inkFaint}
+                                        inputStyle={addressInputStyle}
+                                        editable={!busy}
+                                        skipFetchValues={skipFetchValues}
+                                    />
+                                </View>
+                                <ThemedText
+                                    style={[
+                                        styles.rowLabel,
+                                        {
+                                            color: colors.inkFaint,
+                                            fontFamily:
+                                                FontFamily.monoSemiBold,
+                                        },
+                                    ]}>
+                                    ADDRESS
+                                </ThemedText>
+                            </View>
 
-                    {previewQuery ? (
-                        <View style={styles.previewWrapper}>
-                            <MapPreview placeId={previewPlaceId} query={previewQuery} />
-                        </View>
-                    ) : null}
+                            {/* Map preview — inline below the address row
+                                so the picked location reads in-context
+                                instead of floating outside the card. Only
+                                renders when we have a query / place to
+                                resolve. */}
+                            {previewQuery ? (
+                                <View style={styles.previewWrap}>
+                                    <MapPreview
+                                        placeId={previewPlaceId}
+                                        query={previewQuery}
+                                    />
+                                </View>
+                            ) : null}
 
-                    <View style={styles.field}>
-                        <ThemedText type="smallBold">Google Maps link (optional)</ThemedText>
-                        <TextInput
-                            value={mapsUrl}
-                            onChangeText={setMapsUrl}
-                            placeholder="Auto-filled when you pick a place"
-                            placeholderTextColor={colors.textSecondary}
-                            style={inputStyle}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                            keyboardType="url"
-                            editable={!busy}
-                        />
+                            {/* Google Maps URL row — CIRow with the
+                                external-link glyph. Auto-fills when the
+                                user picks a Place suggestion; editable
+                                so paste-from-Maps still works. */}
+                            <CIRow
+                                icon="external-link"
+                                label="MAPS URL"
+                                value={mapsUrl}
+                                onChangeText={setMapsUrl}
+                                placeholder="Auto-filled when you pick a place"
+                                keyboardType="url"
+                                mono
+                                autoCapitalize="none"
+                                editable={!busy}
+                                last
+                            />
+                        </FormGroup>
                     </View>
 
                     {error ? (
-                        <ThemedText type="small" style={styles.errorText}>
+                        <ThemedText
+                            style={[
+                                styles.errorText,
+                                { color: BrandColors.error },
+                            ]}>
                             {error}
                         </ThemedText>
                     ) : null}
 
+                    {/* Destructive — same vocabulary as ContactForm /
+                        ChildForm. Sits outside the section card so it
+                        reads as a separate considered action, not a
+                        regular row. */}
                     {onDelete ? (
                         <Pressable
                             onPress={handleDelete}
                             disabled={busy}
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete location"
                             style={({ pressed }) => [
                                 styles.deleteBtn,
                                 pressed && !busy && styles.pressed,
@@ -265,27 +363,61 @@ export function LocationForm({
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    headerBar: {
+    scroll: {
+        paddingBottom: Spacing.six,
+    },
+    section: { paddingHorizontal: 16 },
+
+    // Address row — handcoded because PlacesAutocomplete needs its own
+    // wrapper to host the suggestions dropdown. Matches CIRow padding
+    // (12 vertical / 14 horizontal) and the icon-column / right-label
+    // composition so this row sits flush with the CIRow underneath.
+    row: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: Spacing.four,
-        paddingVertical: Spacing.three,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: '#ddd',
+        gap: 10,
+        paddingVertical: 12,
+        paddingHorizontal: 14,
     },
-    headerBtn: { paddingVertical: Spacing.one, paddingHorizontal: Spacing.two },
-    scroll: { padding: Spacing.four, gap: Spacing.four, paddingBottom: Spacing.six },
-    field: { gap: Spacing.two },
-    previewWrapper: { borderRadius: Spacing.two, overflow: 'hidden' },
-    errorText: { color: '#B85D52' },
+    iconCol: {
+        width: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+    },
+    inputCell: { flex: 1 },
+    rowLabel: {
+        fontSize: 10,
+        letterSpacing: 0.3,
+        textTransform: 'uppercase',
+        flexShrink: 0,
+    },
+
+    // Map preview — sits inside the section card between the address
+    // row and the Maps URL row. Inset 10px and rounded so the corners
+    // don't bleed against the card's hairline border.
+    previewWrap: {
+        marginHorizontal: 10,
+        marginVertical: 10,
+        borderRadius: 10,
+        overflow: 'hidden',
+    },
+
+    errorText: {
+        paddingHorizontal: 16,
+        paddingTop: Spacing.two,
+        fontSize: 12,
+    },
+
+    // Destructive
     deleteBtn: {
         marginTop: Spacing.three,
+        marginHorizontal: 16,
         paddingVertical: Spacing.three,
         borderRadius: Spacing.two,
-        backgroundColor: '#F3D9D3',
+        backgroundColor: BrandColors.errorBackground,
         alignItems: 'center',
     },
-    deleteText: { color: '#B85D52', fontWeight: '600' },
+    deleteText: { color: BrandColors.error, fontWeight: '600' },
     pressed: { opacity: 0.7 },
 });

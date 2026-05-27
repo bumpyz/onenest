@@ -7,11 +7,32 @@ import {
     getEventOccurrenceOverridesForRange,
     getEventsForRange,
     getHouseholdBusyBlocks,
+    type CustodyOverride,
+    type CustodySchedule,
+    type Event,
     type EventOccurrenceOverride,
+    type HouseholdBusyBlock,
 } from '@/lib/db';
 import { buildOverrideMap } from '@/lib/custody';
 import { computeWeekSummary, type WeekSummary } from '@/lib/summary';
 import { useAuth } from '@/providers/auth-provider';
+
+/**
+ * Bundle of the raw inputs computeWeekSummary needs. Returned alongside
+ * `summary` so callers that need a *what-if* projection (e.g. EventDetail
+ * recomputing the conflict ribbon against a draft child_ids selection
+ * before the user has committed) can re-run the resolver with a
+ * virtually-modified event without re-issuing the underlying fetches.
+ * All fields are non-null after the hook's first successful refetch;
+ * `null` only while loading or after an error.
+ */
+export type WeekSummaryInputs = {
+    events: Event[];
+    busyBlocks: HouseholdBusyBlock[];
+    custodySchedule: CustodySchedule | null;
+    custodyOverrides: Map<string, CustodyOverride>;
+    occurrenceOverrides: Map<string, EventOccurrenceOverride>;
+};
 
 const HORIZON_DAYS = 7;
 
@@ -29,6 +50,7 @@ export function useWeekSummary(householdId: string | undefined) {
     const { session } = useAuth();
     const userId = session?.user?.id ?? null;
     const [summary, setSummary] = useState<WeekSummary | null>(null);
+    const [inputs, setInputs] = useState<WeekSummaryInputs | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
 
@@ -45,6 +67,7 @@ export function useWeekSummary(householdId: string | undefined) {
     const refetch = useCallback(async () => {
         if (!userId || !householdId) {
             setSummary(null);
+            setInputs(null);
             setIsLoading(false);
             return;
         }
@@ -90,9 +113,17 @@ export function useWeekSummary(householdId: string | undefined) {
                     occurrenceOverrides,
                 ),
             );
+            setInputs({
+                events,
+                busyBlocks,
+                custodySchedule,
+                custodyOverrides,
+                occurrenceOverrides,
+            });
         } catch (err) {
             setError(err instanceof Error ? err : new Error(String(err)));
             setSummary({ conflicts: [], unassignedEvents: [] });
+            setInputs(null);
         } finally {
             setIsLoading(false);
         }
@@ -102,5 +133,5 @@ export function useWeekSummary(householdId: string | undefined) {
         refetch();
     }, [refetch]);
 
-    return { summary, isLoading, error, refetch };
+    return { summary, inputs, isLoading, error, refetch };
 }

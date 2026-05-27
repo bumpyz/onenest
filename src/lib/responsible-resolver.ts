@@ -41,12 +41,25 @@ export type ResolveResponsibleArgs = {
  *   2. Alternation rule against custody schedule — same_day uses the occurrence date;
  *      previous_day uses date - 1 (morning events that carry overnight from the prior
  *      custodian).
- *   3. The event's stored responsible_profile_id — static assignment, or null if
- *      unassigned.
+ *   3. The event's multi-responsible LEAD (events_responsible.is_lead=true) — the
+ *      primary responsible when the new multi-responsible model has data for this
+ *      event. Falls through to (4) when the list is empty (unmigrated row or
+ *      deliberately unassigned).
+ *   4. The legacy `responsible_profile_id` column — static assignment from the
+ *      pre-migration-0039 model, or the mirrored lead from the new model. Either
+ *      way, this returns the same value as (3) for migrated rows, and the original
+ *      single-responsible value for rows not yet exercised by the new writers.
  *
  * Returns null when nothing resolves a responsible parent (alternation with no schedule,
- * or just genuinely unassigned). Callers should treat null as the "Anyone" / unassigned
- * state — colorForResponsible already handles it.
+ * empty responsibles + null legacy column, or a genuinely unassigned event). Callers
+ * should treat null as the "Anyone" / unassigned state — colorForResponsible already
+ * handles it.
+ *
+ * Note: this function returns a SINGLE profile_id (the primary/lead). Surfaces that
+ * need to render every tagged responsible (e.g. EventDetailMulti's chip rack) should
+ * read `event.responsibles` directly. This resolver is for "who's the one to color/
+ * label this event by in the calendar grid" — a question that still has a singular
+ * answer even when multiple parents are tagged.
  */
 export function resolveResponsibleProfileId(args: ResolveResponsibleArgs): string | null {
     const { event, occurrenceDate, custodySchedule, custodyOverrides, occurrenceOverrides } =
@@ -67,15 +80,25 @@ export function resolveResponsibleProfileId(args: ResolveResponsibleArgs): strin
     }
 
     if (event.responsible_alternation) {
-        if (!custodySchedule) {
-            // Configured for alternation but no schedule → can't resolve. Fall back to
-            // the static field (likely null), which the display will render as Anyone.
-            return event.responsible_profile_id;
+        // #376: a soft-stopped schedule (disabled_at set) is treated the same
+        // as no-schedule — falls through to the static field. The schedule row
+        // itself is preserved so historical assignments stay readable, but
+        // alternation lookups stop firing.
+        if (!custodySchedule || custodySchedule.disabled_at) {
+            // Configured for alternation but no (active) schedule → can't resolve.
+            // Fall back to the static field (likely null), which the display
+            // will render as Anyone.
+            return leadFromResponsibles(event) ?? event.responsible_profile_id;
         }
         const lookupDate =
             event.responsible_alternation === 'previous_day'
                 ? subDays(occurrenceDate, 1)
                 : occurrenceDate;
+        // #379: an 'AB' both-present day returns profileId: null. That
+        // matches the resolver's "Anyone" semantics — neither parent is
+        // canonically responsible when they're both home, so the event
+        // displays as unassigned for that occurrence (consistent with how
+        // alternation already handles missing data).
         return resolveCustodianOnDate(
             custodySchedule,
             custodyOverrides,
@@ -84,5 +107,21 @@ export function resolveResponsibleProfileId(args: ResolveResponsibleArgs): strin
         ).profileId;
     }
 
-    return event.responsible_profile_id;
+    // Multi-responsible takes precedence over the legacy column; the legacy
+    // column is kept as a fallback so unmigrated rows (or rows fetched before
+    // the join was added) still resolve correctly.
+    return leadFromResponsibles(event) ?? event.responsible_profile_id;
+}
+
+/**
+ * Picks the lead profile_id from the multi-responsible list, or null when
+ * the list is empty. Prefers the explicit `is_lead=true` row; if no row is
+ * flagged (shouldn't happen with the partial unique index in 0039, but
+ * defensive against partially-migrated data) falls back to the first row.
+ */
+function leadFromResponsibles(event: { responsibles: { profile_id: string; is_lead: boolean }[] }): string | null {
+    if (!event.responsibles || event.responsibles.length === 0) return null;
+    const explicit = event.responsibles.find((r) => r.is_lead);
+    if (explicit) return explicit.profile_id;
+    return event.responsibles[0].profile_id;
 }

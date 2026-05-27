@@ -107,12 +107,30 @@ function useFieldStyles() {
 
 // ─── DateField ──────────────────────────────────────────────────────────────
 
+/** Render-prop API exposed by `renderTrigger`. Callers get the open()
+ *  function plus the current YYYY-MM-DD value and the human-formatted
+ *  display string so they can compose their own button chrome (e.g. a
+ *  FormRow with a chevron) and still trigger the platform date picker. */
+export type DateFieldTriggerProps = {
+    open: () => void;
+    /** Raw YYYY-MM-DD (empty when unset). */
+    value: string;
+    /** Locale-formatted display string ("Mon, May 23") — empty when unset. */
+    display: string;
+};
+
 type DateProps = {
     value: string; // YYYY-MM-DD (empty string = unset)
     onChange: (value: string) => void;
+    /** Optional render-prop override. When provided, the caller renders
+     *  its own trigger chrome (e.g. a FormRow row with a chevron) and
+     *  invokes the picker by calling `open()`. The iOS-native modal
+     *  still renders alongside the custom trigger. When omitted,
+     *  DateField falls back to its default bordered pill. */
+    renderTrigger?: (api: DateFieldTriggerProps) => React.ReactNode;
 };
 
-export function DateField({ value, onChange }: DateProps) {
+export function DateField({ value, onChange, renderTrigger }: DateProps) {
     const { colors, wrapper } = useFieldStyles();
     // iOS uses the in-flow DateTimePicker component, so we mount it inside a
     // Modal we control. Android fires DateTimePickerAndroid.open() imperatively
@@ -146,37 +164,41 @@ export function DateField({ value, onChange }: DateProps) {
 
     return (
         <>
-            <Pressable
-                onPress={open}
-                accessibilityRole="button"
-                accessibilityLabel={
-                    value
-                        ? `Date: ${display}. Tap to change.`
-                        : 'Pick a date'
-                }
-                style={({ pressed }) => [
-                    wrapper,
-                    styles.fieldRow,
-                    pressed && styles.pressed,
-                ]}>
-                <ThemedText
-                    style={{
-                        color: value ? colors.text : colors.textSecondary,
-                        fontSize: 16,
-                        flex: 1,
-                    }}>
-                    {display || 'Pick a date'}
-                </ThemedText>
-                {/* UX-032: trailing calendar icon signals "this is interactive
-                    and opens a picker" — mirrors the calendar icon browsers
-                    render inside HTML <input type="date">. Without this the
-                    field looked identical to a static read-only label. */}
-                <Feather
-                    name="calendar"
-                    size={16}
-                    color={colors.textSecondary}
-                />
-            </Pressable>
+            {renderTrigger ? (
+                renderTrigger({ open, value, display })
+            ) : (
+                <Pressable
+                    onPress={open}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                        value
+                            ? `Date: ${display}. Tap to change.`
+                            : 'Pick a date'
+                    }
+                    style={({ pressed }) => [
+                        wrapper,
+                        styles.fieldRow,
+                        pressed && styles.pressed,
+                    ]}>
+                    <ThemedText
+                        style={{
+                            color: value ? colors.text : colors.textSecondary,
+                            fontSize: 16,
+                            flex: 1,
+                        }}>
+                        {display || 'Pick a date'}
+                    </ThemedText>
+                    {/* UX-032: trailing calendar icon signals "this is interactive
+                        and opens a picker" — mirrors the calendar icon browsers
+                        render inside HTML <input type="date">. Without this the
+                        field looked identical to a static read-only label. */}
+                    <Feather
+                        name="calendar"
+                        size={16}
+                        color={colors.textSecondary}
+                    />
+                </Pressable>
+            )}
             {Platform.OS === 'ios' && iosModalOpen ? (
                 <Modal
                     transparent
@@ -217,7 +239,7 @@ export function DateField({ value, onChange }: DateProps) {
                                     styles.modalButton,
                                     pressed && styles.pressed,
                                 ]}>
-                                <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                <ThemedText style={{ color: '#1F2940', fontWeight: '600' }}>
                                     Done
                                 </ThemedText>
                             </Pressable>
@@ -338,7 +360,7 @@ export function TimeField({ value, onChange }: TimeProps) {
                                     styles.modalButton,
                                     pressed && styles.pressed,
                                 ]}>
-                                <ThemedText style={{ color: '#6F7FA5', fontWeight: '600' }}>
+                                <ThemedText style={{ color: '#1F2940', fontWeight: '600' }}>
                                     Done
                                 </ThemedText>
                             </Pressable>

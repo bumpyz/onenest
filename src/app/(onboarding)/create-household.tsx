@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, Spacing } from '@/constants/theme';
 import { createHousehold, type HouseholdType } from '@/lib/db';
 import { HOUSEHOLD_TYPE_OPTIONS } from '@/lib/household-types';
 import { useAppColorScheme } from '@/providers/theme-provider';
@@ -100,10 +100,10 @@ export default function CreateHouseholdScreen() {
                                             styles.typeOption,
                                             {
                                                 borderColor: selected
-                                                    ? '#6F7FA5'
+                                                    ? colors.accent
                                                     : colors.backgroundSelected,
                                                 backgroundColor: selected
-                                                    ? `${'#6F7FA5'}11`
+                                                    ? `${colors.accent}11`
                                                     : 'transparent',
                                             },
                                             pressed && styles.pressed,
@@ -188,7 +188,7 @@ export default function CreateHouseholdScreen() {
                     style={({ pressed }) => [
                         styles.submit,
                         {
-                            backgroundColor: canSubmit ? '#6F7FA5' : colors.backgroundSelected,
+                            backgroundColor: canSubmit ? colors.accent : colors.backgroundSelected,
                         },
                         pressed && canSubmit && styles.pressed,
                     ]}>
@@ -238,7 +238,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderStyle: 'dashed',
     },
-    errorText: { color: '#B85D52' },
+    errorText: { color: BrandColors.error },
     submit: {
         height: 48,
         borderRadius: Spacing.three,
