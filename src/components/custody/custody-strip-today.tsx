@@ -30,20 +30,30 @@
 import { Feather } from '@expo/vector-icons';
 import { differenceInHours, format } from 'date-fns';
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { KidPOVHeader, RoleBadge } from '@/components/ds';
+import {
+    DashedBusyBlockRow,
+    KidPOVHeader,
+    RoleBadge,
+} from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
 import { useCurrentWeekCustody } from '@/hooks/use-current-week-custody';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
+import { useMyExternalEvents } from '@/hooks/use-my-external-events';
 import {
     UNASSIGNED_COLOR,
     colorForResponsible,
     memberColorMap,
 } from '@/lib/colors';
+import {
+    generateCaregiverBriefTasksForHandoff,
+    getOpenCaregiverBriefTasksAt,
+} from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
@@ -83,11 +93,78 @@ export function CustodyStripToday({
     const custody = useCurrentWeekCustody(householdId);
     const isReadOnly = viewer === 'caregiver' || viewer === 'external';
     const isExternal = viewer === 'external';
+    const isCaregiver = viewer === 'caregiver';
     // Pull the schedule's pattern id so the period chip can render
     // pattern-correct shorthand. Previously hardcoded "ALT" for every
     // pattern; the audit flagged it (HIGH) — 2-2-3 / 2-2-5-5 / 5-2 /
     // alternating-weekends households were all mislabeled.
     const { schedule } = useCustodySchedule(householdId);
+
+    // Caregiver brief-task alert state (Phase G, #489). The countdown
+    // chip flips from soft-inkSec → alert-tinted when:
+    //   • viewer is a caregiver
+    //   • there's a next handoff within HANDOFF_PREP_WINDOW
+    //   • at least one open caregiver_brief task exists for that handoff
+    //
+    // We also opportunistically generate brief tasks for the upcoming
+    // handoff when none exist yet — the household's
+    // default_brief_items drive the row count. Idempotent via the
+    // unique partial index in migration 0051 (concurrent generator
+    // calls converge to the same set).
+    const [briefAlertActive, setBriefAlertActive] = useState(false);
+    const nextHandoffAtIso = custody?.nextHandoff?.at.toISOString();
+    useEffect(() => {
+        if (!isCaregiver) return;
+        if (!householdId || !user?.id) return;
+        if (!nextHandoffAtIso) return;
+        const handoffAt = new Date(nextHandoffAtIso);
+        // Only generate / poll within a 24h prep window. Outside that
+        // the brief tasks aren't actionable yet — and we don't want to
+        // keep generating + polling for handoffs days away.
+        const ms = handoffAt.getTime() - Date.now();
+        const HANDOFF_PREP_WINDOW_MS = 24 * 3600 * 1000;
+        if (ms < 0 || ms > HANDOFF_PREP_WINDOW_MS) {
+            setBriefAlertActive(false);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                // Lazy idempotent generator — no-op when rows already
+                // exist OR when default_brief_items is empty.
+                await generateCaregiverBriefTasksForHandoff(
+                    householdId,
+                    handoffAt,
+                    user.id,
+                );
+                if (cancelled) return;
+                const open = await getOpenCaregiverBriefTasksAt(
+                    householdId,
+                    handoffAt,
+                );
+                if (cancelled) return;
+                // Alert state: any open brief task within the prep
+                // window AND handoff within ~2h. 2h is the design
+                // source's "Brief Casey at pickup" intent — the
+                // caregiver needs to act, not just stay aware.
+                const HANDOFF_URGENT_MS = 2 * 3600 * 1000;
+                setBriefAlertActive(
+                    open.length > 0 &&
+                        handoffAt.getTime() - Date.now() <=
+                            HANDOFF_URGENT_MS,
+                );
+            } catch {
+                // Errors here are non-fatal (the strip still renders
+                // with the soft countdown). PGRST205 is already
+                // swallowed in the helpers themselves.
+                if (cancelled) return;
+                setBriefAlertActive(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isCaregiver, householdId, user?.id, nextHandoffAtIso]);
 
     // README rule: hide entirely when there's no custody schedule —
     // single-home families never see custody UI.
@@ -114,6 +191,20 @@ export function CustodyStripToday({
 
     const { weekCustody, nextHandoff } = custody;
     const colorMap = memberColorMap(members);
+
+    // External viewer's paired-calendar overlap (Phase H, #490). The
+    // dashed row beneath the 7-day bar shows the count of the viewer's
+    // own busy blocks for the current week — "this is your data, not
+    // the household's". Only fetches when viewer is external; the hook
+    // returns `null` until userId resolves, which the count derivation
+    // tolerates. Other viewer modes don't render the row.
+    const externalBusyEvents = useMyExternalEvents(
+        weekCustody.weekStart,
+        7,
+    );
+    const externalBusyCount = isExternal
+        ? (externalBusyEvents.events ?? []).length
+        : 0;
 
     // Top-row identity. Caregiver mode swaps to observer framing — the
     // viewer isn't a party to the hand-off, so passive copy lifts the
@@ -387,7 +478,8 @@ export function CustodyStripToday({
                     )}
                 </View>
 
-                {/* Bottom row: bar + next-handoff line */}
+                {/* Bottom row: bar + (optional paired-cal overlay) +
+                    next-handoff line */}
                 <View style={styles.bottom}>
                     <CustodyWeekBar
                         days={days}
@@ -395,6 +487,21 @@ export function CustodyStripToday({
                         handoffIndex={handoffIndex}
                         size="sm"
                     />
+                    {/* Paired-calendar overlay (Phase H, #490) — only
+                        for external viewers AND only when their own
+                        paired calendar has busy blocks this week.
+                        Tapping opens the existing Calendars surface so
+                        they can review what's pinging in. Hidden when
+                        count is 0 — the row only appears when there's
+                        actual signal to surface. */}
+                    {isExternal && externalBusyCount > 0 ? (
+                        <DashedBusyBlockRow
+                            count={externalBusyCount}
+                            onPress={() =>
+                                router.push('/settings/calendars')
+                            }
+                        />
+                    ) : null}
                     {nextHandoff ? (
                         <View style={styles.nextRow}>
                             <View style={styles.nextLeft}>
@@ -540,14 +647,21 @@ export function CustodyStripToday({
                                     style={[
                                         styles.countdown,
                                         {
-                                            // Caregiver-soft countdown
-                                            // by default (#397). Alert
-                                            // wiring lands with Phase G
-                                            // (#489) once the brief-
-                                            // task generator exists.
+                                            // Caregiver countdown
+                                            // colors (#397 + Phase G):
+                                            //   • soft inkSec (observer
+                                            //     default — they're not
+                                            //     a hand-off party)
+                                            //   • alert-tinted when
+                                            //     briefAlertActive is
+                                            //     true (open brief
+                                            //     tasks + handoff <2h
+                                            //     away)
                                             color:
                                                 viewer === 'caregiver'
-                                                    ? colors.inkSec
+                                                    ? briefAlertActive
+                                                        ? colors.warn
+                                                        : colors.inkSec
                                                     : colors.accent,
                                             fontFamily:
                                                 FontFamily.monoSemiBold,

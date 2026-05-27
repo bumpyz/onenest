@@ -34,16 +34,20 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LoadingScreen } from '@/components/loading-screen';
 import { RemoveMemberSheet } from '@/components/remove-member-sheet';
+import { RoleBadge } from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
+import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useMyRole } from '@/hooks/use-my-role';
 import { usePendingInvitations } from '@/hooks/use-pending-invitations';
 import {
     createInvitation,
+    getExternalCoparentsByChild,
     revokeInvitation,
+    type ChildExternalCoparent,
     type HouseholdMember,
     type HouseholdRole,
     type Invitation,
@@ -124,10 +128,63 @@ export default function MembersSettingsScreen() {
         refetch: refetchMembers,
     } = useHouseholdMembers(household?.id);
     const { isCaregiver, isLoading: roleLoading } = useMyRole(household?.id);
+    const { children: householdChildren } = useChildren(household?.id);
     const {
         invitations,
         refetch: refetchInvites,
     } = usePendingInvitations(household?.id);
+
+    // External co-parents (#404) — fetched per-kid then deduped by
+    // profile_id. A single external profile linked to two kids in this
+    // household renders as one row with both kids listed inline. We
+    // run the per-kid queries in parallel via Promise.all so the
+    // Members screen doesn't wait on a sequential chain.
+    type ExtRow = ChildExternalCoparent & { kid_names: string[] };
+    const [externalRows, setExternalRows] = useState<ExtRow[]>([]);
+    useEffect(() => {
+        const kids = householdChildren ?? [];
+        if (kids.length === 0) {
+            setExternalRows([]);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const allLinks = await Promise.all(
+                    kids.map(async (k) => {
+                        const links =
+                            await getExternalCoparentsByChild(k.id);
+                        return links.map((l) => ({
+                            ...l,
+                            _kidName: k.display_name,
+                        }));
+                    }),
+                );
+                if (cancelled) return;
+                // Dedupe by profile_id, aggregating kid names.
+                const byProfile = new Map<string, ExtRow>();
+                for (const link of allLinks.flat()) {
+                    const existing = byProfile.get(link.profile_id);
+                    if (existing) {
+                        existing.kid_names.push(link._kidName);
+                    } else {
+                        const { _kidName, ...rest } = link;
+                        byProfile.set(link.profile_id, {
+                            ...rest,
+                            kid_names: [_kidName],
+                        });
+                    }
+                }
+                setExternalRows(Array.from(byProfile.values()));
+            } catch {
+                if (cancelled) return;
+                setExternalRows([]);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [householdChildren]);
 
     const [inviteEmail, setInviteEmail] = useState('');
     const [inviteRole, setInviteRole] = useState<HouseholdRole>(
@@ -558,6 +615,69 @@ export default function MembersSettingsScreen() {
                         </View>
                     ) : null}
 
+                    {/* External co-parents (#404) — surfaces profiles
+                        linked to any of this household's kids via the
+                        `child_external_coparents` junction (migration
+                        0050). They aren't members of the household —
+                        they have a per-kid relationship — so they get
+                        their own section with the EXT RoleBadge.
+                        Hidden when the household has no external
+                        co-parent links (the common case). */}
+                    {externalRows.length > 0 ? (
+                        <View>
+                            <View
+                                style={[
+                                    styles.sectionHeader,
+                                    styles.sectionHeaderRow,
+                                ]}>
+                                <ThemedText
+                                    style={[
+                                        styles.sectionLabel,
+                                        {
+                                            color: colors.inkSec,
+                                            fontFamily:
+                                                FontFamily.monoSemiBold,
+                                        },
+                                    ]}>
+                                    EXTERNAL CO-PARENTS ·{' '}
+                                    {externalRows.length}
+                                </ThemedText>
+                                <ThemedText
+                                    style={[
+                                        styles.sectionAccessory,
+                                        {
+                                            color: colors.textSecondary,
+                                            fontFamily:
+                                                FontFamily.monoMedium,
+                                        },
+                                    ]}>
+                                    LINKED TO
+                                </ThemedText>
+                            </View>
+                            <View
+                                style={[
+                                    styles.card,
+                                    {
+                                        backgroundColor:
+                                            colors.backgroundElement,
+                                        borderColor: colors.hair,
+                                    },
+                                ]}>
+                                {externalRows.map((row, idx) => (
+                                    <ExternalCoparentRow
+                                        key={row.profile_id}
+                                        row={row}
+                                        last={
+                                            idx ===
+                                            externalRows.length - 1
+                                        }
+                                        colors={colors}
+                                    />
+                                ))}
+                            </View>
+                        </View>
+                    ) : null}
+
                     {/* Help footer — dashed-border card, transparent bg
                         (per design handoff screens-settings.jsx:474-487).
                         Closes the screen with the privacy explainer + a
@@ -939,6 +1059,75 @@ function MemberRow({
                         <Feather name="more-horizontal" size={14} color={colors.inkSec} />
                     </Pressable>
                 )}
+            </View>
+        </View>
+    );
+}
+
+/** Row for an external co-parent (#404). Visually parallels MemberRow
+ *  but lacks the role pill + kebab. The EXT RoleBadge anchors the
+ *  right slot, and a kid-name list (capped to 2 with "+ N more") sits
+ *  underneath the display name so users see the relationship context
+ *  at a glance. */
+function ExternalCoparentRow({
+    row,
+    last,
+    colors,
+}: {
+    row: { profile_id: string; color: string | null; display_name?: string; kid_names: string[] };
+    last: boolean;
+    colors: Palette;
+}) {
+    const avatarColor = row.color ?? colors.accent;
+    const name = row.display_name ?? 'External co-parent';
+    const initial = (name[0] ?? '?').toUpperCase();
+    // Cap kid list display at 2 names + "+N more". Matches the
+    // strip-variants README Q2 collapse convention.
+    const kidLabel = (() => {
+        const names = row.kid_names;
+        if (names.length === 0) return '';
+        if (names.length <= 2) return names.join(', ');
+        return `${names[0]}, ${names[1]} + ${names.length - 2} more`;
+    })();
+    return (
+        <View
+            style={[
+                styles.memberRow,
+                !last && {
+                    borderBottomColor: colors.hair,
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                },
+            ]}>
+            <View
+                style={[
+                    styles.memberAvatar,
+                    { backgroundColor: avatarColor },
+                ]}>
+                <ThemedText style={styles.memberAvatarText}>
+                    {initial}
+                </ThemedText>
+            </View>
+            <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                <ThemedText
+                    type="smallBold"
+                    numberOfLines={1}
+                    style={{ color: colors.text }}>
+                    {name}
+                </ThemedText>
+                {kidLabel ? (
+                    <ThemedText
+                        numberOfLines={1}
+                        style={{
+                            fontSize: 11.5,
+                            color: colors.textSecondary,
+                            letterSpacing: -0.1,
+                        }}>
+                        {kidLabel}
+                    </ThemedText>
+                ) : null}
+            </View>
+            <View style={styles.memberRight}>
+                <RoleBadge kind="ext" />
             </View>
         </View>
     );

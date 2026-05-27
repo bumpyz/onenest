@@ -2386,6 +2386,12 @@ export async function setTaskChildren(taskId: string, childIds: string[]): Promi
  */
 export type TaskPriority = 'none' | 'low' | 'normal' | 'high' | 'urgent';
 
+/** Task kind enum from migration 0051. Most tasks are 'standard' —
+ *  user-created todo items. 'caregiver_brief' is reserved for the
+ *  auto-generated hand-off brief tasks the caregiver completes when
+ *  handing the kids back. Pairs with `households.default_brief_items`. */
+export type TaskKind = 'standard' | 'caregiver_brief';
+
 export type Task = {
     id: string;
     household_id: string;
@@ -2422,6 +2428,15 @@ export type Task = {
      * to a particular kid.
      */
     child_ids: string[];
+    /**
+     * Task kind from migration 0051. 'standard' for user-created tasks (the
+     * vast majority), 'caregiver_brief' for the auto-generated hand-off
+     * brief items the caregiver checks off at hand-off time. Existing
+     * task surfaces (Today / Lists) hide caregiver_brief rows from the
+     * default views — they only render inside the strip's brief section
+     * (Phase G follow-up).
+     */
+    kind: TaskKind;
 };
 
 export type NewTaskInput = {
@@ -2702,6 +2717,109 @@ export async function updateTask(id: string, input: NewTaskInput): Promise<Task>
 export async function deleteTask(id: string): Promise<void> {
     const { error } = await supabase.from('tasks').delete().eq('id', id);
     if (error) throw error;
+}
+
+// ─── Caregiver brief tasks (migration 0051, Phase G #489) ───────────────
+//
+// Auto-generated tasks paired with households.default_brief_items. The
+// caregiver-on-duty checks them off at the handoff (medication notes,
+// pickup changes, etc.). The strip's countdown chip flips alert-tinted
+// while any remain open within ~2h of the handoff.
+//
+// Generator runs client-side from the strip when:
+//   • viewer is the caregiver-on-duty for the next handoff window
+//   • household has at least one brief item configured
+//   • handoff is within HANDOFF_PREP_WINDOW_MS (default ~24h)
+//
+// PGRST205 carve-out matches the strip-variants helpers (see
+// getMyExternalCoparentLinks) — if the migration hasn't been applied
+// yet, the helpers return [] / no-op so the strip degrades gracefully.
+
+/** Returns open caregiver brief tasks for a given handoff time. The
+ *  strip uses the count + open-state to drive the alert chip. */
+export async function getOpenCaregiverBriefTasksAt(
+    householdId: string,
+    handoffAt: Date,
+): Promise<Task[]> {
+    const { data, error } = await supabase
+        .from('tasks')
+        .select(
+            '*, task_assignees(profile_id), task_lists(list_id), task_children(child_id)',
+        )
+        .eq('household_id', householdId)
+        .eq('kind', 'caregiver_brief')
+        .eq('due_at', handoffAt.toISOString())
+        .is('completed_at', null);
+    if (error) {
+        if (error.code === 'PGRST205') return [];
+        // Old DB without the `kind` column will surface as 'PGRST204'
+        // (column not found) — treat the same way.
+        if (error.code === 'PGRST204') return [];
+        throw error;
+    }
+    return ((data ?? []) as Array<Record<string, unknown>>).map(
+        attachTaskRelations,
+    );
+}
+
+/** Idempotently inserts brief tasks for a (household, handoffAt) tuple
+ *  from the household's default_brief_items. Returns the freshly-
+ *  generated rows. The migration's unique partial index guarantees
+ *  duplicate inserts surface as a 409 conflict — we swallow those so
+ *  concurrent generator calls converge to the same row set. */
+export async function generateCaregiverBriefTasksForHandoff(
+    householdId: string,
+    handoffAt: Date,
+    caregiverProfileId: string,
+): Promise<void> {
+    const items = await getHouseholdBriefItems(householdId);
+    if (items.length === 0) return;
+    // Check what already exists to avoid 409 spam in the common case.
+    const existing = await getOpenCaregiverBriefTasksAt(
+        householdId,
+        handoffAt,
+    );
+    const existingTitles = new Set(existing.map((t) => t.title));
+    const missing = items.filter(
+        (it) => !existingTitles.has(it.label),
+    );
+    if (missing.length === 0) return;
+
+    // Insert one row per missing brief item. Each gets due_at =
+    // handoff time so the unique partial index keys correctly. We
+    // assign to the caregiver_profile_id passed in — that's the
+    // current viewer when the strip triggers generation.
+    const rows = missing.map((it) => ({
+        household_id: householdId,
+        title: it.label,
+        due_at: handoffAt.toISOString(),
+        kind: 'caregiver_brief' as const,
+    }));
+    const { data: insertedRaw, error: insertError } = await supabase
+        .from('tasks')
+        .insert(rows)
+        .select('id');
+    // 23505 = unique_violation. Happens when two clients (or two app
+    // mounts) race the generator — accept the loser's silence.
+    if (insertError && insertError.code !== '23505') {
+        if (insertError.code === 'PGRST205') return;
+        if (insertError.code === 'PGRST204') return;
+        throw insertError;
+    }
+    const inserted = insertedRaw ?? [];
+    if (inserted.length === 0) return;
+    // Attach the caregiver as assignee on each new row so the task
+    // surfaces in their Today / Lists views.
+    const assigneeRows = inserted.map((r: { id: string }) => ({
+        task_id: r.id,
+        profile_id: caregiverProfileId,
+    }));
+    const { error: assignError } = await supabase
+        .from('task_assignees')
+        .insert(assigneeRows);
+    if (assignError && assignError.code !== '23505') {
+        throw assignError;
+    }
 }
 
 /**

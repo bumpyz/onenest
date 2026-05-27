@@ -802,34 +802,60 @@ export default function SettingsScreen() {
                                 </View>
                             </Pressable>
                             {householdType === 'separated' ? (
-                                <SRow
-                                    label="Custody schedule"
-                                    /* Phase 6.7 pass-2 UX: design tints the
-                                       custody value in accent to flag "this is
-                                       the active pattern" (screens-settings.jsx:
-                                       206-209). SRow's default right-slot
-                                       renders mono-secondary; we hand-roll a
-                                       ThemedText here to override the color. */
-                                    right={
-                                        <ThemedText
-                                            style={{
-                                                fontFamily: FontFamily.monoMedium,
-                                                fontSize: 12,
-                                                letterSpacing: -0.2,
-                                                color: custodySchedule
-                                                    ? colors.accent
-                                                    : colors.textSecondary,
-                                            }}>
-                                            {custodySchedule
-                                                ? findPattern(custodySchedule.pattern_id)
-                                                      ?.label ?? custodySchedule.pattern_id
-                                                : 'Not set'}
-                                        </ThemedText>
-                                    }
-                                    chevron
-                                    onPress={() => router.push('/settings/custody')}
-                                    last
-                                />
+                                <>
+                                    <SRow
+                                        label="Custody schedule"
+                                        /* Phase 6.7 pass-2 UX: design tints the
+                                           custody value in accent to flag "this is
+                                           the active pattern" (screens-settings.jsx:
+                                           206-209). SRow's default right-slot
+                                           renders mono-secondary; we hand-roll a
+                                           ThemedText here to override the color. */
+                                        right={
+                                            <ThemedText
+                                                style={{
+                                                    fontFamily: FontFamily.monoMedium,
+                                                    fontSize: 12,
+                                                    letterSpacing: -0.2,
+                                                    color: custodySchedule
+                                                        ? colors.accent
+                                                        : colors.textSecondary,
+                                                }}>
+                                                {custodySchedule
+                                                    ? findPattern(custodySchedule.pattern_id)
+                                                          ?.label ?? custodySchedule.pattern_id
+                                                    : 'Not set'}
+                                            </ThemedText>
+                                        }
+                                        chevron
+                                        onPress={() => router.push('/settings/custody')}
+                                    />
+                                    {/* Phase G (#489): brief-items editor. Only
+                                        relevant in separated households since
+                                        the brief paradigm is "caregiver hands
+                                        kids back at hand-off" — which doesn't
+                                        exist in single_parent / couple shapes.
+                                        Routes to /settings/brief-items. */}
+                                    <SRow
+                                        label="Hand-off brief"
+                                        right={
+                                            <ThemedText
+                                                style={{
+                                                    fontFamily: FontFamily.monoMedium,
+                                                    fontSize: 12,
+                                                    letterSpacing: -0.2,
+                                                    color: colors.textSecondary,
+                                                }}>
+                                                For caregivers
+                                            </ThemedText>
+                                        }
+                                        chevron
+                                        onPress={() =>
+                                            router.push('/settings/brief-items')
+                                        }
+                                        last
+                                    />
+                                </>
                             ) : null}
                         </SGroup>
                     ) : null}

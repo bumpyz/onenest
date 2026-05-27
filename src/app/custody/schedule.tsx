@@ -17,8 +17,8 @@
 import { Feather } from '@expo/vector-icons';
 import { addDays, format, parseISO, startOfWeek } from 'date-fns';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CustodyWeekBar } from '@/components/custody/custody-week-bar';
@@ -42,6 +42,8 @@ import {
     colorForResponsible,
     memberColorMap,
 } from '@/lib/colors';
+import { decideSwapRequest } from '@/lib/db';
+import { errorMessage } from '@/lib/errors';
 import { withAlpha } from '@/lib/platform-styles';
 import { HEAVY_FAB_SHADOW } from '@/lib/platform-styles';
 import { useAuth } from '@/providers/auth-provider';
@@ -85,7 +87,10 @@ export default function CustodyScheduleScreen() {
     // doesn't fit them. Mirrors the Pattern-button gate on this surface
     // and the Family Hub banner gate. Pass undefined to short-circuit
     // the hook's fetch entirely.
-    const { requests: pendingSwapsRaw } = useSwapRequests(
+    const {
+        requests: pendingSwapsRaw,
+        refetch: refetchSwaps,
+    } = useSwapRequests(
         isCaregiver ? undefined : household?.id,
         'pending',
     );
@@ -122,6 +127,58 @@ export default function CustodyScheduleScreen() {
         }, 200);
         return () => clearTimeout(t);
     }, [focus, pendingSwaps.length]);
+
+    // Per-row decision state (#399). Tracks the request id currently
+    // being acted on so the inline Accept / Decline buttons render a
+    // disabled state while the RPC is in-flight. Once it settles we
+    // refetch via the hook's refetch — the resolved row drops out of
+    // the pending query (status flips to accepted/declined) and the
+    // section count goes down.
+    const [decidingId, setDecidingId] = useState<string | null>(null);
+    const onDecideSwap = async (
+        swapId: string,
+        decision: 'accepted' | 'declined',
+    ) => {
+        setDecidingId(swapId);
+        try {
+            await decideSwapRequest(swapId, decision);
+            await refetchSwaps();
+        } catch (err) {
+            Alert.alert(
+                "Couldn't update swap request",
+                errorMessage(err),
+            );
+        } finally {
+            setDecidingId(null);
+        }
+    };
+    const onConfirmAccept = (swapId: string, requesterName: string) => {
+        Alert.alert(
+            'Accept swap?',
+            `${requesterName} requested this swap. Accepting marks the request approved; you'll still need to add the matching override in /custody to update the schedule itself (#399 follow-up will auto-apply).`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Accept',
+                    onPress: () => onDecideSwap(swapId, 'accepted'),
+                },
+            ],
+        );
+    };
+    const onConfirmDecline = (swapId: string, requesterName: string) => {
+        Alert.alert(
+            'Decline swap?',
+            `${requesterName} will be notified that you didn't accept this swap.`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Decline',
+                    style: 'destructive',
+                    onPress: () => onDecideSwap(swapId, 'declined'),
+                },
+            ],
+        );
+    };
 
     // 4-week window starting from this week's Monday.
     const weekStart = useMemo(
@@ -342,6 +399,9 @@ export default function CustodyScheduleScreen() {
                                 const range = sameDay
                                     ? format(parseISO(s.from_date), 'EEE MMM d')
                                     : `${format(parseISO(s.from_date), 'EEE MMM d')}–${format(parseISO(s.to_date), 'EEE MMM d')}`;
+                                const requesterName =
+                                    requester?.display_name ?? 'Co-parent';
+                                const isDeciding = decidingId === s.id;
                                 return (
                                     <View
                                         key={s.id}
@@ -356,7 +416,7 @@ export default function CustodyScheduleScreen() {
                                                 style={{
                                                     fontWeight: '600',
                                                 }}>
-                                                {requester?.display_name ?? 'Co-parent'}
+                                                {requesterName}
                                             </ThemedText>{' '}
                                             requested a swap ·{' '}
                                             <ThemedText
@@ -380,9 +440,92 @@ export default function CustodyScheduleScreen() {
                                                 "{s.note}"
                                             </ThemedText>
                                         ) : null}
+                                        {/* Decide buttons (#399). Two
+                                            pressables: outlined Decline
+                                            on the left, accent-tinted
+                                            Accept on the right. Both
+                                            disabled mid-flight. */}
+                                        <View
+                                            style={styles.pendingActionsRow}>
+                                            <Pressable
+                                                onPress={() =>
+                                                    onConfirmDecline(
+                                                        s.id,
+                                                        requesterName,
+                                                    )
+                                                }
+                                                disabled={isDeciding}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={`Decline ${requesterName}'s swap request`}
+                                                style={({ pressed }) => [
+                                                    styles.declineBtn,
+                                                    {
+                                                        backgroundColor:
+                                                            colors.backgroundElement,
+                                                        borderColor:
+                                                            colors.hair,
+                                                    },
+                                                    isDeciding && {
+                                                        opacity: 0.4,
+                                                    },
+                                                    pressed &&
+                                                        !isDeciding &&
+                                                        styles.pressed,
+                                                ]}>
+                                                <ThemedText
+                                                    style={[
+                                                        styles.declineBtnText,
+                                                        {
+                                                            color: colors.text,
+                                                        },
+                                                    ]}>
+                                                    Decline
+                                                </ThemedText>
+                                            </Pressable>
+                                            <Pressable
+                                                onPress={() =>
+                                                    onConfirmAccept(
+                                                        s.id,
+                                                        requesterName,
+                                                    )
+                                                }
+                                                disabled={isDeciding}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={`Accept ${requesterName}'s swap request`}
+                                                style={({ pressed }) => [
+                                                    styles.acceptBtn,
+                                                    {
+                                                        backgroundColor:
+                                                            colors.accent,
+                                                    },
+                                                    isDeciding && {
+                                                        opacity: 0.4,
+                                                    },
+                                                    pressed &&
+                                                        !isDeciding &&
+                                                        styles.pressed,
+                                                ]}>
+                                                <ThemedText
+                                                    style={[
+                                                        styles.acceptBtnText,
+                                                        {
+                                                            color: colors.onAccent,
+                                                        },
+                                                    ]}>
+                                                    {isDeciding
+                                                        ? 'Saving…'
+                                                        : 'Accept'}
+                                                </ThemedText>
+                                            </Pressable>
+                                        </View>
                                     </View>
                                 );
                             })}
+                            {/* Footer hint — sets expectations for the
+                                accept-side flow. Accepting flips the
+                                request status; the override still has
+                                to be added manually until the
+                                auto-apply follow-up ships. */}
                             <ThemedText
                                 style={[
                                     styles.pendingHint,
@@ -391,7 +534,8 @@ export default function CustodyScheduleScreen() {
                                         fontFamily: FontFamily.monoMedium,
                                     },
                                 ]}>
-                                ACCEPT / DECLINE COMING SOON
+                                ACCEPT MARKS APPROVED · OVERRIDE STILL
+                                MANUAL
                             </ThemedText>
                         </View>
                     ) : null}
@@ -779,6 +923,40 @@ const styles = StyleSheet.create({
         letterSpacing: -0.1,
         lineHeight: 16,
         fontStyle: 'italic',
+    },
+    // Per-row Accept / Decline action strip (#399). Decline sits on
+    // the left as the outlined secondary; Accept on the right as the
+    // accent-tinted primary. Mirrors the standard "destructive on left,
+    // affirmative on right" two-button row pattern used elsewhere.
+    pendingActionsRow: {
+        marginTop: 8,
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+    },
+    declineBtn: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    declineBtnText: {
+        fontSize: 12,
+        fontWeight: '600',
+        letterSpacing: -0.2,
+    },
+    acceptBtn: {
+        flex: 1,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    acceptBtnText: {
+        fontSize: 12,
+        fontWeight: '600',
+        letterSpacing: -0.2,
     },
     pendingHint: {
         fontSize: 9,
