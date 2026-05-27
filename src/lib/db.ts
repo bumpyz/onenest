@@ -979,7 +979,12 @@ export async function getExternalCoparentsByChild(
         )
         .eq('child_id', childId)
         .order('created_at', { ascending: true });
-    if (error) throw error;
+    if (error) {
+        // Same PGRST205 carve-out as getMyExternalCoparentLinks — see
+        // there for rationale. Returning [] keeps caller logic simple.
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
     return (data ?? []).map((row: any) => ({
         child_id: row.child_id,
         profile_id: row.profile_id,
@@ -1016,7 +1021,17 @@ export async function getMyExternalCoparentLinks(): Promise<
         )
         .eq('profile_id', userId)
         .order('created_at', { ascending: true });
-    if (error) throw error;
+    if (error) {
+        // Treat "table not found" as "no external links" instead of
+        // throwing. Happens during the window between deploying client
+        // code that references the strip-variants schema and applying
+        // migration 0050 to Supabase. PostgREST surfaces this as
+        // PGRST205 ("Could not find the table") with HTTP 404. Other
+        // errors still throw — RLS denials, network failures, etc.
+        // need to surface so the section's catch handler kicks in.
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
     return (data ?? []).map((row: any) => ({
         child_id: row.child_id,
         household_id: row.children.household_id,
