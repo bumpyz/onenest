@@ -366,6 +366,7 @@ export function EventTaskSection({
                                         }
                                         placeholder="Task title"
                                         placeholderTextColor={colors.inkFaint}
+                                        autoComplete="off"
                                         style={[
                                             styles.titleInput,
                                             {

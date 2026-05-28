@@ -933,6 +933,7 @@ export function EventForm({
                                 },
                             ]}
                             autoFocus
+                            autoComplete="off"
                             editable={!locked}
                             selectionColor={colors.accent}
                         />
@@ -1641,6 +1642,7 @@ export function EventForm({
                             placeholderTextColor={colors.textSecondary}
                             multiline
                             numberOfLines={3}
+                            autoComplete="off"
                             style={[
                                 styles.notesTextarea,
                                 {
@@ -2153,6 +2155,7 @@ export function EventForm({
                                 placeholder="List name"
                                 placeholderTextColor={colors.inkFaint}
                                 autoFocus
+                                autoComplete="off"
                                 returnKeyType="done"
                                 editable={!newListSaving}
                                 style={{

@@ -211,6 +211,11 @@ export function PlacesAutocomplete({
             style={leadingIcon ? [{ flex: 1 }, inputStyle] : inputStyle}
             editable={editable && !picking}
             autoFocus={autoFocus}
+            // Tell the browser this is an address field (and emphatically
+            // NOT a password field). Stops 1Password / Chrome from
+            // offering credential autofill on every keystroke while the
+            // user is searching Google Places.
+            autoComplete="street-address"
         />
     );
 

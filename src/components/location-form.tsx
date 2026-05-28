@@ -206,6 +206,7 @@ export function LocationForm({
                         placeholder="e.g. Home, School, Soccer field"
                         autoFocus={!initialValues.name}
                         autoCapitalize="words"
+                        autoComplete="off"
                         editable={!busy}
                     />
 
@@ -319,6 +320,7 @@ export function LocationForm({
                                 keyboardType="url"
                                 mono
                                 autoCapitalize="none"
+                                autoComplete="off"
                                 editable={!busy}
                                 last
                             />

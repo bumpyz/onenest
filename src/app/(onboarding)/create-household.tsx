@@ -127,6 +127,7 @@ export default function CreateHouseholdScreen() {
                             placeholderTextColor={colors.textSecondary}
                             style={inputStyle}
                             autoCapitalize="words"
+                            autoComplete="off"
                             returnKeyType="next"
                             editable={!submitting}
                         />
@@ -149,6 +150,7 @@ export default function CreateHouseholdScreen() {
                                     placeholderTextColor={colors.textSecondary}
                                     style={[inputStyle, styles.childInput]}
                                     autoCapitalize="words"
+                                    autoComplete="off"
                                     editable={!submitting}
                                 />
                                 <Pressable

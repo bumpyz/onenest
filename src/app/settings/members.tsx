@@ -453,6 +453,7 @@ export default function MembersSettingsScreen() {
                                     placeholderTextColor={colors.textSecondary}
                                     keyboardType="email-address"
                                     autoCapitalize="none"
+                                    autoComplete="email"
                                     autoCorrect={false}
                                     editable={!inviting}
                                     style={[

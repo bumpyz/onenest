@@ -308,6 +308,7 @@ export function EventLocationSheet({
                         placeholder="https://maps.app.goo.gl/…"
                         placeholderTextColor={colors.inkFaint}
                         autoCapitalize="none"
+                        autoComplete="off"
                         autoCorrect={false}
                         keyboardType="url"
                         style={[

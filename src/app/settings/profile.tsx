@@ -370,6 +370,7 @@ export default function ProfileSettingsScreen() {
                                     placeholder="Your name"
                                     placeholderTextColor={colors.textSecondary}
                                     autoCapitalize="words"
+                                    autoComplete="name"
                                     maxLength={NAME_MAX_LENGTH + 8} /* allow 8-char buffer past max for nicer error */
                                     editable={!savingName}
                                     style={[

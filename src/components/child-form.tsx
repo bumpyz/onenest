@@ -521,6 +521,7 @@ export function ChildForm({
                         autoFocus={!initialValues.displayName}
                         autoCapitalize="words"
                         editable={!busy}
+                        autoComplete="off"
                     />
 
                     {/* BASICS */}
@@ -748,6 +749,7 @@ export function ChildForm({
                                         editable={!busy}
                                         onSubmitEditing={addAllergy}
                                         returnKeyType="done"
+                                        autoComplete="off"
                                         style={[
                                             styles.addInput,
                                             {
@@ -845,6 +847,7 @@ export function ChildForm({
                                         editable={!busy}
                                         onSubmitEditing={addMedication}
                                         returnKeyType="done"
+                                        autoComplete="off"
                                         style={[
                                             styles.addInput,
                                             {
@@ -954,6 +957,7 @@ export function ChildForm({
                                 multiline
                                 numberOfLines={3}
                                 editable={!busy}
+                                autoComplete="off"
                                 style={[styles.notesInput, { color: colors.text }]}
                             />
                         </View>

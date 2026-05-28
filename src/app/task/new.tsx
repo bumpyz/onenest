@@ -252,6 +252,7 @@ export default function NewTaskScreen() {
                         placeholder="e.g. Pack Theo's overnight bag"
                         autoFocus
                         autoCapitalize="sentences"
+                        autoComplete="off"
                         editable={!submitting}
                     />
 
@@ -552,6 +553,7 @@ export default function NewTaskScreen() {
                                 placeholderTextColor={colors.inkFaint}
                                 multiline
                                 numberOfLines={3}
+                                autoComplete="off"
                                 editable={!submitting}
                                 style={[
                                     styles.notesInput,

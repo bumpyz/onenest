@@ -17,7 +17,7 @@
 // Save pill + Cancel secondary in the footer.
 
 import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, type TextInputProps } from 'react-native';
 
 import { SheetShell } from './sheet-shell';
 import { TitleInput } from './title-input';
@@ -36,6 +36,12 @@ type Props = {
      *  like grade levels where a tabular feel reads better. */
     mono?: boolean;
     autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+    /** HTML autocomplete hint forwarded to the inner TitleInput.
+     *  Defaults to TitleInput's own default of 'off' — the right call
+     *  for the bulk of TextInputSheet callers (Pronouns / Grade /
+     *  Teacher / List name / Household name etc. are app-domain
+     *  values nothing in the browser has a saved credential for). */
+    autoComplete?: TextInputProps['autoComplete'];
     /** Save button label override. Defaults to "Save". */
     saveLabel?: string;
     onSave: (value: string) => void;
@@ -51,6 +57,7 @@ export function TextInputSheet({
     placeholder,
     mono = false,
     autoCapitalize = 'sentences',
+    autoComplete,
     saveLabel = 'Save',
     onSave,
     onClose,
@@ -80,6 +87,7 @@ export function TextInputSheet({
                     mono={mono}
                     autoFocus
                     autoCapitalize={autoCapitalize}
+                    autoComplete={autoComplete}
                 />
             </View>
         </SheetShell>

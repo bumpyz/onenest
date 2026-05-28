@@ -396,6 +396,7 @@ export default function TaskDetailScreen() {
                                         onSubmitEditing={commitTitle}
                                         returnKeyType="done"
                                         autoFocus
+                                        autoComplete="off"
                                         editable={!savingInline}
                                         style={[
                                             styles.heroTitle,
@@ -831,6 +832,7 @@ export default function TaskDetailScreen() {
                                     onBlur={commitNotes}
                                     autoFocus
                                     multiline
+                                    autoComplete="off"
                                     editable={!savingInline}
                                     placeholder="Add notes — context, packing list, anything worth remembering."
                                     placeholderTextColor={colors.inkFaint}

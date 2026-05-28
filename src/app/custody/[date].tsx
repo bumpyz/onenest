@@ -894,6 +894,7 @@ export default function CustodyOverrideEditorScreen() {
                                 placeholder="Why this change? e.g. travel, swap, vacation"
                                 placeholderTextColor={colors.inkFaint}
                                 multiline
+                                autoComplete="off"
                                 style={[
                                     styles.noteInput,
                                     {

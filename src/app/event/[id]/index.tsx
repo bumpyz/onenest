@@ -1058,6 +1058,7 @@ export default function EventDetailScreen() {
                                 onChangeText={setTitleDraft}
                                 editable={!savingChanges}
                                 multiline
+                                autoComplete="off"
                                 placeholder="Untitled event"
                                 placeholderTextColor={colors.inkFaint}
                                 style={[
@@ -1984,6 +1985,7 @@ export default function EventDetailScreen() {
                                                         colors.inkFaint
                                                     }
                                                     returnKeyType="done"
+                                                    autoComplete="off"
                                                     editable={!addingTask}
                                                     style={[
                                                         styles.addTaskInput,
@@ -2055,6 +2057,7 @@ export default function EventDetailScreen() {
                                         onChangeText={setNotesDraft}
                                         editable={!savingChanges}
                                         multiline
+                                        autoComplete="off"
                                         placeholder="Add notes…"
                                         placeholderTextColor={colors.inkFaint}
                                         style={[

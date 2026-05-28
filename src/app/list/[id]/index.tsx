@@ -612,6 +612,7 @@ export default function ListDetailScreen() {
                                 placeholder="Add item — use @ for assignee"
                                 placeholderTextColor={colors.inkFaint}
                                 returnKeyType="done"
+                                autoComplete="off"
                                 editable={!adding}
                                 style={[
                                     styles.quickAddInput,

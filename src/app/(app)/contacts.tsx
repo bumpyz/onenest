@@ -331,6 +331,7 @@ export default function ContactsScreen() {
                                     : null,
                             ]}
                             autoCapitalize="none"
+                            autoComplete="off"
                             autoCorrect={false}
                         />
                         <View

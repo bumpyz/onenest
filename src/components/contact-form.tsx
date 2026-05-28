@@ -394,6 +394,7 @@ export function ContactForm({
                         autoFocus={!initialValues.name}
                         autoCapitalize="words"
                         editable={!busy}
+                        autoComplete="name"
                     />
 
                     <AIHelper example="paste a vCard / contact card → phone + email pre-filled" />
@@ -470,6 +471,7 @@ export function ContactForm({
                                 placeholder="(415) 555-0142"
                                 keyboardType="phone-pad"
                                 editable={!busy}
+                                autoComplete="tel"
                             />
                             <CIRow
                                 icon="mail"
@@ -479,6 +481,7 @@ export function ContactForm({
                                 placeholder="name@example.com"
                                 keyboardType="email-address"
                                 editable={!busy}
+                                autoComplete="email"
                             />
                             <CIRow
                                 icon="map-pin"
@@ -489,6 +492,7 @@ export function ContactForm({
                                 mono={false}
                                 autoCapitalize="words"
                                 editable={!busy}
+                                autoComplete="street-address"
                                 last
                             />
                         </FormGroup>
@@ -515,6 +519,7 @@ export function ContactForm({
                                     placeholderTextColor={colors.inkFaint}
                                     editable={!busy}
                                     autoCapitalize="sentences"
+                                    autoComplete="off"
                                     style={[
                                         styles.inlineInput,
                                         {
@@ -547,6 +552,7 @@ export function ContactForm({
                                     placeholderTextColor={colors.inkFaint}
                                     editable={!busy}
                                     autoCapitalize="words"
+                                    autoComplete="organization"
                                     style={[
                                         styles.inlineInput,
                                         {
@@ -660,6 +666,7 @@ export function ContactForm({
                                 placeholderTextColor={colors.inkFaint}
                                 multiline
                                 numberOfLines={3}
+                                autoComplete="off"
                                 editable={!busy}
                                 style={[
                                     styles.notesInput,

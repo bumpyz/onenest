@@ -10,7 +10,12 @@
 
 import { Feather } from '@expo/vector-icons';
 import type { ComponentProps } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import {
+    StyleSheet,
+    TextInput,
+    View,
+    type TextInputProps,
+} from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
@@ -32,6 +37,11 @@ type Props = {
     last?: boolean;
     editable?: boolean;
     autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+    /** HTML autocomplete hint. Defaults to "off" — callers handling
+     *  identifiable shapes (phone / email / address) should pass an
+     *  explicit value so password managers stop offering credential
+     *  fill on every input. */
+    autoComplete?: TextInputProps['autoComplete'];
     /** Optional override of `FontAwesome`'s name token. Kept around so
      *  future icon swaps don't need to touch every caller. */
     iconColor?: string;
@@ -48,6 +58,7 @@ export function CIRow({
     last = false,
     editable = true,
     autoCapitalize = 'none',
+    autoComplete = 'off',
     iconColor,
 }: Props) {
     const scheme = useAppColorScheme();
@@ -76,6 +87,7 @@ export function CIRow({
                 editable={editable}
                 keyboardType={keyboardType}
                 autoCapitalize={autoCapitalize}
+                autoComplete={autoComplete}
                 style={[
                     styles.input,
                     {

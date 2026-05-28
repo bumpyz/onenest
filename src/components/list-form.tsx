@@ -209,6 +209,7 @@ export function ListForm({
                         placeholder="e.g. Soccer prep"
                         autoFocus={!initialValues.name}
                         autoCapitalize="words"
+                        autoComplete="off"
                         editable={!busy}
                     />
 

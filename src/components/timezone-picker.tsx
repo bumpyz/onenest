@@ -66,6 +66,7 @@ export function TimezonePicker({ value, onChange, onCancel, deviceTimezone }: Pr
                 style={inputStyle}
                 autoFocus
                 autoCapitalize="none"
+                autoComplete="off"
                 autoCorrect={false}
             />
 

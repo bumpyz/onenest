@@ -125,6 +125,7 @@ export function ListsSheet({
                     onChangeText={setQuery}
                     placeholder="Search lists…"
                     placeholderTextColor={colors.inkFaint}
+                    autoComplete="off"
                     style={[
                         styles.searchInput,
                         {

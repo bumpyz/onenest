@@ -299,6 +299,7 @@ export default function BriefItemsScreen() {
                                 placeholderTextColor={colors.inkFaint}
                                 onSubmitEditing={onAdd}
                                 returnKeyType="done"
+                                autoComplete="off"
                                 editable={!saving}
                                 style={[
                                     styles.addInput,

@@ -776,6 +776,7 @@ export default function ListsScreen() {
                             placeholderTextColor={colors.inkFaint}
                             returnKeyType="search"
                             autoCapitalize="none"
+                            autoComplete="off"
                             autoCorrect={false}
                             style={[
                                 styles.quickAddInput,
@@ -833,6 +834,7 @@ export default function ListsScreen() {
                             placeholder={`add task to ${activeList?.name ?? 'list'}`}
                             placeholderTextColor={colors.inkFaint}
                             returnKeyType="done"
+                            autoComplete="off"
                             editable={!adding}
                             style={[
                                 styles.quickAddInput,

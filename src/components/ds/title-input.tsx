@@ -13,7 +13,12 @@
 // just pass selectionColor=accent so the native cursor matches the
 // design's accent color.
 
-import { StyleSheet, TextInput, View } from 'react-native';
+import {
+    StyleSheet,
+    TextInput,
+    View,
+    type TextInputProps,
+} from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
@@ -30,6 +35,13 @@ type Props = {
     autoFocus?: boolean;
     editable?: boolean;
     autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+    /** HTML autocomplete hint — drives both Chrome's saved-form prompts
+     *  and the password manager's "is this a password field?" heuristic.
+     *  Defaults to "off" because most TitleInputs are app-domain values
+     *  (event title, list name, task title) that nothing in the browser
+     *  has a saved value for. Callers handling identity-shaped values
+     *  (Display name, Household name) should pass an explicit hint. */
+    autoComplete?: TextInputProps['autoComplete'];
 };
 
 export function TitleInput({
@@ -41,6 +53,7 @@ export function TitleInput({
     autoFocus = false,
     editable = true,
     autoCapitalize = 'sentences',
+    autoComplete = 'off',
 }: Props) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
@@ -64,6 +77,7 @@ export function TitleInput({
                 autoFocus={autoFocus}
                 editable={editable}
                 autoCapitalize={autoCapitalize}
+                autoComplete={autoComplete}
                 selectionColor={colors.accent}
                 style={[
                     styles.input,
