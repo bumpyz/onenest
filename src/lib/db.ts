@@ -677,6 +677,56 @@ export async function updateHouseholdType(
     if (error) throw error;
 }
 
+/** Rename a household. RLS allows household parents; the existing
+ *  `is_household_parent` check on the households UPDATE policy covers
+ *  this — no migration needed. Trimmed + clamped to keep the rendered
+ *  surfaces (Family Hub hero, top bar, etc.) honest. */
+export async function updateHouseholdName(
+    householdId: string,
+    name: string,
+): Promise<void> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) {
+        throw new Error('Household name cannot be empty.');
+    }
+    if (trimmed.length > 60) {
+        throw new Error(
+            'Household name is too long. Keep it under 60 characters.',
+        );
+    }
+    const { error } = await supabase
+        .from('households')
+        .update({ name: trimmed })
+        .eq('id', householdId);
+    if (error) throw error;
+}
+
+/** Hard-delete the calling user's auth.users row via the
+ *  delete-account edge function (#387). After this resolves the
+ *  caller should sign out client-side; the auth session won't be
+ *  valid anyway (the user it referenced is gone).
+ *
+ *  Cascades: auth.users → public.profiles → household_members,
+ *  child_external_coparents, etc. Households the user belonged to
+ *  are NOT auto-deleted; if the user was the only parent, the
+ *  household survives but becomes unmanageable. Known limitation —
+ *  the UI confirms "Are you sure?" twice before reaching here.
+ *
+ *  The function lives in supabase/functions/delete-account/ and
+ *  requires deployment (same flow as sunday-summary). Until it's
+ *  deployed, this call will 404 / network-fail; the caller's catch
+ *  block should surface a meaningful error. */
+export async function deleteMyAccount(): Promise<void> {
+    const { data, error } = await supabase.functions.invoke(
+        'delete-account',
+        { method: 'POST' },
+    );
+    if (error) throw error;
+    if (data && typeof data === 'object' && 'error' in data) {
+        throw new Error(String((data as { error: unknown }).error));
+    }
+}
+
 export async function addChild(
     householdId: string,
     displayName: string,

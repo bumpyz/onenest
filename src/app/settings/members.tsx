@@ -680,17 +680,22 @@ export default function MembersSettingsScreen() {
 
                     {/* Help footer — dashed-border card, transparent bg
                         (per design handoff screens-settings.jsx:474-487).
-                        Closes the screen with the privacy explainer + a
-                        LEARN MORE mono chip placeholder. The chip is not
-                        wired to a destination yet; once we have a privacy
-                        explainer page it'll route there. */}
-                    <View
-                        style={[
+                        LEARN MORE routes to /settings/privacy-explainer
+                        (#390) — full breakdown of the four visibility
+                        tiers + paired-calendar privacy. */}
+                    <Pressable
+                        onPress={() =>
+                            router.push('/settings/privacy-explainer')
+                        }
+                        accessibilityRole="button"
+                        accessibilityLabel="Learn more about who can see what"
+                        style={({ pressed }) => [
                             styles.helpCard,
                             {
                                 borderColor: colors.hair,
                                 backgroundColor: 'transparent',
                             },
+                            pressed && { opacity: 0.7 },
                         ]}>
                         <ThemedText
                             type="small"
@@ -715,7 +720,7 @@ export default function MembersSettingsScreen() {
                             ]}>
                             LEARN MORE →
                         </ThemedText>
-                    </View>
+                    </Pressable>
                 </ScrollView>
             </SafeAreaView>
             {/* Phase 13: Remove member sheet — mounted at the screen root so

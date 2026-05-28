@@ -13,10 +13,11 @@
 import { Feather } from '@expo/vector-icons';
 import { Redirect, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LoadingScreen } from '@/components/loading-screen';
+import { TextInputSheet } from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BrandColors, Colors, FontFamily, Spacing, Typography } from '@/constants/theme';
@@ -24,7 +25,11 @@ import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useMyRole } from '@/hooks/use-my-role';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
-import { updateHouseholdType, type HouseholdType } from '@/lib/db';
+import {
+    updateHouseholdName,
+    updateHouseholdType,
+    type HouseholdType,
+} from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
 import { HOUSEHOLD_TYPE_OPTIONS, labelForHouseholdType } from '@/lib/household-types';
 import { useAuth } from '@/providers/auth-provider';
@@ -47,6 +52,15 @@ export default function HouseholdSettingsScreen() {
     const [savingType, setSavingType] = useState(false);
     const [typeError, setTypeError] = useState<string | null>(null);
 
+    // Household name editor (#389). TextInputSheet handles the actual
+    // input + Save/Cancel chrome; we just track open state + thread
+    // the save handler. updateHouseholdName trims + caps length, so
+    // the sheet's value can be passed through without client-side
+    // validation. Errors surface via Alert (the sheet has no error
+    // slot — saving an invalid value pops the alert + the sheet
+    // stays open so the user can correct + retry).
+    const [editingName, setEditingName] = useState(false);
+
     const onChangeHouseholdType = async (next: HouseholdType) => {
         if (!household || next === householdType) {
             setEditingType(false);
@@ -63,6 +77,20 @@ export default function HouseholdSettingsScreen() {
             setTypeError(errorMessage(err));
         } finally {
             setSavingType(false);
+        }
+    };
+
+    const onSaveHouseholdName = async (next: string) => {
+        if (!household) return;
+        try {
+            await updateHouseholdName(household.id, next);
+            await refetchHouseholds();
+            setEditingName(false);
+        } catch (err) {
+            Alert.alert(
+                "Couldn't rename household",
+                errorMessage(err),
+            );
         }
     };
 
@@ -109,24 +137,70 @@ export default function HouseholdSettingsScreen() {
                                 borderColor: colors.hair,
                             },
                         ]}>
-                        {/* Name row — read-only for now. Tapping does nothing;
-                            a rename modal is a future polish item (the original
-                            screen never offered one either). */}
-                        <View
-                            style={[
-                                styles.row,
-                                { borderBottomColor: colors.hair, borderBottomWidth: StyleSheet.hairlineWidth },
-                            ]}>
-                            <ThemedText
-                                type="smallBold"
-                                style={{ flex: 1, color: colors.text }}>
-                                Name
-                            </ThemedText>
-                            <ThemedText
-                                style={[styles.rowRight, { color: colors.textSecondary }]}>
-                                {household.name}
-                            </ThemedText>
-                        </View>
+                        {/* Name row — tappable, opens TextInputSheet
+                            (#389). Caregivers see the row but tapping
+                            it would fail RLS on save; gate the
+                            Pressable so the affordance only shows for
+                            parents. The non-pressable fallback keeps
+                            the row visible (so caregivers see the
+                            current name) without the chevron. */}
+                        {!isCaregiver ? (
+                            <Pressable
+                                onPress={() => setEditingName(true)}
+                                accessibilityRole="button"
+                                accessibilityLabel="Rename household"
+                                style={({ pressed }) => [
+                                    styles.row,
+                                    {
+                                        borderBottomColor: colors.hair,
+                                        borderBottomWidth:
+                                            StyleSheet.hairlineWidth,
+                                    },
+                                    pressed && styles.pressed,
+                                ]}>
+                                <ThemedText
+                                    type="smallBold"
+                                    style={{ flex: 1, color: colors.text }}>
+                                    Name
+                                </ThemedText>
+                                <ThemedText
+                                    style={[
+                                        styles.rowRight,
+                                        { color: colors.textSecondary },
+                                    ]}>
+                                    {household.name}
+                                </ThemedText>
+                                <Feather
+                                    name="chevron-right"
+                                    size={14}
+                                    color={colors.inkFaint}
+                                    style={{ marginLeft: 6 }}
+                                />
+                            </Pressable>
+                        ) : (
+                            <View
+                                style={[
+                                    styles.row,
+                                    {
+                                        borderBottomColor: colors.hair,
+                                        borderBottomWidth:
+                                            StyleSheet.hairlineWidth,
+                                    },
+                                ]}>
+                                <ThemedText
+                                    type="smallBold"
+                                    style={{ flex: 1, color: colors.text }}>
+                                    Name
+                                </ThemedText>
+                                <ThemedText
+                                    style={[
+                                        styles.rowRight,
+                                        { color: colors.textSecondary },
+                                    ]}>
+                                    {household.name}
+                                </ThemedText>
+                            </View>
+                        )}
 
                         {/* Family type row + inline picker. Tap "Change" to
                             expand the 3-option picker; tap an option to save. */}
@@ -292,6 +366,24 @@ export default function HouseholdSettingsScreen() {
                     ) : null}
                 </ScrollView>
             </SafeAreaView>
+
+            {/* Household-name editor (#389). Opens when the Name row is
+                tapped; seeded with the current name. Save commits via
+                updateHouseholdName (which trims + clamps length) and
+                refetches; on failure, Alert surfaces the message and
+                the sheet stays open for retry. */}
+            <TextInputSheet
+                open={editingName}
+                title="Household name"
+                fieldLabel="NAME"
+                sub="Shown in the Family Hub header and across shared surfaces."
+                initialValue={household.name}
+                placeholder="Chen-Park family"
+                onSave={(next) => {
+                    void onSaveHouseholdName(next);
+                }}
+                onClose={() => setEditingName(false)}
+            />
         </ThemedView>
     );
 }

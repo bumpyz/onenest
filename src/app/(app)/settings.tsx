@@ -28,7 +28,7 @@ import { errorMessage } from '@/lib/errors';
 import { findPattern } from '@/lib/custody';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { memberColorMap } from '@/lib/colors';
-import { type HouseholdType } from '@/lib/db';
+import { deleteMyAccount, type HouseholdType } from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 import {
     useAppColorScheme,
@@ -1066,23 +1066,41 @@ export default function SettingsScreen() {
                                 }
                             }}
                         />
+                        {/* Privacy + Terms rows: marked "Coming soon"
+                            until the real legal pages exist (#388).
+                            Removed the broken onenest.app/{privacy,terms}
+                            onPress handlers — those URLs returned 404 and
+                            offering a tap that 404s is worse than no tap
+                            at all. Once the pages ship, restore the
+                            window.open / Linking.openURL + chevron and
+                            drop the right-slot badge. */}
                         <SRow
                             label="Privacy policy"
-                            chevron
-                            onPress={() => {
-                                if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                                    window.open('https://onenest.app/privacy', '_blank');
-                                }
-                            }}
+                            right={
+                                <ThemedText
+                                    style={{
+                                        fontFamily: FontFamily.monoSemiBold,
+                                        fontSize: 10,
+                                        letterSpacing: 0.3,
+                                        color: colors.inkFaint,
+                                    }}>
+                                    COMING SOON
+                                </ThemedText>
+                            }
                         />
                         <SRow
                             label="Terms of service"
-                            chevron
-                            onPress={() => {
-                                if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                                    window.open('https://onenest.app/terms', '_blank');
-                                }
-                            }}
+                            right={
+                                <ThemedText
+                                    style={{
+                                        fontFamily: FontFamily.monoSemiBold,
+                                        fontSize: 10,
+                                        letterSpacing: 0.3,
+                                        color: colors.inkFaint,
+                                    }}>
+                                    COMING SOON
+                                </ThemedText>
+                            }
                         />
                         {/* Version sourced from app.json via expo-constants
                             (Constants.expoConfig?.version). Metro doesn't
@@ -1206,31 +1224,100 @@ export default function SettingsScreen() {
                             ]}>
                             <ThemedText style={styles.dangerRowText}>Sign out</ThemedText>
                         </Pressable>
+                        {/* Real delete-account flow (#387). Two-step
+                            confirm — first dialog explains what's
+                            about to happen, second confirms the
+                            user understands data loss is permanent.
+                            Both prompts must be accepted before the
+                            edge function fires. The function deletes
+                            auth.users via service role; cascades to
+                            profiles + member rows happen at the DB. */}
                         <Pressable
                             onPress={() => {
-                                // Cascading delete + confirmation flow is a
-                                // backend item — defer with an honest "coming
-                                // soon" copy rather than ship a button that
-                                // pretends to do something it can't.
-                                if (Platform.OS === 'web') {
-                                    if (typeof window !== 'undefined') {
-                                        window.alert(
-                                            'Delete account is not available yet. Email support to delete your account manually.',
+                                const runDelete = async () => {
+                                    try {
+                                        await deleteMyAccount();
+                                        // Auth session is invalid now —
+                                        // signOut() clears the local
+                                        // client state. The user lands
+                                        // on /sign-in after the auth
+                                        // listener observes the dead
+                                        // session.
+                                        try {
+                                            await signOut();
+                                        } catch {
+                                            // Best-effort — the row is
+                                            // already gone server-side.
+                                        }
+                                    } catch (err) {
+                                        const msg = errorMessage(err);
+                                        if (Platform.OS === 'web') {
+                                            if (
+                                                typeof window !== 'undefined'
+                                            ) {
+                                                window.alert(
+                                                    `Couldn't delete account: ${msg}`,
+                                                );
+                                            }
+                                        } else {
+                                            Alert.alert(
+                                                "Couldn't delete account",
+                                                msg,
+                                            );
+                                        }
+                                    }
+                                };
+                                const confirmSecondStep = () => {
+                                    if (Platform.OS === 'web') {
+                                        if (typeof window === 'undefined') return;
+                                        const ok = window.confirm(
+                                            'Last chance. Delete your account and ALL associated data?',
+                                        );
+                                        if (ok) void runDelete();
+                                    } else {
+                                        Alert.alert(
+                                            'Delete account?',
+                                            'Last chance. This will permanently remove your account and ALL associated data. This cannot be undone.',
+                                            [
+                                                {
+                                                    text: 'Cancel',
+                                                    style: 'cancel',
+                                                },
+                                                {
+                                                    text: 'Delete forever',
+                                                    style: 'destructive',
+                                                    onPress: runDelete,
+                                                },
+                                            ],
                                         );
                                     }
+                                };
+                                if (Platform.OS === 'web') {
+                                    if (typeof window === 'undefined') return;
+                                    const ok = window.confirm(
+                                        'Delete account?\n\nThis will permanently delete:\n  • Your sign-in\n  • Your profile\n  • Your membership in any households\n  • Tasks and events you created\n\nIt does NOT delete households you share with others. They will remain accessible to other parents.\n\nContinue?',
+                                    );
+                                    if (ok) confirmSecondStep();
                                 } else {
                                     Alert.alert(
-                                        'Delete account',
-                                        'This isn’t available yet. Email support to delete your account manually.',
+                                        'Delete account?',
+                                        "This will permanently delete your sign-in, profile, household memberships, and the tasks + events you created. Households you share with others will remain accessible to other parents. You'll be signed out immediately.",
+                                        [
+                                            { text: 'Cancel', style: 'cancel' },
+                                            {
+                                                text: 'Continue',
+                                                style: 'destructive',
+                                                onPress: confirmSecondStep,
+                                            },
+                                        ],
                                     );
                                 }
                             }}
                             accessibilityRole="button"
-                            accessibilityLabel="Delete account (not available yet)"
+                            accessibilityLabel="Delete account"
                             style={({ pressed }) => [
                                 styles.dangerRow,
                                 styles.dangerRowLast,
-                                { opacity: 0.8 },
                                 pressed && styles.pressed,
                             ]}>
                             <ThemedText style={styles.dangerRowText}>
