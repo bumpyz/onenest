@@ -314,51 +314,83 @@ export default function NotificationsScreen() {
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe} edges={['top']}>
-                {/* Phase 10 v3: the design source assumes a bottom-nav
-                    return path. The screen is reached via push from
-                    Home (Today bell), Settings, or a notification
-                    deeplink — none of which sit on a tab — so we add
-                    a small back chevron in the leading slot to keep
-                    return navigation available without bringing back
-                    the old full-width chrome bar. The meta + title +
-                    Mark-all-read group stays inline per the spec. */}
+                {/* Top bar — same sub-route pattern Profile / Members /
+                    Appearance use: back chevron on the left, centered
+                    15/600/-0.3 title, empty matching-width slot on the
+                    right to keep the title optically centered. The
+                    secondary controls (filter chips + Mark-all-read,
+                    count meta) live in the rows below. */}
+                <View style={[styles.topBar, { borderBottomColor: colors.hair }]}>
+                    <Pressable
+                        onPress={() => router.back()}
+                        accessibilityRole="button"
+                        accessibilityLabel="Back"
+                        style={({ pressed }) => [
+                            styles.topBarIconBtn,
+                            {
+                                backgroundColor: colors.backgroundElement,
+                                borderColor: colors.hair,
+                            },
+                            pressed && styles.pressed,
+                        ]}>
+                        <Feather
+                            name="chevron-left"
+                            size={14}
+                            color={colors.text}
+                        />
+                    </Pressable>
+                    <ThemedText
+                        style={[styles.topBarTitle, { color: colors.text }]}>
+                        Activity
+                    </ThemedText>
+                    {/* Spacer for centering — same 32×32 footprint as the
+                        back button so the title sits optically centered
+                        instead of drifting left. */}
+                    <View style={styles.topBarIconBtn} />
+                </View>
+
                 <ScrollView contentContainerStyle={styles.scroll}>
-                    {/* Header summary + Mark all read */}
-                    <View style={styles.headerRow}>
-                        <Pressable
-                            onPress={() => router.back()}
-                            accessibilityRole="button"
-                            accessibilityLabel="Back"
-                            style={({ pressed }) => [
-                                styles.headerBackBtn,
-                                {
-                                    backgroundColor: colors.backgroundElement,
-                                    borderColor: colors.hair,
-                                },
-                                pressed && styles.pressed,
-                            ]}>
-                            <Feather
-                                name="chevron-left"
-                                size={14}
-                                color={colors.text}
+                    {/* Filter chips + Mark-all-read pill. The chips scroll
+                        horizontally to the LEFT of the pill; the pill
+                        anchors to the right edge so it stays reachable
+                        regardless of how many chips render. */}
+                    <View style={styles.filterBar}>
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.filterRow}
+                            style={{ flex: 1 }}>
+                            <FilterChip
+                                label={`All · ${items.length}`}
+                                active={filter === 'all'}
+                                onPress={() => setFilter('all')}
+                                colors={colors}
                             />
-                        </Pressable>
-                        <View style={{ flex: 1 }}>
-                            <ThemedText
-                                style={[
-                                    styles.headerCounts,
-                                    {
-                                        color: colors.inkFaint,
-                                        fontFamily: FontFamily.monoMedium,
-                                    },
-                                ]}>
-                                {newCount} NEW · {todayCount} TODAY
-                            </ThemedText>
-                            <ThemedText
-                                style={[styles.headerTitle, { color: colors.text }]}>
-                                Activity
-                            </ThemedText>
-                        </View>
+                            <FilterChip
+                                label={`Unread · ${newCount}`}
+                                active={filter === 'unread'}
+                                onPress={() => setFilter('unread')}
+                                colors={colors}
+                            />
+                            {mentionsCount > 0 ? (
+                                <FilterChip
+                                    label={`Mentions · ${mentionsCount}`}
+                                    active={filter === 'mentions'}
+                                    onPress={() => setFilter('mentions')}
+                                    dotColor={colors.accent}
+                                    colors={colors}
+                                />
+                            ) : null}
+                            {conflictsCount > 0 ? (
+                                <FilterChip
+                                    label={`Conflicts · ${conflictsCount}`}
+                                    active={filter === 'conflicts'}
+                                    onPress={() => setFilter('conflicts')}
+                                    dotColor={colors.warn}
+                                    colors={colors}
+                                />
+                            ) : null}
+                        </ScrollView>
                         <Pressable
                             onPress={async () => {
                                 // Persisted notifications mark-all-read
@@ -376,13 +408,15 @@ export default function NotificationsScreen() {
                             }}
                             accessibilityRole="button"
                             accessibilityLabel="Mark all read"
+                            disabled={newCount === 0}
                             style={({ pressed }) => [
                                 styles.markAllReadBtn,
                                 {
                                     backgroundColor: colors.backgroundElement,
                                     borderColor: colors.hair,
                                 },
-                                pressed && styles.pressed,
+                                newCount === 0 && { opacity: 0.45 },
+                                pressed && newCount > 0 && styles.pressed,
                             ]}>
                             <ThemedText
                                 style={[
@@ -394,42 +428,22 @@ export default function NotificationsScreen() {
                         </Pressable>
                     </View>
 
-                    {/* Filter chips */}
-                    <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.filterRow}>
-                        <FilterChip
-                            label={`All · ${items.length}`}
-                            active={filter === 'all'}
-                            onPress={() => setFilter('all')}
-                            colors={colors}
-                        />
-                        <FilterChip
-                            label={`Unread · ${newCount}`}
-                            active={filter === 'unread'}
-                            onPress={() => setFilter('unread')}
-                            colors={colors}
-                        />
-                        {mentionsCount > 0 ? (
-                            <FilterChip
-                                label={`Mentions · ${mentionsCount}`}
-                                active={filter === 'mentions'}
-                                onPress={() => setFilter('mentions')}
-                                dotColor={colors.accent}
-                                colors={colors}
-                            />
-                        ) : null}
-                        {conflictsCount > 0 ? (
-                            <FilterChip
-                                label={`Conflicts · ${conflictsCount}`}
-                                active={filter === 'conflicts'}
-                                onPress={() => setFilter('conflicts')}
-                                dotColor={colors.warn}
-                                colors={colors}
-                            />
-                        ) : null}
-                    </ScrollView>
+                    {/* Count meta — mono caps line below the filter row
+                        ("12 NEW · 8 TODAY"). Hidden entirely when both
+                        counts are zero so a quiet inbox doesn't render
+                        a redundant "0 NEW · 0 TODAY" line. */}
+                    {newCount > 0 || todayCount > 0 ? (
+                        <ThemedText
+                            style={[
+                                styles.countMeta,
+                                {
+                                    color: colors.inkFaint,
+                                    fontFamily: FontFamily.monoMedium,
+                                },
+                            ]}>
+                            {newCount} NEW · {todayCount} TODAY
+                        </ThemedText>
+                    ) : null}
 
                     {/* Buckets. onRowPress marks the underlying
                         persisted row read + routes to its href. Derived
@@ -832,23 +846,21 @@ const styles = StyleSheet.create({
 
     scroll: { paddingBottom: 64, gap: Spacing.three },
 
-    // ── Header row (back btn + counts + title + Mark all read)
-    // Phase 10 v3: this single row carries the entire chrome. The leading
-    // back chevron preserves return navigation since the screen is
-    // pushed (not on a tab), the meta + title block sits in the middle
-    // column, and the Mark-all-read pill anchors to the right edge.
-    // 16px horizontal so the back button has the same gutter as the
-    // section cards below.
-    headerRow: {
+    // ── Sub-route top bar (matches Profile / Members / Appearance).
+    // Same pattern: back chevron / centered 15/600 title / 32×32 right
+    // slot for visual symmetry. Hairline bottom border separates the
+    // chrome from the scrolling content below it.
+    topBar: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 16,
         paddingTop: 12,
-        paddingBottom: 6,
-        gap: 10,
+        paddingBottom: 12,
+        gap: Spacing.two,
+        borderBottomWidth: StyleSheet.hairlineWidth,
     },
-    headerBackBtn: {
+    topBarIconBtn: {
         width: 32,
         height: 32,
         borderRadius: 8,
@@ -856,30 +868,42 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    headerCounts: {
-        fontSize: 10,
-        letterSpacing: -0.2,
+    topBarTitle: { fontSize: 15, fontWeight: '600', letterSpacing: -0.3 },
+
+    // ── Filter row: horizontal chip scroll on the left, Mark-all-read
+    // pill anchored to the right edge. The flex split keeps the pill in
+    // a fixed position so it stays reachable even when extra chips
+    // (Mentions / Conflicts) push the scroll content past the viewport.
+    filterBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingTop: 12,
+        paddingBottom: 6,
     },
-    headerTitle: {
-        fontSize: 22,
-        fontWeight: '600',
-        letterSpacing: -0.6,
-        marginTop: 1,
+    filterRow: {
+        flexDirection: 'row',
+        gap: 6,
+        alignItems: 'center',
     },
     markAllReadBtn: {
         paddingHorizontal: 11,
         paddingVertical: 6,
         borderRadius: 7,
         borderWidth: StyleSheet.hairlineWidth,
+        flexShrink: 0,
     },
     markAllReadText: { fontSize: 12, fontWeight: '600', letterSpacing: -0.1 },
 
-    // ── Filter chips
-    filterRow: {
-        flexDirection: 'row',
-        gap: 6,
+    // ── Count meta — mono caps "N NEW · M TODAY" line below the filter
+    // row. Sits flush with the filter row's gutter so the eye reads it
+    // as a sub-label on the filter group.
+    countMeta: {
+        fontSize: 10,
+        letterSpacing: -0.2,
         paddingHorizontal: 16,
-        paddingVertical: 4,
+        paddingBottom: 4,
     },
     filterChip: {
         flexDirection: 'row',
