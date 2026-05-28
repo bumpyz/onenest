@@ -47,7 +47,12 @@ export function MiniCalendar({
     const now = new Date();
     const anchor = monthAnchor ?? now;
     const monthStart = startOfMonth(anchor);
-    const gridStart = startOfWeek(monthStart, { weekStartsOn: 0 });
+    // App convention: weeks start on Monday everywhere — Calendar week
+    // view, custody-band strips, schedule viewer all use weekStartsOn: 1.
+    // The date pickers were the only Sunday-first surface; this aligns
+    // them with the rest of the app so users don't see two different
+    // week orderings.
+    const gridStart = startOfWeek(monthStart, { weekStartsOn: 1 });
     const days: Date[] = [];
     for (let i = 0; i < 42; i++) {
         days.push(addDays(gridStart, i));
@@ -63,13 +68,12 @@ export function MiniCalendar({
                 },
             ]}>
             <View style={styles.calHeader}>
-                {/* Spec v2 side-fix (design_handoff_fab_rule README):
-                    weekday header glyphs disambiguated to "S M T W Th F Sa"
-                    so each label is unique. The old `S M T W T F S` set used
-                    "T" and "S" twice — visually fine but it forced a
-                    `${d}-${i}` React key as a workaround, and the user can
-                    misread the duplicated letters in a quick glance. */}
-                {['S', 'M', 'T', 'W', 'Th', 'F', 'Sa'].map((d) => (
+                {/* Monday-first day labels matching the app's
+                    week-orientation convention (Calendar, custody-band
+                    strip, schedule viewer all start Monday). Letters
+                    stay disambiguated — Tu/Th split the two Tuesdays-
+                    Thursday collision, Sa/Su split the weekend. */}
+                {['M', 'Tu', 'W', 'Th', 'F', 'Sa', 'Su'].map((d) => (
                     <ThemedText
                         key={d}
                         style={[
