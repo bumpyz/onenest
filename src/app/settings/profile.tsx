@@ -12,10 +12,13 @@
 // (ProfileEdit at line 660).
 
 import { Feather } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import { Image } from 'expo-image';
 import { Redirect, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Alert,
+    Modal,
     Platform,
     Pressable,
     ScrollView,
@@ -28,12 +31,22 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LoadingScreen } from '@/components/loading-screen';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { TimezonePicker } from '@/components/timezone-picker';
 import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
+import { useMyProfile } from '@/hooks/use-my-profile';
 import { signOut } from '@/lib/auth';
 import { PARENT_PALETTE } from '@/lib/colors';
-import { updateMyColor, updateMyDisplayName } from '@/lib/db';
+import {
+    deleteMyAvatar,
+    getProfileAvatarSignedUrl,
+    setMyAvatarUrl,
+    updateMyColor,
+    updateMyDefaultTimezone,
+    updateMyDisplayName,
+    uploadMyAvatar,
+} from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
 import { resolveDefaultTimezone } from '@/lib/timezones';
 import { useAuth } from '@/providers/auth-provider';
@@ -89,6 +102,14 @@ export default function ProfileSettingsScreen() {
         isLoading: membersLoading,
         refetch: refetchMembers,
     } = useHouseholdMembers(household?.id);
+    // Profile row (default_timezone + avatar_url). Members already carry
+    // color + display_name; we read profile separately for the two
+    // user-owned fields that aren't projected into household_members.
+    const {
+        profile,
+        isLoading: profileLoading,
+        refetch: refetchProfile,
+    } = useMyProfile();
 
     const myMember = members?.find((m) => m.profile_id === user?.id) ?? null;
 
@@ -103,6 +124,35 @@ export default function ProfileSettingsScreen() {
     const [colorError, setColorError] = useState<string | null>(null);
 
     const [signingOut, setSigningOut] = useState(false);
+
+    // #402: avatar state. `avatarSignedUrl` is the time-limited GET URL we
+    // render; `uploadingAvatar` flips the pencil bug to a spinner; the
+    // sheet-less `Alert.alert` action sheet on long-press / future overflow
+    // lives outside the screen for now (v1 = single tap → picker).
+    const [avatarSignedUrl, setAvatarSignedUrl] = useState<string | null>(null);
+    const [uploadingAvatar, setUploadingAvatar] = useState(false);
+    const [avatarError, setAvatarError] = useState<string | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        if (!profile?.avatar_url) {
+            setAvatarSignedUrl(null);
+            return;
+        }
+        (async () => {
+            const url = await getProfileAvatarSignedUrl(profile.avatar_url!);
+            if (!cancelled) setAvatarSignedUrl(url);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [profile?.avatar_url]);
+
+    // #402: time zone picker state. The TimezonePicker primitive (#148)
+    // takes value + onChange + onCancel. We mount it inside a Modal so
+    // the rest of the screen stays in place behind it.
+    const [tzPickerOpen, setTzPickerOpen] = useState(false);
+    const [savingTz, setSavingTz] = useState(false);
+    const [tzError, setTzError] = useState<string | null>(null);
 
     // Display-name value the input shows. Until the user types we render
     // the loaded member name; once they type we render their input. This
@@ -172,6 +222,106 @@ export default function ProfileSettingsScreen() {
         }
     };
 
+    const onPickAvatar = async () => {
+        if (uploadingAvatar) return;
+        setAvatarError(null);
+        try {
+            // Permissions on native — web doesn't need them and the API
+            // is a no-op there. Same shape as ContactForm's avatar pick.
+            if (Platform.OS !== 'web') {
+                const perm =
+                    await ImagePicker.requestMediaLibraryPermissionsAsync();
+                if (!perm.granted) {
+                    setAvatarError('Photo access permission was denied.');
+                    return;
+                }
+            }
+            const result = await ImagePicker.launchImageLibraryAsync({
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsEditing: true,
+                aspect: [1, 1],
+                quality: 0.85,
+            });
+            if (result.canceled || result.assets.length === 0) return;
+            const asset = result.assets[0];
+            if (!asset) return;
+            const response = await fetch(asset.uri);
+            const blob = await response.blob();
+            const ext = (asset.fileName?.split('.').pop() ?? 'jpg').toLowerCase();
+            setUploadingAvatar(true);
+            const path = await uploadMyAvatar(blob, ext);
+            await setMyAvatarUrl(path);
+            await refetchProfile();
+        } catch (err) {
+            console.error('avatar upload failed', err);
+            const msg = errorMessage(err);
+            if (Platform.OS === 'web') setAvatarError(msg);
+            else Alert.alert("Couldn't upload photo", msg);
+        } finally {
+            setUploadingAvatar(false);
+        }
+    };
+
+    const onRemoveAvatar = async () => {
+        if (!profile?.avatar_url) return;
+        setUploadingAvatar(true);
+        setAvatarError(null);
+        try {
+            await deleteMyAvatar(profile.avatar_url);
+            await setMyAvatarUrl(null);
+            await refetchProfile();
+        } catch (err) {
+            console.error('avatar remove failed', err);
+            const msg = errorMessage(err);
+            if (Platform.OS === 'web') setAvatarError(msg);
+            else Alert.alert("Couldn't remove photo", msg);
+        } finally {
+            setUploadingAvatar(false);
+        }
+    };
+
+    // Avatar interaction. On native we surface a 2-action sheet
+    // (Choose / Remove) when a photo is already set; on web we go
+    // straight to picker. "Remove" only appears when avatar_url is set.
+    const onAvatarPress = () => {
+        if (uploadingAvatar) return;
+        const hasPhoto = !!profile?.avatar_url;
+        if (Platform.OS === 'web' || !hasPhoto) {
+            void onPickAvatar();
+            return;
+        }
+        Alert.alert(
+            'Profile photo',
+            undefined,
+            [
+                { text: 'Choose new photo', onPress: () => void onPickAvatar() },
+                {
+                    text: 'Remove photo',
+                    style: 'destructive',
+                    onPress: () => void onRemoveAvatar(),
+                },
+                { text: 'Cancel', style: 'cancel' },
+            ],
+        );
+    };
+
+    const onPickTimezone = async (tz: string) => {
+        setTzPickerOpen(false);
+        if (!profile) return;
+        if (tz === profile.default_timezone) return;
+        setSavingTz(true);
+        setTzError(null);
+        try {
+            await updateMyDefaultTimezone(tz);
+            await refetchProfile();
+        } catch (err) {
+            console.error('updateMyDefaultTimezone failed', err);
+            setTzError(errorMessage(err));
+        } finally {
+            setSavingTz(false);
+        }
+    };
+
     const onSignOut = async () => {
         const doSignOut = async () => {
             setSigningOut(true);
@@ -196,7 +346,7 @@ export default function ProfileSettingsScreen() {
         }
     };
 
-    if (authLoading || householdsLoading || membersLoading) {
+    if (authLoading || householdsLoading || membersLoading || profileLoading) {
         return <LoadingScreen />;
     }
     if (!session || !user) return <Redirect href="/sign-in" />;
@@ -205,7 +355,11 @@ export default function ProfileSettingsScreen() {
 
     const avatarColor = myColor ?? colors.accent;
     const initial = (myMember.display_name?.[0] ?? '?').toUpperCase();
-    const tz = resolveDefaultTimezone();
+    // Time zone display: profile.default_timezone takes precedence when
+    // the user has explicitly picked one; otherwise we fall back to the
+    // device tz (same rule the rest of the app uses for event creation).
+    const tz = profile?.default_timezone ?? resolveDefaultTimezone();
+    const deviceTz = resolveDefaultTimezone();
 
     return (
         <ThemedView style={styles.container}>
@@ -260,7 +414,19 @@ export default function ProfileSettingsScreen() {
                         web without needing a real `box-shadow` (RN native
                         doesn't expose multi-stop shadows). */}
                     <View style={styles.avatarHero}>
-                        <View style={styles.avatarHeroWrap}>
+                        <Pressable
+                            onPress={onAvatarPress}
+                            disabled={uploadingAvatar}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                                profile?.avatar_url
+                                    ? 'Change profile photo'
+                                    : 'Upload profile photo'
+                            }
+                            style={({ pressed }) => [
+                                styles.avatarHeroWrap,
+                                pressed && !uploadingAvatar && styles.pressed,
+                            ]}>
                             <View
                                 style={[
                                     styles.avatarOuterHalo,
@@ -278,7 +444,21 @@ export default function ProfileSettingsScreen() {
                                     styles.avatar,
                                     { backgroundColor: avatarColor },
                                 ]}>
-                                <ThemedText style={styles.avatarInitial}>{initial}</ThemedText>
+                                {avatarSignedUrl ? (
+                                    <Image
+                                        source={{ uri: avatarSignedUrl }}
+                                        style={styles.avatarImage}
+                                        contentFit="cover"
+                                        // Signed URLs include a token that
+                                        // makes them effectively unique per
+                                        // upload, so transitions land cleanly.
+                                        transition={200}
+                                    />
+                                ) : (
+                                    <ThemedText style={styles.avatarInitial}>
+                                        {initial}
+                                    </ThemedText>
+                                )}
                             </View>
                             <View
                                 style={[
@@ -288,9 +468,17 @@ export default function ProfileSettingsScreen() {
                                         borderColor: colors.hair,
                                     },
                                 ]}>
-                                <Feather name="edit-2" size={11} color={colors.text} />
+                                <Feather
+                                    name={
+                                        uploadingAvatar
+                                            ? 'upload-cloud'
+                                            : 'edit-2'
+                                    }
+                                    size={11}
+                                    color={colors.text}
+                                />
                             </View>
-                        </View>
+                        </Pressable>
                         <ThemedText
                             style={[
                                 styles.avatarCaption,
@@ -299,8 +487,22 @@ export default function ProfileSettingsScreen() {
                                     fontFamily: FontFamily.monoMedium,
                                 },
                             ]}>
-                            Tap to upload photo
+                            {uploadingAvatar
+                                ? 'Uploading…'
+                                : profile?.avatar_url
+                                  ? 'Tap to change photo'
+                                  : 'Tap to upload photo'}
                         </ThemedText>
+                        {avatarError ? (
+                            <ThemedText
+                                type="small"
+                                style={[
+                                    styles.errorText,
+                                    { color: BrandColors.error },
+                                ]}>
+                                {avatarError}
+                            </ThemedText>
+                        ) : null}
                     </View>
 
                     {/* Display name */}
@@ -547,22 +749,39 @@ export default function ProfileSettingsScreen() {
                                     borderColor: colors.hair,
                                 },
                             ]}>
+                            {/* Email is bound to the auth account and
+                                deliberately read-only — changing it would
+                                go through Supabase auth verification, not
+                                a profile update. */}
                             <AccountRow
                                 label="Email"
                                 value={user.email ?? '—'}
                                 colors={colors}
                             />
-                            <AccountRow
-                                label="Phone"
-                                value="—"
-                                colors={colors}
-                            />
+                            {/* Phone row dropped — we don't have a phone
+                                column on profiles and there's no product
+                                use yet (see chat #2025-05-28). */}
                             <AccountRow
                                 label="Time zone"
-                                value={tz}
+                                value={savingTz ? 'Saving…' : tz}
                                 colors={colors}
+                                onPress={
+                                    savingTz
+                                        ? undefined
+                                        : () => setTzPickerOpen(true)
+                                }
                                 last
                             />
+                            {tzError ? (
+                                <ThemedText
+                                    type="small"
+                                    style={[
+                                        styles.errorText,
+                                        { color: BrandColors.error },
+                                    ]}>
+                                    {tzError}
+                                </ThemedText>
+                            ) : null}
                         </View>
                     </View>
 
@@ -595,34 +814,47 @@ export default function ProfileSettingsScreen() {
                     </View>
                 </ScrollView>
             </SafeAreaView>
+            {/* #402: TimezonePicker as a full-screen Modal. SheetShell
+                isn't ideal here — the picker is a tall scrollable list
+                that benefits from filling the viewport. ESC / back also
+                routes through Modal's onRequestClose, which the picker's
+                onCancel hook into. */}
+            <Modal
+                visible={tzPickerOpen}
+                onRequestClose={() => setTzPickerOpen(false)}
+                animationType="slide"
+                presentationStyle="pageSheet">
+                <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+                    <TimezonePicker
+                        value={profile?.default_timezone ?? null}
+                        deviceTimezone={deviceTz}
+                        onChange={(picked) => void onPickTimezone(picked)}
+                        onCancel={() => setTzPickerOpen(false)}
+                    />
+                </SafeAreaView>
+            </Modal>
         </ThemedView>
     );
 }
 
-// Single label + mono-value row used inside the Account SGroup.
-// No chevron because none of these route anywhere yet (email/phone/tz
-// editors don't exist in this codebase). Keeping the row visually consistent
-// with the rest of the screen rather than inventing a one-off layout.
+// Single label + mono-value row used inside the Account SGroup. Tappable
+// when an onPress is provided (Time zone row); render-only otherwise
+// (Email — bound to the auth account, not editable here).
 function AccountRow({
     label,
     value,
     colors,
     last,
+    onPress,
 }: {
     label: string;
     value: string;
     colors: Palette;
     last?: boolean;
+    onPress?: () => void;
 }) {
-    return (
-        <View
-            style={[
-                styles.accountRow,
-                !last && {
-                    borderBottomColor: colors.hair,
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                },
-            ]}>
+    const Inner = (
+        <>
             <ThemedText
                 type="smallBold"
                 style={{ flex: 1, color: colors.text }}>
@@ -639,6 +871,43 @@ function AccountRow({
                 ]}>
                 {value}
             </ThemedText>
+            {onPress ? (
+                <Feather
+                    name="chevron-right"
+                    size={14}
+                    color={colors.inkFaint}
+                />
+            ) : null}
+        </>
+    );
+    if (onPress) {
+        return (
+            <Pressable
+                onPress={onPress}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${label.toLowerCase()}`}
+                style={({ pressed }) => [
+                    styles.accountRow,
+                    !last && {
+                        borderBottomColor: colors.hair,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                    },
+                    pressed && styles.pressed,
+                ]}>
+                {Inner}
+            </Pressable>
+        );
+    }
+    return (
+        <View
+            style={[
+                styles.accountRow,
+                !last && {
+                    borderBottomColor: colors.hair,
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                },
+            ]}>
+            {Inner}
         </View>
     );
 }
@@ -712,6 +981,11 @@ const styles = StyleSheet.create({
         fontSize: 36,
         fontWeight: '700',
         letterSpacing: -1,
+    },
+    avatarImage: {
+        width: 96,
+        height: 96,
+        borderRadius: 48,
     },
     avatarPencilBug: {
         position: 'absolute',
