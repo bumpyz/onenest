@@ -27,6 +27,10 @@ import {
     RepeatsPickerSheet,
     SheetShell,
 } from '@/components/ds';
+import {
+    EventReminderSheet,
+    reminderRowLabel,
+} from '@/components/event/event-reminder-sheet';
 import { EventTaskSection, type LocalTask } from '@/components/event-task-section';
 import { PlacesAutocomplete } from '@/components/places-autocomplete';
 import { ThemedText } from '@/components/themed-text';
@@ -83,6 +87,14 @@ export type EventFormSubmitInput = NewEventInput & {
      * which DB rows to insert, update, or delete. Empty array = no tasks.
      */
     tasks: LocalTask[];
+    /**
+     * Caller's reminder offset (#308). Signed minutes relative to
+     * starts_at; null = no reminder. The screen persists by calling
+     * setEventRemindersFor(eventId, currentUserId, offset !== null ? [offset] : [])
+     * after the event row exists. When `notifyOtherParent` is true the
+     * screen also fans the same offset out to every other tagged adult.
+     */
+    reminderOffsetMinutes: number | null;
 };
 
 export type EventFormValues = {
@@ -146,6 +158,21 @@ export type EventFormValues = {
      * event.notify_other_parent on edit.
      */
     notifyOtherParent: boolean;
+    /**
+     * Reminder offset in minutes relative to the event start (#308).
+     * Signed: negative = before the event (the common case);
+     * positive = after; 0 = at start time. null = no reminder for the
+     * caller.
+     *
+     * This represents the CURRENT USER's reminder only. The fan-out to
+     * "other parent" rows happens at submit time when notifyOtherParent
+     * is true. Other recipients can have independent reminders (other
+     * offsets, off, etc.) — they're managed from their own sessions.
+     *
+     * Seeded from listEventRemindersFor(eventId, currentUserId) on edit;
+     * defaults to null on create.
+     */
+    reminderOffsetMinutes: number | null;
 };
 
 type Props = {
@@ -317,6 +344,15 @@ export function EventForm({
     const [notifyOtherParent, setNotifyOtherParent] = useState<boolean>(
         initialValues.notifyOtherParent,
     );
+    // #308: caller's reminder offset, signed minutes relative to event
+    // start. null = no reminder. Seeded from
+    // listEventRemindersFor(eventId, currentUserId) on edit; null on
+    // create. Picker UI opens via reminderSheetOpen + EventReminderSheet
+    // below.
+    const [reminderOffsetMinutes, setReminderOffsetMinutes] = useState<
+        number | null
+    >(initialValues.reminderOffsetMinutes);
+    const [reminderSheetOpen, setReminderSheetOpen] = useState(false);
     // Multi-responsible state — `selectedIds` is the set of tagged adults,
     // `leadId` is the one flagged `is_lead` (gets the LEAD chip + primary
     // push). Two pieces because the design distinguishes "is X tagged" from
@@ -737,6 +773,7 @@ export function EventForm({
                 responsibleAlternation: alternation,
                 isPrivate,
                 notifyOtherParent,
+                reminderOffsetMinutes,
                 locationName: locationName.trim(),
                 locationMapsUrl: locationMapsUrl.trim(),
                 locationPlace: pickedPlace,
@@ -1550,23 +1587,26 @@ export function EventForm({
 
                     {/* ─── NOTIFICATIONS ───────────────────────────────────
                         Spec 04.2 canvas: two FormRows under "Notifications".
-                          • "Remind me" — per-recipient reminder lead time
-                            (#419). Stays "Coming soon" until that lands;
-                            the picker shape is correct but the schema
-                            (per_recipient_reminder_offsets) isn't built yet.
+                          • "Remind me" — caller's reminder lead time
+                            (#308). Picker writes into reminderOffsetMinutes;
+                            the screen persists via setEventRemindersFor
+                            after the event row is saved. Per-recipient
+                            offsets for other tagged adults are #419 —
+                            this row only edits the caller's own row.
                           • "Also notify other parent" — persisted to
                             events.notify_other_parent (#322 / migration
-                            0046). The actual fire path lands with #308,
-                            but the column stores the user's intent so the
-                            reminder dispatcher picks it up automatically
-                            when #308 ships. */}
+                            0046). When true the screen fans the same
+                            offset out to every other tagged adult at
+                            submit time. */}
                     <FormSectionLabel>Notifications</FormSectionLabel>
                     <FormGroup flush>
                         <FormRow
                             label="Remind me"
-                            value="Coming soon"
-                            muted
+                            value={reminderRowLabel(reminderOffsetMinutes)}
                             chevron
+                            onPress={
+                                locked ? undefined : () => setReminderSheetOpen(true)
+                            }
                         />
                         <FormRow
                             label="Also notify other parent"
@@ -1823,6 +1863,22 @@ export function EventForm({
                     setRepeatsPickerOpen(false);
                 }}
                 onClose={() => setRepeatsPickerOpen(false)}
+            />
+
+            {/* #308: Remind-me picker. Edits the caller's reminder
+                offset only; the screen handler fans the value out to
+                the other parent when notifyOtherParent is on. The sheet
+                is anchored to the form's current date + startTime so
+                the sub-labels show actual fire times as the user is
+                still composing the event. */}
+            <EventReminderSheet
+                open={reminderSheetOpen}
+                onClose={() => setReminderSheetOpen(false)}
+                value={reminderOffsetMinutes}
+                eventDate={date}
+                eventStartTime={startTime}
+                allDay={allDay}
+                onSave={(offset) => setReminderOffsetMinutes(offset)}
             />
 
             {/* Alternation picker — 3 options (Off / Alternates /

@@ -11,7 +11,12 @@ import { useHouseholds } from '@/hooks/use-households';
 import { useLists } from '@/hooks/use-lists';
 import { useLocations } from '@/hooks/use-locations';
 import { useMyRole } from '@/hooks/use-my-role';
-import { createEvent, createList, createTask } from '@/lib/db';
+import {
+    createEvent,
+    createList,
+    createTask,
+    setEventRemindersFor,
+} from '@/lib/db';
 import { resolveLocationId } from '@/lib/locations';
 import { resolveDefaultTimezone } from '@/lib/timezones';
 import { useAuth } from '@/providers/auth-provider';
@@ -133,6 +138,9 @@ export default function NewEventScreen() {
             // creator's notification scope applies unless the user
             // explicitly broadcasts.
             notifyOtherParent: false,
+            // #308 — no caller reminder by default on create. User can
+            // dial one in from the Notifications section before save.
+            reminderOffsetMinutes: null,
         };
     }, [user, paramDate, paramStartTime, paramEndTime]);
 
@@ -176,6 +184,29 @@ export default function NewEventScreen() {
             const created = await createEvent(household.id, { ...input, locationId });
             eventId = created.id;
             createdEventIdRef.current = eventId;
+        }
+        // #308 — write the caller's reminder row before tasks. Empty
+        // offset list = explicitly "no reminder for me", which clears
+        // any prior row created by a retry. If the toggle "Also notify
+        // other parent" is on AND the user picked an offset, fan the
+        // same offset out to every OTHER tagged adult — schema migration
+        // 0053's comment calls this out as the design intent. Other
+        // recipients can later override their own row from their own
+        // session if they want a different lead time; we don't try to
+        // be clever about merging across sessions here.
+        const myOffset = input.reminderOffsetMinutes;
+        await setEventRemindersFor(
+            eventId,
+            user.id,
+            myOffset !== null ? [myOffset] : [],
+        );
+        if (input.notifyOtherParent && myOffset !== null) {
+            const otherAdults = (input.responsibles ?? [])
+                .map((r) => r.profileId)
+                .filter((pid) => pid !== user.id);
+            for (const pid of otherAdults) {
+                await setEventRemindersFor(eventId, pid, [myOffset]);
+            }
         }
         // Attach any tasks the user added inline. We do this AFTER createEvent because
         // event_id is the FK target and we need a real id. Failures here are surfaced

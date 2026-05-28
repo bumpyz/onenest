@@ -1,6 +1,6 @@
 import { format, parseISO } from 'date-fns';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -26,7 +26,9 @@ import {
     deleteEvent,
     deleteEventOccurrenceOverride,
     deleteTask,
+    listEventRemindersFor,
     setEventOccurrenceOverride,
+    setEventRemindersFor,
     setTaskCompleted,
     updateEvent,
     updateTask,
@@ -103,8 +105,46 @@ export default function EditEventScreen() {
             ? occurrenceOverrideMap.get(`${id}|${occurrenceDate}`) ?? null
             : null;
 
+    // #308 — load the caller's existing reminder for this event so the
+    // picker seeds with their current offset instead of "Off". `null`
+    // here means "no row exists" once `remindersLoaded` flips true; we
+    // distinguish the loaded-empty case from the still-loading case
+    // with a separate flag so the form doesn't open with a stale seed.
+    const [callerReminderOffset, setCallerReminderOffset] = useState<
+        number | null
+    >(null);
+    const [remindersLoaded, setRemindersLoaded] = useState(false);
+    useEffect(() => {
+        if (!event || !user) return;
+        let cancelled = false;
+        setRemindersLoaded(false);
+        (async () => {
+            try {
+                const rows = await listEventRemindersFor(event.id, user.id);
+                if (cancelled) return;
+                // The picker is single-select. If multiple rows exist
+                // (legacy or a future multi-offset model), pick the
+                // most-negative offset — that's the earliest reminder
+                // and the most useful one to show by default.
+                const earliest = rows.length
+                    ? Math.min(...rows.map((r) => r.offset_minutes))
+                    : null;
+                setCallerReminderOffset(earliest);
+            } catch (err) {
+                console.error('listEventRemindersFor failed', err);
+                if (!cancelled) setCallerReminderOffset(null);
+            } finally {
+                if (!cancelled) setRemindersLoaded(true);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [event, user]);
+
     const initialValues = useMemo<EventFormValues | null>(() => {
         if (!event) return null;
+        if (!remindersLoaded) return null;
         const start = new Date(event.starts_at);
         const end = new Date(event.ends_at);
         // Prefer the linked location's name; fall back to legacy text.
@@ -174,8 +214,13 @@ export default function EditEventScreen() {
             // "Also notify other parent" (#322) — same load/default
             // pattern as is_private.
             notifyOtherParent: event.notify_other_parent ?? false,
+            // #308 — seed from the caller's existing reminder row (or
+            // null when there isn't one). Loaded above via
+            // listEventRemindersFor; the gate on `remindersLoaded`
+            // ensures we never render the form with a stale seed.
+            reminderOffsetMinutes: callerReminderOffset,
         };
-    }, [event, locations]);
+    }, [event, locations, remindersLoaded, callerReminderOffset]);
 
     if (
         authLoading ||
@@ -235,6 +280,20 @@ export default function EditEventScreen() {
             { place: input.locationPlace },
         );
         await updateEvent(event.id, { ...input, locationId });
+
+        // #308 — write the caller's reminder. Edit-mode only touches
+        // the current user's row: stomping over the other parent's
+        // customizations across saves would be surprising. Their
+        // reminders are theirs to manage from their own session. The
+        // create flow handles the initial fan-out when
+        // notifyOtherParent is on.
+        await setEventRemindersFor(
+            event.id,
+            user.id,
+            input.reminderOffsetMinutes !== null
+                ? [input.reminderOffsetMinutes]
+                : [],
+        );
 
         // Diff tasks against the initial snapshot taken at mount. Three buckets:
         //   - In initial but not in final → DELETE
