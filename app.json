@@ -60,8 +60,7 @@
             "./assets/fonts/GeistMono-SemiBold.ttf"
           ]
         }
-      ],
-      "@react-native-community/datetimepicker"
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
