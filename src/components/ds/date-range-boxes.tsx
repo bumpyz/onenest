@@ -23,60 +23,64 @@ function DateBox({ label, value, sub, onPress }: DateBoxProps) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
-    const inner = (
-        <View
-            style={[
-                styles.box,
-                {
-                    backgroundColor: colors.backgroundInset,
-                    borderColor: colors.hair,
-                },
-            ]}>
-            <ThemedText
-                style={[
-                    styles.boxLabel,
-                    {
-                        color: colors.inkFaint,
-                        fontFamily: FontFamily.monoSemiBold,
-                    },
-                ]}>
-                {label.toUpperCase()}
-            </ThemedText>
-            <ThemedText
-                style={[
-                    styles.boxValue,
-                    {
-                        color: colors.text,
-                        fontFamily: FontFamily.monoSemiBold,
-                    },
-                ]}
-                numberOfLines={1}>
-                {value}
-            </ThemedText>
-            <ThemedText
-                style={[
-                    styles.boxSub,
-                    {
-                        color: colors.inkFaint,
-                        fontFamily: FontFamily.monoMedium,
-                    },
-                ]}>
-                {sub}
-            </ThemedText>
-        </View>
-    );
-
-    if (!onPress) return inner;
+    // Always render through Pressable, even when there's no onPress.
+    // Switching between Pressable and a bare View based on onPress
+    // makes RN's flex measurement treat the two boxes asymmetrically:
+    // the From box (wrapped) ended up wider than the To box (unwrapped)
+    // in single-day mode, where onPressTo is undefined. Keeping the
+    // wrapper consistent locks the widths to flex:1 + flexBasis:0 in
+    // both states.
+    const interactive = typeof onPress === 'function';
     return (
         <Pressable
             onPress={onPress}
-            accessibilityRole="button"
+            disabled={!interactive}
+            accessibilityRole={interactive ? 'button' : 'text'}
             accessibilityLabel={`${label} date · ${value}`}
             style={({ pressed }) => [
                 styles.boxPressable,
-                pressed && styles.pressed,
+                pressed && interactive && styles.pressed,
             ]}>
-            {inner}
+            <View
+                style={[
+                    styles.box,
+                    {
+                        backgroundColor: colors.backgroundInset,
+                        borderColor: colors.hair,
+                    },
+                ]}>
+                <ThemedText
+                    style={[
+                        styles.boxLabel,
+                        {
+                            color: colors.inkFaint,
+                            fontFamily: FontFamily.monoSemiBold,
+                        },
+                    ]}>
+                    {label.toUpperCase()}
+                </ThemedText>
+                <ThemedText
+                    style={[
+                        styles.boxValue,
+                        {
+                            color: colors.text,
+                            fontFamily: FontFamily.monoSemiBold,
+                        },
+                    ]}
+                    numberOfLines={1}>
+                    {value}
+                </ThemedText>
+                <ThemedText
+                    style={[
+                        styles.boxSub,
+                        {
+                            color: colors.inkFaint,
+                            fontFamily: FontFamily.monoMedium,
+                        },
+                    ]}>
+                    {sub}
+                </ThemedText>
+            </View>
         </Pressable>
     );
 }
@@ -133,7 +137,12 @@ const styles = StyleSheet.create({
         gap: 8,
         alignItems: 'stretch',
     },
-    boxPressable: { flex: 1 },
+    // flex:1 + flexBasis:0 + minWidth:0 forces equal-width regardless
+    // of content. Without flexBasis:0 the longer "Sun · Jun 8" value
+    // can claim more of the row than "Sat · Jun 7" via content-based
+    // sizing. minWidth:0 lets numberOfLines={1} actually clip rather
+    // than expanding to fit the value.
+    boxPressable: { flex: 1, flexBasis: 0, minWidth: 0 },
     box: {
         flex: 1,
         padding: 12,
