@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 import { format } from 'date-fns';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -41,6 +42,18 @@ export function useCustodyOverrides(
     useEffect(() => {
         refetch();
     }, [refetch]);
+
+    // #494 finding: saving an override from /custody/[date] and
+    // navigating back wasn't updating any surface that reads overrides
+    // (Today strip, Family Hub hero, /custody/schedule, calendar
+    // custody band). All those consumers read this hook, so refetching
+    // on screen-focus is the single-point fix. Mirrors the pattern
+    // applied to useCustodySchedule for #491 finding #1.
+    useFocusEffect(
+        useCallback(() => {
+            void refetch();
+        }, [refetch]),
+    );
 
     return { overrides, isLoading, error, refetch };
 }
