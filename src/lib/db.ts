@@ -472,15 +472,49 @@ export type CustodyScheduleInput = {
     notifyExternals?: boolean;
 };
 
+// Custody override kind — what's happening. Migration 0055 added the
+// enum + column; the design's six-chip strip drives the picker.
+export type CustodyOverrideKind =
+    | 'family_trip'
+    | 'birthday'
+    | 'work_travel'
+    | 'anniversary'
+    | 'just_swapping'
+    | 'other';
+
+// Approval workflow status. Resolver applies an override only when
+// status is 'auto_approved' or 'approved'; 'pending' and 'declined'
+// rows are visible (for the approval UI + history) but inert.
+export type CustodyOverrideStatus =
+    | 'auto_approved'
+    | 'pending'
+    | 'approved'
+    | 'declined';
+
 export type CustodyOverride = {
     id: string;
     household_id: string;
+    /** Inclusive start of the override range (legacy single-date column
+     *  name preserved for backward compat with existing queries / hooks). */
     override_date: string; // YYYY-MM-DD
+    /** Inclusive end of the override range. Equals override_date for
+     *  single-day overrides (the default the v1 client wrote). */
+    end_date: string; // YYYY-MM-DD
     custodian_profile_id: string;
     note: string | null;
-    /** Null = whole-household override. Non-null scopes the override to
-     *  one child (e.g. "Mei stays with Casey on Friday"). */
-    child_id: string | null;
+    /** Kids the override scopes to. Empty array = household-wide (the
+     *  only shape the v1 client could produce). #494 NewOverride spec. */
+    child_ids: string[];
+    kind: CustodyOverrideKind;
+    approval_status: CustodyOverrideStatus;
+    /** External co-parent profile_ids whose decision is needed. Populated
+     *  server-side by create_custody_override based on child_external_coparents. */
+    requires_approval_from: string[];
+    notify_affected: boolean;
+    add_to_activity_feed: boolean;
+    reassign_events: boolean;
+    decided_at: string | null;
+    decided_by_profile_id: string | null;
     created_by: string;
     created_at: string;
     updated_at: string;
@@ -2056,59 +2090,155 @@ export async function getCustodyOverridesForRange(
     rangeStartDate: string, // YYYY-MM-DD inclusive
     rangeEndDate: string, // YYYY-MM-DD inclusive
 ): Promise<CustodyOverride[]> {
-    // Whole-household overrides only (child_id IS NULL). Migration
-    // 0048 added the column to enable per-child overrides as a future
-    // feature, but the per-child editor + resolver work is still
-    // deferred (#373). Until then, returning both shapes from this
-    // fetch breaks buildOverrideMap (date-only key → last-write-wins
-    // collision between household-wide + per-child rows on the same
-    // date). Filter at fetch time so callers don't have to know.
+    // Multi-day overrides intersect the query window iff:
+    //   override_date <= rangeEnd AND end_date >= rangeStart
+    // The (household_id, override_date, end_date) index from 0055
+    // covers this lookup.
     //
-    // When the per-child editor lands, this filter goes away and the
-    // resolver layer learns to thread `childId` through its lookups.
+    // Status filter: 'pending' + 'declined' are visible (so the
+    // approval UI can show them as history) but the resolver path
+    // also calls this helper, so we let it return all rows and rely
+    // on buildOverrideMap in lib/custody.ts to filter by status.
+    // Callers that want only effective rows can post-filter; callers
+    // that want pending rows (approval banner) get them too.
     const { data, error } = await supabase
         .from('custody_overrides')
         .select('*')
         .eq('household_id', householdId)
-        .is('child_id', null)
-        .gte('override_date', rangeStartDate)
-        .lte('override_date', rangeEndDate);
+        .lte('override_date', rangeEndDate)
+        .gte('end_date', rangeStartDate);
     if (error) throw error;
     return (data ?? []) as CustodyOverride[];
 }
 
+/**
+ * Legacy single-day override path. Kept for the existing /custody/[date]
+ * editor until Phase D ships the multi-day rewrite. New code should call
+ * createCustodyOverride instead — that's the one that computes
+ * requires_approval_from server-side from child_external_coparents.
+ *
+ * Multi-day callers cannot use this helper; it always writes a single
+ * date with end_date = override_date and approval_status defaults to
+ * the column default ('auto_approved'). To stamp out a row that needs
+ * external approval, use createCustodyOverride.
+ */
 export async function upsertCustodyOverride(
     householdId: string,
     overrideDate: string,
     custodianProfileId: string,
     note: string | null,
-    childId: string | null = null,
 ): Promise<CustodyOverride> {
     const userId = await currentUserId();
-    // The 0048 migration splits the unique constraint into two partial
-    // indexes: one for whole-household overrides (child_id IS NULL) and
-    // one per-child. Supabase's onConflict expects a single matching
-    // unique target, so we route to the right one based on whether
-    // child_id is provided.
-    const conflictTarget =
-        childId === null
-            ? 'household_id,override_date'
-            : 'household_id,override_date,child_id';
-    const { data, error } = await supabase
+    // 0056 dropped both partial uniques (and the child_id column).
+    // We can't onConflict to upsert anymore — there's no unique target
+    // matching (household_id, override_date) alone. Emulate "edit
+    // today's override" with a select-then-insert/update: most legacy
+    // callers expect single-day household-wide semantics, so this is
+    // safe even though it costs a round trip.
+    const { data: existing, error: readErr } = await supabase
         .from('custody_overrides')
-        .upsert(
-            {
-                household_id: householdId,
-                override_date: overrideDate,
+        .select('id')
+        .eq('household_id', householdId)
+        .eq('override_date', overrideDate)
+        .eq('end_date', overrideDate)
+        .eq('child_ids', '{}') // household-wide only — matches legacy semantic
+        .limit(1)
+        .maybeSingle();
+    if (readErr) throw readErr;
+
+    if (existing) {
+        const { data, error } = await supabase
+            .from('custody_overrides')
+            .update({
                 custodian_profile_id: custodianProfileId,
                 note: note?.trim() || null,
-                child_id: childId,
-                created_by: userId,
-            },
-            { onConflict: conflictTarget },
-        )
+            })
+            .eq('id', existing.id)
+            .select()
+            .single();
+        if (error) throw error;
+        return data as CustodyOverride;
+    }
+    const { data, error } = await supabase
+        .from('custody_overrides')
+        .insert({
+            household_id: householdId,
+            override_date: overrideDate,
+            // end_date defaults to override_date via trigger when null,
+            // but we set it explicitly so the legacy path is obvious.
+            end_date: overrideDate,
+            custodian_profile_id: custodianProfileId,
+            note: note?.trim() || null,
+            // child_ids + kind + approval_status fall through to their
+            // column defaults ('{}', 'just_swapping', 'auto_approved').
+            created_by: userId,
+        })
         .select()
         .single();
+    if (error) throw error;
+    return data as CustodyOverride;
+}
+
+/**
+ * v2 override creator — wraps the server-side RPC that:
+ *   • validates the caller is a household parent
+ *   • validates every child_id belongs to the household
+ *   • computes requires_approval_from from child_external_coparents
+ *   • sets approval_status to 'pending' when any external co-parent is
+ *     in the approval set, else 'auto_approved'
+ *
+ * Use this from the NewOverride editor (Phase D). The legacy
+ * upsertCustodyOverride stays for the single-day /custody/[date] form
+ * until that screen is rewritten.
+ */
+export type CustodyOverrideCreateInput = {
+    householdId: string;
+    startDate: string; // YYYY-MM-DD inclusive
+    endDate: string;   // YYYY-MM-DD inclusive
+    custodianProfileId: string;
+    childIds: string[]; // empty = household-wide
+    kind: CustodyOverrideKind;
+    note: string | null;
+    /** Defaults to true. Persisted with the row so reading it later tells
+     *  the full story without joining a separate notifications log. */
+    notifyAffected?: boolean;
+    addToActivityFeed?: boolean;
+    reassignEvents?: boolean;
+};
+
+export async function createCustodyOverride(
+    input: CustodyOverrideCreateInput,
+): Promise<CustodyOverride> {
+    const { data, error } = await supabase.rpc('create_custody_override', {
+        p_household_id: input.householdId,
+        p_start_date: input.startDate,
+        p_end_date: input.endDate,
+        p_custodian_profile_id: input.custodianProfileId,
+        p_child_ids: input.childIds,
+        p_kind: input.kind,
+        p_note: input.note,
+        p_notify_affected: input.notifyAffected ?? true,
+        p_add_to_activity_feed: input.addToActivityFeed ?? true,
+        p_reassign_events: input.reassignEvents ?? true,
+    });
+    if (error) throw error;
+    return data as CustodyOverride;
+}
+
+/**
+ * External co-parent decides a pending override. Returns the updated row.
+ * Household parents can also call this (decision-by-the-asker path —
+ * rare today but kept symmetric for the future intra-household approval
+ * case).
+ */
+export async function decideCustodyOverride(
+    overrideId: string,
+    decision: 'approved' | 'declined',
+): Promise<CustodyOverride> {
+    const { data, error } = await supabase.rpc('decide_custody_override', {
+        p_override_id: overrideId,
+        p_decision: decision,
+    });
     if (error) throw error;
     return data as CustodyOverride;
 }
@@ -2116,17 +2246,30 @@ export async function upsertCustodyOverride(
 export async function deleteCustodyOverride(
     householdId: string,
     overrideDate: string,
-    childId: string | null = null,
 ): Promise<void> {
-    let query = supabase
+    // Legacy single-day path. Matches the row written by
+    // upsertCustodyOverride above (single-day, household-wide). Won't
+    // delete multi-day or per-kid overrides — those need a by-id helper
+    // (deleteCustodyOverrideById) which Phase D adds when the new
+    // editor needs it.
+    const { error } = await supabase
         .from('custody_overrides')
         .delete()
         .eq('household_id', householdId)
-        .eq('override_date', overrideDate);
-    // Match the same scope as upsert — whole-household vs. per-child.
-    // .eq doesn't accept null; use .is() for the NULL match.
-    query = childId === null ? query.is('child_id', null) : query.eq('child_id', childId);
-    const { error } = await query;
+        .eq('override_date', overrideDate)
+        .eq('end_date', overrideDate)
+        .eq('child_ids', '{}');
+    if (error) throw error;
+}
+
+/** Delete an override by id — Phase D's multi-day editor uses this. */
+export async function deleteCustodyOverrideById(
+    overrideId: string,
+): Promise<void> {
+    const { error } = await supabase
+        .from('custody_overrides')
+        .delete()
+        .eq('id', overrideId);
     if (error) throw error;
 }
 

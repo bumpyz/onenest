@@ -177,13 +177,69 @@ export function custodianProfileIdOnDate(
 
 /**
  * Builds a `YYYY-MM-DD` → CustodyOverride map for fast lookup during rendering.
+ *
+ * Three filters happen here so callers don't have to:
+ *
+ *   • Status: only rows where approval_status is 'auto_approved' or
+ *     'approved' are applied. 'pending' (awaiting external co-parent
+ *     decision) and 'declined' rows are visible to callers fetching
+ *     overrides for the approval UI, but they should NOT affect the
+ *     resolved custodian — pretend they don't exist for resolver
+ *     purposes.
+ *
+ *   • Per-kid scope: per-kid overrides (child_ids non-empty) are also
+ *     skipped here. The resolver works at the household level — the
+ *     "who has the kids today" question. A per-kid override is about
+ *     one specific kid's exception to that and lives outside this map.
+ *     Phase D+ may surface a parallel per-kid map; this one stays
+ *     household-wide.
+ *
+ *   • Date range: multi-day overrides expand into one map entry per
+ *     date in [override_date..end_date]. The legacy single-day map
+ *     shape is preserved, but a 3-day override now contributes 3 entries.
+ *
+ * If two effective rows happen to cover the same date (e.g. due to
+ * data drift), the later-inserted one wins via a created_at sort.
  */
 export function buildOverrideMap(
     overrides: CustodyOverride[] | null | undefined,
 ): Map<string, CustodyOverride> {
     const map = new Map<string, CustodyOverride>();
-    for (const o of overrides ?? []) {
-        map.set(o.override_date, o);
+    if (!overrides || overrides.length === 0) return map;
+
+    // Newer rows win when expanding overlaps. Sort ascending so the
+    // later overwrite naturally takes effect during the loop.
+    const sorted = [...overrides].sort((a, b) =>
+        a.created_at.localeCompare(b.created_at),
+    );
+
+    for (const o of sorted) {
+        // Status filter — see docstring.
+        if (
+            o.approval_status !== 'auto_approved' &&
+            o.approval_status !== 'approved'
+        ) {
+            continue;
+        }
+        // Per-kid filter — see docstring.
+        if (o.child_ids && o.child_ids.length > 0) {
+            continue;
+        }
+        // Expand the range. parseISO interprets YYYY-MM-DD as local
+        // midnight, matching the rest of the resolver's calendar-day
+        // arithmetic.
+        const start = parseISO(o.override_date);
+        const end = parseISO(o.end_date);
+        const days = Math.max(0, differenceInCalendarDays(end, start));
+        for (let i = 0; i <= days; i++) {
+            const d = new Date(
+                start.getFullYear(),
+                start.getMonth(),
+                start.getDate() + i,
+            );
+            const key = format(d, 'yyyy-MM-dd');
+            map.set(key, o);
+        }
     }
     return map;
 }
