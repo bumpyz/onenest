@@ -46,6 +46,7 @@ import { usePendingInvitations } from '@/hooks/use-pending-invitations';
 import {
     createInvitation,
     getExternalCoparentsByChild,
+    resendInvitation,
     revokeInvitation,
     type ChildExternalCoparent,
     type HouseholdMember,
@@ -95,22 +96,30 @@ function relativeExpiry(expiresAt: string): string {
     return '<1h';
 }
 
-// Friendly "Sent N ago" copy matching the design's pending-row meta.
-function relativeSent(createdAt: string): string {
+// Friendly "Sent N ago" / "Resent N ago" copy matching the design's
+// pending-row meta. When `lastRemindedAt` is set (#403), we anchor on
+// that and switch the verb to "Resent" so the row reflects the most
+// recent action the parent took.
+function relativeSent(
+    createdAt: string,
+    lastRemindedAt: string | null = null,
+): string {
+    const verb = lastRemindedAt ? 'Resent' : 'Sent';
+    const anchor = lastRemindedAt ?? createdAt;
     const now = Date.now();
-    const created = new Date(createdAt).getTime();
-    const diff = now - created;
-    if (diff < 60000) return 'Sent just now';
+    const t = new Date(anchor).getTime();
+    const diff = now - t;
+    if (diff < 60000) return `${verb} just now`;
     if (diff < 3600000) {
         const m = Math.floor(diff / 60000);
-        return `Sent ${m} min ago`;
+        return `${verb} ${m} min ago`;
     }
     if (diff < 86400000) {
         const h = Math.floor(diff / 3600000);
-        return `Sent ${h} hour${h === 1 ? '' : 's'} ago`;
+        return `${verb} ${h} hour${h === 1 ? '' : 's'} ago`;
     }
     const d = Math.floor(diff / 86400000);
-    return `Sent ${d} day${d === 1 ? '' : 's'} ago`;
+    return `${verb} ${d} day${d === 1 ? '' : 's'} ago`;
 }
 
 export default function MembersSettingsScreen() {
@@ -194,6 +203,14 @@ export default function MembersSettingsScreen() {
     const [inviteError, setInviteError] = useState<string | null>(null);
     const [copiedToken, setCopiedToken] = useState<string | null>(null);
     const [revokingId, setRevokingId] = useState<string | null>(null);
+    // #403: track which invite (if any) is mid-resend so we can render
+    // a transient "…" state on its RESEND chip without rejecting a click
+    // on a sibling row.
+    const [resendingId, setResendingId] = useState<string | null>(null);
+    // Tokens whose RESEND just succeeded — used to swap the chip label to
+    // "SENT" for ~2s before the optimistic state hands off to the refetched
+    // `last_reminded_at`. Mirrors the COPY → COPIED flash on the same row.
+    const [resentToken, setResentToken] = useState<string | null>(null);
     // Phase 13: RemoveMemberSheet target. Null = sheet closed.
     const [memberToRemove, setMemberToRemove] = useState<HouseholdMember | null>(null);
 
@@ -206,6 +223,14 @@ export default function MembersSettingsScreen() {
         const id = setTimeout(() => setCopiedToken(null), 2000);
         return () => clearTimeout(id);
     }, [copiedToken]);
+
+    // Mirror flash for the SENT (resend) chip. Same 2s hold + unmount-
+    // safe cleanup as COPIED above.
+    useEffect(() => {
+        if (!resentToken) return;
+        const id = setTimeout(() => setResentToken(null), 2000);
+        return () => clearTimeout(id);
+    }, [resentToken]);
 
     const onSendInvite = async () => {
         if (!household) return;
@@ -237,6 +262,30 @@ export default function MembersSettingsScreen() {
             // cleanup; no inline setTimeout here.
         } else if (Platform.OS !== 'web') {
             Alert.alert('Invite link', url);
+        }
+    };
+
+    // #403: nudge an unaccepted invite. The RPC bumps reminder_count +
+    // last_reminded_at + refreshes expires_at on the server, then we
+    // refetch so the row's relative time + EXPIRES IN badge reflect the
+    // new state. The optimistic SENT flash on the chip means the user
+    // gets feedback even before the refetch lands.
+    const onResend = async (invitation: Invitation) => {
+        setResendingId(invitation.id);
+        try {
+            await resendInvitation(invitation.id);
+            setResentToken(invitation.token);
+            await refetchInvites();
+        } catch (err) {
+            console.error('resendInvitation failed', err);
+            const msg = errorMessage(err);
+            if (Platform.OS === 'web') {
+                setInviteError(msg);
+            } else {
+                Alert.alert("Couldn't resend", msg);
+            }
+        } finally {
+            setResendingId(null);
         }
     };
 
@@ -557,8 +606,11 @@ export default function MembersSettingsScreen() {
                                         invitation={invitation}
                                         copied={copiedToken === invitation.token}
                                         revoking={revokingId === invitation.id}
+                                        resending={resendingId === invitation.id}
+                                        resent={resentToken === invitation.token}
                                         last={idx === invitations.length - 1}
                                         onCopy={() => onCopyLink(invitation)}
+                                        onResend={() => onResend(invitation)}
                                         onRevoke={() => onRevoke(invitation)}
                                         colors={colors}
                                     />
@@ -824,16 +876,22 @@ function PendingRow({
     invitation,
     copied,
     revoking,
+    resending,
+    resent,
     last,
     onCopy,
+    onResend,
     onRevoke,
     colors,
 }: {
     invitation: Invitation;
     copied: boolean;
     revoking: boolean;
+    resending: boolean;
+    resent: boolean;
     last: boolean;
     onCopy: () => void;
+    onResend: () => void;
     onRevoke: () => void;
     colors: Palette;
 }) {
@@ -845,8 +903,12 @@ function PendingRow({
     const roleColor = colors.accent;
     void invitation.role;
     const expires = relativeExpiry(invitation.expires_at);
-    const sent = relativeSent(invitation.created_at);
+    const sent = relativeSent(
+        invitation.created_at,
+        invitation.last_reminded_at,
+    );
     const isExpired = expires === 'expired';
+    const reminderCount = invitation.reminder_count ?? 0;
     return (
         <View
             style={[
@@ -897,6 +959,32 @@ function PendingRow({
                         style={[styles.pendingSent, { color: colors.textSecondary }]}>
                         {sent}
                     </ThemedText>
+                    {reminderCount > 0 ? (
+                        // #403: small mono badge surfacing how many times
+                        // this invitee has been reminded. The Members
+                        // screen is the only place users can see this; it
+                        // helps parents notice when they're spamming an
+                        // already-nudged invitee.
+                        <View
+                            style={[
+                                styles.reminderBadge,
+                                {
+                                    backgroundColor: colors.backgroundInset,
+                                    borderColor: colors.hair,
+                                },
+                            ]}>
+                            <ThemedText
+                                style={[
+                                    styles.reminderBadgeText,
+                                    {
+                                        color: colors.textSecondary,
+                                        fontFamily: FontFamily.monoSemiBold,
+                                    },
+                                ]}>
+                                {reminderCount}×
+                            </ThemedText>
+                        </View>
+                    ) : null}
                 </View>
             </View>
             <View style={styles.pendingActions}>
@@ -929,6 +1017,37 @@ function PendingRow({
                                 },
                             ]}>
                             {copied ? 'COPIED' : 'COPY'}
+                        </ThemedText>
+                    </Pressable>
+                    {/* #403: RESEND chip. Disabled on expired invites —
+                        the RPC would reject them anyway; better to make
+                        that obvious in the UI than to surface the error
+                        toast. */}
+                    <Pressable
+                        onPress={onResend}
+                        disabled={resending || isExpired}
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                            resent ? 'Reminder sent' : 'Resend invitation'
+                        }
+                        style={({ pressed }) => [
+                            styles.actionChip,
+                            {
+                                borderColor: colors.hair,
+                                backgroundColor: colors.backgroundInset,
+                                opacity: isExpired ? 0.45 : 1,
+                            },
+                            pressed && !resending && !isExpired && styles.pressed,
+                        ]}>
+                        <ThemedText
+                            style={[
+                                styles.actionChipText,
+                                {
+                                    color: colors.accent,
+                                    fontFamily: FontFamily.monoSemiBold,
+                                },
+                            ]}>
+                            {resending ? '…' : resent ? 'SENT' : 'RESEND'}
                         </ThemedText>
                     </Pressable>
                     <Pressable
@@ -1306,6 +1425,16 @@ const styles = StyleSheet.create({
         borderWidth: StyleSheet.hairlineWidth,
     },
     actionChipText: { fontSize: 9, letterSpacing: 0.3 },
+    // #403: reminder-count badge sitting inline with the "Resent N ago"
+    // meta. Same 9px mono caps as the action chips, just visually muted
+    // since it's informational rather than tappable.
+    reminderBadge: {
+        paddingHorizontal: 5,
+        paddingVertical: 1,
+        borderRadius: 4,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    reminderBadgeText: { fontSize: 9, letterSpacing: 0.2 },
 
     // Member rows
     memberRow: {

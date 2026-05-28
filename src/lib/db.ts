@@ -137,6 +137,12 @@ export type Invitation = {
     expires_at: string;
     accepted_at: string | null;
     accepted_by: string | null;
+    /** How many times RESEND has fired since the original send. 0 = never
+     *  reminded. Populated by migration 0060 (#403). */
+    reminder_count: number;
+    /** Most recent RESEND timestamp, or null if the recipient has never
+     *  been re-nudged. Drives "Resent N ago" copy in the Members screen. */
+    last_reminded_at: string | null;
 };
 
 export type InvitationPreview = {
@@ -1395,6 +1401,19 @@ export async function revokeInvitation(invitationId: string): Promise<void> {
         .delete()
         .eq('id', invitationId);
     if (error) throw error;
+}
+
+/** Bumps reminder_count + last_reminded_at + refreshes expires_at on a
+ *  pending invitation. The token stays stable so previously shared links
+ *  keep working. Routes through the resend_invitation RPC (migration
+ *  0060) which gates on household-parent role and refuses if the invite
+ *  is already accepted or fully expired (#403). */
+export async function resendInvitation(invitationId: string): Promise<Invitation> {
+    const { data, error } = await supabase.rpc('resend_invitation', {
+        p_invitation_id: invitationId,
+    });
+    if (error) throw error;
+    return data as Invitation;
 }
 
 export async function getInvitationPreview(token: string): Promise<InvitationPreview | null> {
