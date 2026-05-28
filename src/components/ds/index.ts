@@ -44,6 +44,10 @@ export { FormGroup } from './form-group';
 // (form) AND in read-mode Who/For rows (detail). Member-color tinted
 // when selected.
 export { PersonChip, AnyoneChip } from './person-chip';
+// LocationSuggestionRow — vertical list row used in EventCreate's Where
+// section. Replaces the prior horizontal name-only chip strip with the
+// spec's icon-tile + title + address-sub + RECENT/SAVED tag pattern.
+export { LocationSuggestionRow } from './location-suggestion-row';
 // DetailRow — mono-label / value-right read-only row used inside detail
 // screens (EventDetail's Who / For / Location / etc.). Sister primitive
 // to SRow but with a tabular vocabulary (mono label vs sentence-case).

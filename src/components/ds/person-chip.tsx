@@ -32,6 +32,7 @@ export function PersonChip({
     selected,
     onPress,
     avatarSize = 20,
+    leadTag,
 }: {
     /** Display name — first character renders inside the avatar. */
     name: string;
@@ -47,6 +48,12 @@ export function PersonChip({
     /** Avatar diameter in px. Spec values: 20 (form picker chip),
      *  18 (read-mode child chip), 22 (responsible row). */
     avatarSize?: number;
+    /** Optional inline mini-tag rendered between the label and the
+     *  trailing check. Used by EventForm to flag the lead responsible
+     *  parent when multiple are tagged ("LEAD"). Etched look — semi-
+     *  transparent card-color backdrop on top of the chip's tinted
+     *  fill. */
+    leadTag?: string;
 }) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
@@ -83,6 +90,29 @@ export function PersonChip({
                 numberOfLines={1}>
                 {name}
             </ThemedText>
+            {leadTag ? (
+                <View
+                    style={[
+                        styles.leadTag,
+                        {
+                            backgroundColor: withAlpha(
+                                colors.backgroundElement,
+                                0.667,
+                            ),
+                        },
+                    ]}>
+                    <ThemedText
+                        style={[
+                            styles.leadTagText,
+                            {
+                                color: colors.text,
+                                fontFamily: FontFamily.monoSemiBold,
+                            },
+                        ]}>
+                        {leadTag.toUpperCase()}
+                    </ThemedText>
+                </View>
+            ) : null}
             {selected ? (
                 <Feather name="check" size={11} color={colors.text} />
             ) : null}
@@ -205,6 +235,16 @@ const styles = StyleSheet.create({
     },
     anyoneGlyph: {
         fontSize: 9,
+        fontWeight: '600',
+    },
+    leadTag: {
+        paddingHorizontal: 5,
+        paddingVertical: 1,
+        borderRadius: 3,
+    },
+    leadTagText: {
+        fontSize: 8.5,
+        letterSpacing: 0.4,
         fontWeight: '600',
     },
     pressed: { opacity: 0.7 },

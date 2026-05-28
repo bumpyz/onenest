@@ -18,12 +18,15 @@ import { ChildBadge } from '@/components/child-badge';
 import { DateField, TimeField } from '@/components/datetime-fields';
 import {
     AIHelper,
+    AnyoneChip,
     CreateTopBar,
     DateTimePickerSheet,
     FormGroup,
     FormRow,
     FormSectionLabel,
     FormSwitch,
+    LocationSuggestionRow,
+    PersonChip,
     RepeatsPickerSheet,
     SheetShell,
 } from '@/components/ds';
@@ -1026,108 +1029,61 @@ export function EventForm({
                                 RESPONSIBLE
                             </ThemedText>
                             <View style={styles.chipRow}>
+                                {/* PersonChip from @/components/ds matches the
+                                    design spec exactly (4/9/4 padding, 20px
+                                    avatar at the leading edge, member-color
+                                    +22 bg + +88 border when selected,
+                                    trailing check glyph). Replaces a local
+                                    chip that rendered a colored dot + label
+                                    only — no avatar, no check, wrong
+                                    background semantics. */}
                                 {members.map((m) => {
-                                    const color = colorForResponsible(m.profile_id, colorMap);
-                                    // A parent chip is "selected" only when alternation is OFF
-                                    // and the id is in the tagged set — alternation owns
-                                    // responsibility when it's on, even if explicit tags exist.
+                                    const color = colorForResponsible(
+                                        m.profile_id,
+                                        colorMap,
+                                    );
+                                    // Parent chip is "selected" only when
+                                    // alternation is OFF and the id is in
+                                    // the tagged set — alternation owns
+                                    // responsibility when on.
                                     const selected =
-                                        alternation === null && selectedIds.has(m.profile_id);
-                                    const isLead = selected && m.profile_id === leadId;
-                                    const label = currentUserId === m.profile_id ? 'Me' : m.display_name;
+                                        alternation === null &&
+                                        selectedIds.has(m.profile_id);
+                                    const isLead =
+                                        selected && m.profile_id === leadId;
+                                    const label =
+                                        currentUserId === m.profile_id
+                                            ? 'Me'
+                                            : m.display_name;
                                     return (
-                                        <Pressable
+                                        <PersonChip
                                             key={m.profile_id}
-                                            onPress={() => toggleResponsible(m.profile_id)}
-                                            disabled={busy}
-                                            accessibilityRole="checkbox"
-                                            accessibilityState={{ checked: selected }}
-                                            accessibilityLabel={`${label}${isLead ? ', lead' : ''}`}
-                                            style={({ pressed }) => [
-                                                styles.chip,
-                                                {
-                                                    borderColor: color,
-                                                    backgroundColor: selected ? color : 'transparent',
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <View style={[styles.chipDot, { backgroundColor: color }]} />
-                                            <ThemedText
-                                                type="small"
-                                                style={{
-                                                    color: selected ? colors.onAccent : colors.text,
-                                                    fontWeight: '500',
-                                                }}>
-                                                {label}
-                                            </ThemedText>
-                                            {isLead && selectedIds.size > 1 ? (
-                                                // LEAD tag only appears when there's >1
-                                                // tagged — single-responsible events
-                                                // don't need the disambiguator. Inline
-                                                // mini-tag, neutral palette with the
-                                                // semi-transparent backdrop that the
-                                                // ResponsibleChip rack also uses
-                                                // (screens-event-edit.jsx:519, `card +
-                                                // 'AA'`) — gives an "etched" look
-                                                // inside the selected chip's color
-                                                // fill instead of a hard rectangle.
-                                                <View
-                                                    style={[
-                                                        styles.chipLeadTag,
-                                                        {
-                                                            backgroundColor:
-                                                                withAlpha(
-                                                                    colors.backgroundElement,
-                                                                    0.667,
-                                                                ),
-                                                        },
-                                                    ]}>
-                                                    <ThemedText
-                                                        style={[
-                                                            styles.chipLeadTagText,
-                                                            {
-                                                                color: colors.text,
-                                                                fontFamily:
-                                                                    FontFamily.monoRegular,
-                                                            },
-                                                        ]}>
-                                                        LEAD
-                                                    </ThemedText>
-                                                </View>
-                                            ) : null}
-                                        </Pressable>
+                                            name={label}
+                                            color={color}
+                                            selected={selected}
+                                            onPress={
+                                                busy
+                                                    ? undefined
+                                                    : () =>
+                                                          toggleResponsible(
+                                                              m.profile_id,
+                                                          )
+                                            }
+                                            leadTag={
+                                                isLead && selectedIds.size > 1
+                                                    ? 'LEAD'
+                                                    : undefined
+                                            }
+                                        />
                                     );
                                 })}
-                                <Pressable
-                                    onPress={clearResponsibles}
-                                    disabled={busy}
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Anyone"
-                                    style={({ pressed }) => [
-                                        styles.chip,
-                                        {
-                                            borderColor: UNASSIGNED_COLOR,
-                                            backgroundColor:
-                                                alternation === null && selectedIds.size === 0
-                                                    ? UNASSIGNED_COLOR
-                                                    : 'transparent',
-                                        },
-                                        pressed && styles.pressed,
-                                    ]}>
-                                    <View style={[styles.chipDot, { backgroundColor: UNASSIGNED_COLOR }]} />
-                                    <ThemedText
-                                        type="small"
-                                        style={{
-                                            color:
-                                                alternation === null && selectedIds.size === 0
-                                                    ? colors.onAccent
-                                                    : colors.text,
-                                            fontWeight: '500',
-                                        }}>
-                                        Anyone
-                                    </ThemedText>
-                                </Pressable>
-
+                                <AnyoneChip
+                                    onPress={busy ? undefined : clearResponsibles}
+                                    selected={
+                                        alternation === null &&
+                                        selectedIds.size === 0
+                                    }
+                                />
                             </View>
                             {/* Alternates moved out of the chip strip
                                 and into a FormRow at the bottom of the
@@ -1199,41 +1155,28 @@ export function EventForm({
                                         : 'Tagged kids appear with chips on the calendar.'}
                                 </ThemedText>
                                 <View style={styles.chipRow}>
+                                    {/* PersonChip again — children use the
+                                        same chip vocabulary as parents
+                                        (20px avatar + name + check on
+                                        selected). Kid's identity color
+                                        tints the avatar bg + chip when
+                                        selected. */}
                                     {children.map((c) => {
-                                        const selected = selectedChildIds.has(c.id);
+                                        const selected = selectedChildIds.has(
+                                            c.id,
+                                        );
                                         return (
-                                            <Pressable
+                                            <PersonChip
                                                 key={c.id}
-                                                onPress={() => toggleChild(c.id)}
-                                                disabled={locked}
-                                                style={({ pressed }) => [
-                                                    styles.chip,
-                                                    {
-                                                        borderColor: c.color,
-                                                        backgroundColor: selected
-                                                            ? c.color
-                                                            : 'transparent',
-                                                    },
-                                                    pressed && styles.pressed,
-                                                ]}>
-                                                <ChildBadge
-                                                    name={c.display_name}
-                                                    color={c.color}
-                                                    size="sm"
-                                                />
-                                                <ThemedText
-                                                    type="small"
-                                                    style={{
-                                                        // Dark text everywhere — the pastel
-                                                        // background plus chip border is enough
-                                                        // contrast; flipping to white on selected
-                                                        // would clash with the badge's dark letter.
-                                                        color: colors.text,
-                                                        fontWeight: '500',
-                                                    }}>
-                                                    {c.display_name}
-                                                </ThemedText>
-                                            </Pressable>
+                                                name={c.display_name}
+                                                color={c.color}
+                                                selected={selected}
+                                                onPress={
+                                                    locked
+                                                        ? undefined
+                                                        : () => toggleChild(c.id)
+                                                }
+                                            />
                                         );
                                     })}
                                 </View>
@@ -1297,78 +1240,98 @@ export function EventForm({
                             <ThemedText type="smallBold">Location (optional)</ThemedText>
 
                             {locations.length > 0 ? (
-                                <View style={styles.locationChipWrapper}>
+                                // Vertical list of saved locations matching
+                                // the design spec's LocSuggestion rows.
+                                // Capped to ~3 rows tall and scrollable —
+                                // households with many saved places can
+                                // scroll to reveal the rest without the
+                                // section eating an unbounded amount of
+                                // the form's vertical real estate.
+                                <View
+                                    style={[
+                                        styles.locationListCard,
+                                        {
+                                            borderColor: colors.hair,
+                                            backgroundColor:
+                                                colors.backgroundElement,
+                                        },
+                                    ]}>
                                     <ScrollView
-                                        horizontal
-                                        showsHorizontalScrollIndicator={false}
-                                        contentContainerStyle={styles.locationChipRow}
-                                        onContentSizeChange={
-                                            locationsOverflow.onContentSizeChange
-                                        }
-                                        onLayout={locationsOverflow.onLayout}
-                                        onScroll={locationsOverflow.onScroll}
-                                        scrollEventThrottle={32}>
-                                        {locations.map((loc) => {
-                                            const selected = matchedLocation?.id === loc.id;
+                                        // 3 rows × ~58px each = 174; the
+                                        // maxHeight clamp ensures only ~3
+                                        // are visible at once. Shorter
+                                        // lists (1-2 rows) render at their
+                                        // natural height; longer lists
+                                        // scroll the overflow.
+                                        style={{ maxHeight: 174 }}
+                                        nestedScrollEnabled
+                                        showsVerticalScrollIndicator>
+                                        {locations.map((loc, idx) => {
+                                            const selected =
+                                                matchedLocation?.id === loc.id;
+                                            const last =
+                                                idx === locations.length - 1;
                                             return (
-                                                <Pressable
+                                                <LocationSuggestionRow
                                                     key={loc.id}
-                                                    onPress={() => {
-                                                        // Prefer the formatted address in the field
-                                                        // when available — Google can search that
-                                                        // text, the saved name (e.g. "Nadim's home")
-                                                        // can't. Fall back to the name only when
-                                                        // the row has no address stored.
-                                                        setLocationName(
-                                                            loc.formatted_address || loc.name,
-                                                        );
-                                                        setLocationMapsUrl(loc.google_maps_url ?? '');
-                                                        // Pre-fill the picked-place context if the
-                                                        // saved location was originally pulled from
-                                                        // Places — keeps the dedup path intact.
-                                                        if (loc.google_place_id) {
-                                                            setPickedPlace({
-                                                                placeId: loc.google_place_id,
-                                                                formattedAddress:
-                                                                    loc.formatted_address ?? '',
-                                                            });
-                                                            setPickedPlaceAddress(
-                                                                loc.formatted_address ?? '',
-                                                            );
-                                                        } else {
-                                                            setPickedPlace(null);
-                                                            setPickedPlaceAddress('');
-                                                        }
-                                                    }}
-                                                    disabled={locked}
-                                                    style={({ pressed }) => [
-                                                        styles.chip,
-                                                        {
-                                                            borderColor: colors.backgroundSelected,
-                                                            backgroundColor: selected ? colors.accent : 'transparent',
-                                                        },
-                                                        pressed && styles.pressed,
-                                                    ]}>
-                                                    <ThemedText
-                                                        type="small"
-                                                        style={{
-                                                            color: selected ? colors.onAccent : colors.text,
-                                                            fontWeight: '500',
-                                                        }}>
-                                                        {loc.name}
-                                                    </ThemedText>
-                                                </Pressable>
+                                                    title={loc.name}
+                                                    sub={
+                                                        loc.formatted_address ||
+                                                        undefined
+                                                    }
+                                                    selected={selected}
+                                                    tagLabel={
+                                                        selected
+                                                            ? 'SAVED'
+                                                            : undefined
+                                                    }
+                                                    tagTone="neutral"
+                                                    last={last}
+                                                    onPress={
+                                                        locked
+                                                            ? undefined
+                                                            : () => {
+                                                                  // Same selection
+                                                                  // logic the old
+                                                                  // chip path used.
+                                                                  setLocationName(
+                                                                      loc.formatted_address ||
+                                                                          loc.name,
+                                                                  );
+                                                                  setLocationMapsUrl(
+                                                                      loc.google_maps_url ??
+                                                                          '',
+                                                                  );
+                                                                  if (
+                                                                      loc.google_place_id
+                                                                  ) {
+                                                                      setPickedPlace(
+                                                                          {
+                                                                              placeId:
+                                                                                  loc.google_place_id,
+                                                                              formattedAddress:
+                                                                                  loc.formatted_address ??
+                                                                                  '',
+                                                                          },
+                                                                      );
+                                                                      setPickedPlaceAddress(
+                                                                          loc.formatted_address ??
+                                                                              '',
+                                                                      );
+                                                                  } else {
+                                                                      setPickedPlace(
+                                                                          null,
+                                                                      );
+                                                                      setPickedPlaceAddress(
+                                                                          '',
+                                                                      );
+                                                                  }
+                                                              }
+                                                    }
+                                                />
                                             );
                                         })}
                                     </ScrollView>
-                                    <ScrollOverflowChevron
-                                        visible={locationsOverflow.showLeftIndicator}
-                                        side="left"
-                                    />
-                                    <ScrollOverflowChevron
-                                        visible={locationsOverflow.showRightIndicator}
-                                        side="right"
-                                    />
                                 </View>
                             ) : null}
 
@@ -2331,6 +2294,16 @@ const styles = StyleSheet.create({
         // and immunizes against future copy edits sneaking lowercase
         // text into the tag.
         textTransform: 'uppercase',
+    },
+    // Saved-locations list — vertical card that holds the
+    // LocationSuggestionRow stack. 10px radius + hair border so the row
+    // dividers (inside each LocationSuggestionRow) read against a
+    // continuous card edge. overflow:hidden keeps any selected-row
+    // tint from bleeding past the rounded corners.
+    locationListCard: {
+        borderRadius: 10,
+        borderWidth: StyleSheet.hairlineWidth,
+        overflow: 'hidden',
     },
     mapsLink: { paddingVertical: Spacing.one },
     errorText: { color: BrandColors.error },
