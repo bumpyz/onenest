@@ -47,6 +47,7 @@ import { useMyRole } from '@/hooks/use-my-role';
 import {
     buildOverrideMap,
     findPattern,
+    handoffsWithinWeek,
     resolveCustodianOnDate,
 } from '@/lib/custody';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
@@ -149,16 +150,33 @@ export default function CustodyViewScreen() {
     const weeks = useMemo(() => {
         if (!schedule) return [];
         const overrideMap = buildOverrideMap(overrides ?? []);
-        return Array.from({ length: WEEKS_TO_SHOW }, (_, w) => {
-            const wkStart = addDays(weekStart, w * 7);
-            const days = Array.from({ length: 7 }, (_, d) =>
+        // 1-day lookahead past the rendered window so the last week's
+        // Sunday-right-edge hand-off resolves. Same pattern as
+        // /custody/schedule — see comment there for the rationale.
+        const buildWeek = (offset: number) =>
+            Array.from({ length: 7 }, (_, d) =>
                 resolveCustodianOnDate(
                     schedule,
                     overrideMap,
-                    addDays(wkStart, d),
+                    addDays(weekStart, offset * 7 + d),
                 ),
             );
-            return { start: wkStart, days };
+        const lookahead = resolveCustodianOnDate(
+            schedule,
+            overrideMap,
+            addDays(weekStart, WEEKS_TO_SHOW * 7),
+        );
+        const built = Array.from({ length: WEEKS_TO_SHOW }, (_, w) => ({
+            start: addDays(weekStart, w * 7),
+            days: buildWeek(w),
+        }));
+        return built.map((wk, i) => {
+            const nextDay =
+                i + 1 < built.length ? built[i + 1].days[0] : lookahead;
+            return {
+                ...wk,
+                handoffIndices: handoffsWithinWeek(wk.days, nextDay),
+            };
         });
     }, [schedule, overrides, weekStart]);
 
@@ -393,6 +411,16 @@ export default function CustodyViewScreen() {
                                                       r.profileId,
                                                   ),
                                         }))}
+                                        // #493: show every cycle flip in
+                                        // the read-only viewer too, not
+                                        // just the next one. Read-only
+                                        // viewers (caregivers, external
+                                        // co-parents) need this MORE than
+                                        // the editor since they can't
+                                        // open the pattern to see the
+                                        // shape — the bars are their
+                                        // only window into the rhythm.
+                                        handoffIndices={wk.handoffIndices}
                                         size="sm"
                                     />
                                 </View>

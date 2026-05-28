@@ -36,6 +36,7 @@ import { useSwapRequests } from '@/hooks/use-swap-requests';
 import {
     buildOverrideMap,
     findPattern,
+    handoffsWithinWeek,
     resolveCustodianOnDate,
 } from '@/lib/custody';
 import {
@@ -198,16 +199,34 @@ export default function CustodyScheduleScreen() {
     const weeks = useMemo(() => {
         if (!schedule) return [];
         const overrideMap = buildOverrideMap(overrides ?? []);
-        return Array.from({ length: WEEKS_TO_SHOW }, (_, w) => {
-            const wkStart = addDays(weekStart, w * 7);
-            const days = Array.from({ length: 7 }, (_, d) =>
+        // Resolve weeks + a 1-day lookahead so the right-edge hand-off
+        // on the last week's Sunday isn't missed. The lookahead lives
+        // outside the rendered window — it just feeds handoffsWithinWeek
+        // for the final week.
+        const buildWeek = (offset: number) =>
+            Array.from({ length: 7 }, (_, d) =>
                 resolveCustodianOnDate(
                     schedule,
                     overrideMap,
-                    addDays(wkStart, d),
+                    addDays(weekStart, offset * 7 + d),
                 ),
             );
-            return { start: wkStart, days };
+        const lookahead = resolveCustodianOnDate(
+            schedule,
+            overrideMap,
+            addDays(weekStart, WEEKS_TO_SHOW * 7),
+        );
+        const built = Array.from({ length: WEEKS_TO_SHOW }, (_, w) => ({
+            start: addDays(weekStart, w * 7),
+            days: buildWeek(w),
+        }));
+        return built.map((wk, i) => {
+            const nextDay =
+                i + 1 < built.length ? built[i + 1].days[0] : lookahead;
+            return {
+                ...wk,
+                handoffIndices: handoffsWithinWeek(wk.days, nextDay),
+            };
         });
     }, [schedule, overrides, weekStart]);
 
@@ -671,6 +690,13 @@ export default function CustodyScheduleScreen() {
                                                           colorMap,
                                                       ),
                                             }))}
+                                            // #493: warn ticks at every
+                                            // actual cycle transition,
+                                            // not just the next hand-off
+                                            // — lets the user see WHEN
+                                            // the rotation flips while
+                                            // scrolling future weeks.
+                                            handoffIndices={w.handoffIndices}
                                             size="lg"
                                         />
                                     </View>

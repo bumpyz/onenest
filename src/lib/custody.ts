@@ -248,6 +248,39 @@ export function resolveCustodianOnDate(
 }
 
 /**
+ * Returns the column indices [0..week.length-1] where a hand-off happens
+ * at the column's RIGHT edge (the day's custodian differs from the next
+ * day's). Powers the warn-color ticks on the pattern editor preview +
+ * the schedule viewer's multi-week bars.
+ *
+ * `nextDay` is the lookahead — the first day of the period AFTER `week`
+ * — used to decide whether the last column has a hand-off at its right
+ * edge. Pass `null` only when there's genuinely no following day (e.g.
+ * the very last week in a finite preview window); otherwise the final
+ * hand-off can be missed.
+ *
+ * Two days share a custodian iff they're both 'AB' (bothPresent) OR
+ * have the same `profileId`. Centralizing the equality check here keeps
+ * the AB-vs-single comparison consistent across surfaces — a viewer
+ * comparing colors instead of identity could spuriously match two
+ * parents who happen to share the same default-palette swatch.
+ */
+export function handoffsWithinWeek(
+    week: ReadonlyArray<ResolvedCustody>,
+    nextDay: ResolvedCustody | null,
+): number[] {
+    const key = (r: ResolvedCustody): string =>
+        r.bothPresent ? 'AB' : r.profileId ?? 'unknown';
+    const out: number[] = [];
+    for (let i = 0; i < week.length; i++) {
+        const next = i + 1 < week.length ? week[i + 1] : nextDay;
+        if (!next) continue;
+        if (key(week[i]) !== key(next)) out.push(i);
+    }
+    return out;
+}
+
+/**
  * Returns the next 14 cycle labels starting from the given date, e.g. for a preview strip.
  * Always returns 14 entries even if cycle length is 7.
  */
