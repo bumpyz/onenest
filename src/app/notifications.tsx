@@ -1,17 +1,26 @@
-// NotificationsInbox — Phase 10 (design source: screens-extra-3.jsx
-// NotificationsInbox at line 1379). The activity inbox surfaces:
+// NotificationsInbox — Phase 10 redesign (design source: screens-extra-3.jsx
+// NotificationsInbox at line 1418, v3 spec).
+//
+// The activity inbox surfaces:
 //   • Real signals computed from existing data: conflicts (from
 //     useWeekSummary), unassigned events, custody hand-offs in the next
 //     24h. These render with current data — no stub.
-//   • Placeholders for the persisted-notifications model (mentions, swap
-//     requests, task-complete activity, digest receipts, OAuth-connect
-//     events). These are rendered behind a "scaffold" flag with a small
-//     "SAMPLE" mono badge so they read as "coming soon" without breaking
-//     the visual rhythm.
+//   • Persisted rows from the `notifications` table (#381) for mentions,
+//     swap requests, task-complete activity, digest receipts,
+//     OAuth-connect events, custody-override fan-out. Decorative
+//     "SAMPLE" scaffolds were retired when persistence landed.
 //
-// Until a `notifications` table lands, this screen is a derived view +
-// a few decorative scaffolds. When the persistence model arrives the
-// scaffolds get replaced with real rows; the layout stays the same.
+// Phase 10 v3 changes vs. the prior pass:
+//   • Consolidated header — removed the secondary back-bar; the mono
+//     count meta + 22/600 "Activity" title + Mark-all-read pill all
+//     sit inline at the top per the design.
+//   • Unread rows get a soft accent-tinted background (`accent08`).
+//   • Unread accent dot moved to an absolute-positioned 6px chip at
+//     the row's left edge (instead of inline in the title).
+//   • Avatar layered over the bottom-right of the icon tile when a
+//     row has both a kind icon and a referenced member.
+//   • Inline `@YOU` mono caps badge next to the title for mention
+//     items so they read as "directed at you" at a glance.
 
 import { format, isToday, isYesterday } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
@@ -43,6 +52,7 @@ import {
     markNotificationRead,
     type Notification,
 } from '@/lib/db';
+import { withAlpha } from '@/lib/platform-styles';
 import { useAuth } from '@/providers/auth-provider';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
@@ -304,41 +314,29 @@ export default function NotificationsScreen() {
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe} edges={['top']}>
-                {/* Top bar — same pattern as the other sub-routes */}
-                <View style={[styles.topBar, { borderBottomColor: colors.hair }]}>
-                    <Pressable
-                        onPress={() => router.back()}
-                        accessibilityRole="button"
-                        accessibilityLabel="Back"
-                        style={({ pressed }) => [
-                            styles.topBarIconBtn,
-                            {
-                                backgroundColor: colors.backgroundElement,
-                                borderColor: colors.hair,
-                            },
-                            pressed && styles.pressed,
-                        ]}>
-                        <Feather name="chevron-left" size={14} color={colors.text} />
-                    </Pressable>
-                    <ThemedText style={[styles.topBarTitle, { color: colors.text }]}>
-                        Activity
-                    </ThemedText>
-                    <View style={styles.topBarIconBtn} />
-                </View>
-
+                {/* Phase 10 v3: the design source has no secondary back
+                    bar — the screen routes back via the bottom tabs or
+                    the OS gesture. The headerRow below carries the
+                    chrome inline: mono count meta + 22/600 "Activity"
+                    title on the left, "Mark all read" pill on the
+                    right. */}
                 <ScrollView contentContainerStyle={styles.scroll}>
                     {/* Header summary + Mark all read */}
                     <View style={styles.headerRow}>
-                        <View>
+                        <View style={{ flex: 1 }}>
                             <ThemedText
                                 style={[
                                     styles.headerCounts,
                                     {
-                                        color: colors.textSecondary,
-                                        fontFamily: FontFamily.monoSemiBold,
+                                        color: colors.inkFaint,
+                                        fontFamily: FontFamily.monoMedium,
                                     },
                                 ]}>
                                 {newCount} NEW · {todayCount} TODAY
+                            </ThemedText>
+                            <ThemedText
+                                style={[styles.headerTitle, { color: colors.text }]}>
+                                Activity
                             </ThemedText>
                         </View>
                         <Pressable
@@ -641,6 +639,12 @@ function InboxRow({
     const tint = tintForKind[item.kind];
     const icon = iconForKind[item.kind];
 
+    // Phase 10 v3: unread rows get a faint accent wash + an
+    // absolute-positioned accent dot at the row's leading edge. The
+    // wash is rendered via `accent + '14'` (~8% alpha) so it sits on
+    // light + dark surfaces without crushing contrast.
+    const unreadBg = item.unread ? withAlpha(colors.accent, 0x14 / 0xff) : undefined;
+    const isMention = item.kind === 'mention';
     return (
         <Pressable
             onPress={onPress}
@@ -653,28 +657,54 @@ function InboxRow({
                     borderBottomColor: colors.hair,
                     borderBottomWidth: StyleSheet.hairlineWidth,
                 },
+                unreadBg && { backgroundColor: unreadBg },
                 pressed && item.href && styles.pressed,
             ]}>
-            {/* Leading icon tile / avatar */}
-            {item.avatarColor && item.avatarInitial ? (
+            {/* Leading unread chip — absolute-positioned 6px accent
+                dot at the left edge so the row reads as "fresh" even
+                in a long list without trying to find the inline dot.
+                Spec source: line 1646 (`position: absolute, left: 4`). */}
+            {item.unread ? (
                 <View
                     style={[
-                        styles.rowAvatar,
-                        { backgroundColor: item.avatarColor },
-                    ]}>
-                    <ThemedText style={styles.rowAvatarText}>
-                        {item.avatarInitial}
-                    </ThemedText>
-                </View>
-            ) : (
+                        styles.leadingUnreadDot,
+                        { backgroundColor: colors.accent },
+                    ]}
+                />
+            ) : null}
+
+            {/* Icon tile (always rendered) + optional avatar overlay at
+                bottom-right of the tile. Spec layers them so both the
+                "kind" semantic AND the actor are legible — the prior
+                impl picked one or the other. The overlay's outer ring
+                tracks the row's bg (cardOnUnread vs. card) so the
+                avatar reads as "punched out" of the tile rather than
+                floating on it. */}
+            <View style={styles.rowAvatarStack}>
                 <View
                     style={[
                         styles.rowIconTile,
-                        { backgroundColor: tint + '22' },
+                        { backgroundColor: withAlpha(tint, 0x22 / 0xff) },
                     ]}>
                     <Feather name={icon} size={14} color={tint} />
                 </View>
-            )}
+                {item.avatarColor && item.avatarInitial ? (
+                    <View
+                        style={[
+                            styles.rowAvatarOverlay,
+                            {
+                                backgroundColor: item.avatarColor,
+                                borderColor: item.unread
+                                    ? colors.background
+                                    : colors.backgroundElement,
+                            },
+                        ]}>
+                        <ThemedText style={styles.rowAvatarOverlayText}>
+                            {item.avatarInitial}
+                        </ThemedText>
+                    </View>
+                ) : null}
+            </View>
 
             {/* Body */}
             <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
@@ -682,16 +712,34 @@ function InboxRow({
                     <ThemedText
                         type="smallBold"
                         numberOfLines={1}
-                        style={{ flex: 1, color: colors.text }}>
+                        style={[
+                            { flex: 1, color: colors.text },
+                            item.unread && { fontWeight: '600' },
+                        ]}>
                         {item.title}
                     </ThemedText>
-                    {item.unread ? (
+                    {isMention ? (
                         <View
                             style={[
-                                styles.unreadDot,
-                                { backgroundColor: colors.accent },
-                            ]}
-                        />
+                                styles.mentionBadge,
+                                {
+                                    backgroundColor: withAlpha(
+                                        colors.accent,
+                                        0x22 / 0xff,
+                                    ),
+                                },
+                            ]}>
+                            <ThemedText
+                                style={[
+                                    styles.mentionBadgeText,
+                                    {
+                                        color: colors.accent,
+                                        fontFamily: FontFamily.monoSemiBold,
+                                    },
+                                ]}>
+                                @YOU
+                            </ThemedText>
+                        </View>
                     ) : null}
                 </View>
                 <ThemedText
@@ -708,7 +756,7 @@ function InboxRow({
                     style={[
                         styles.rowTime,
                         {
-                            color: colors.textSecondary,
+                            color: colors.inkFaint,
                             fontFamily: FontFamily.monoMedium,
                         },
                     ]}>
@@ -761,39 +809,32 @@ function formatDistanceCompact(ms: number): string {
 const styles = StyleSheet.create({
     container: { flex: 1 },
     safe: { flex: 1 },
-    topBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 12,
-        gap: Spacing.two,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-    },
-    topBarIconBtn: {
-        width: 32,
-        height: 32,
-        borderRadius: 8,
-        borderWidth: StyleSheet.hairlineWidth,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    topBarTitle: { fontSize: 15, fontWeight: '600', letterSpacing: -0.3 },
 
     scroll: { paddingBottom: 64, gap: Spacing.three },
 
-    // ── Header row (counts + Mark all read)
+    // ── Header row (counts + title + Mark all read)
+    // Phase 10 v3: this single row replaces the old back-bar + nested
+    // headerRow pattern. Mono "12 NEW · 8 TODAY" meta stacks above the
+    // 22/600 "Activity" title in the left column; "Mark all read" pill
+    // is right-anchored against the title baseline.
     headerRow: {
         flexDirection: 'row',
-        alignItems: 'flex-end',
+        alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: 20,
-        paddingTop: 6,
+        paddingTop: 12,
+        paddingBottom: 6,
+        gap: Spacing.two,
     },
     headerCounts: {
         fontSize: 10,
         letterSpacing: -0.2,
+    },
+    headerTitle: {
+        fontSize: 22,
+        fontWeight: '600',
+        letterSpacing: -0.6,
+        marginTop: 1,
     },
     markAllReadBtn: {
         paddingHorizontal: 11,
@@ -842,6 +883,9 @@ const styles = StyleSheet.create({
     bucketEmpty: { padding: Spacing.four },
 
     // ── Inbox row
+    // paddingLeft tightened from 14 → 12 to make room for the leading
+    // 6px unread dot (which sits at left: 4 + 8 gap from the icon
+    // tile). Visually unchanged for read rows.
     inboxRow: {
         flexDirection: 'row',
         alignItems: 'flex-start',
@@ -849,32 +893,62 @@ const styles = StyleSheet.create({
         paddingVertical: 12,
         paddingHorizontal: 14,
     },
+    leadingUnreadDot: {
+        position: 'absolute',
+        left: 4,
+        top: 18,
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+    },
+    rowAvatarStack: {
+        width: 32,
+        height: 32,
+        marginTop: 2,
+        position: 'relative',
+    },
     rowIconTile: {
         width: 32,
         height: 32,
         borderRadius: 8,
         alignItems: 'center',
         justifyContent: 'center',
-        marginTop: 2,
     },
-    rowAvatar: {
-        width: 32,
-        height: 32,
-        borderRadius: 16,
+    // Avatar layered at the bottom-right of the icon tile. Border
+    // tracks the row's bg color so the avatar reads as "punched out"
+    // of the tile rather than floating above it. 14px is the same
+    // size the design source uses.
+    rowAvatarOverlay: {
+        position: 'absolute',
+        bottom: -3,
+        right: -3,
+        width: 16,
+        height: 16,
+        borderRadius: 8,
+        borderWidth: 1.5,
         alignItems: 'center',
         justifyContent: 'center',
-        marginTop: 2,
     },
-    rowAvatarText: {
+    rowAvatarOverlayText: {
         color: '#FFFFFF',
-        fontSize: 13,
+        fontSize: 8,
         fontWeight: '700',
         fontFamily: FontFamily.sansSemiBold,
+        lineHeight: 10,
     },
     rowTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    unreadDot: { width: 7, height: 7, borderRadius: 4 },
-    rowMeta: { alignItems: 'flex-end', gap: 4, marginTop: 4 },
-    rowTime: { fontSize: 11, letterSpacing: -0.2 },
+    mentionBadge: {
+        paddingHorizontal: 4,
+        paddingVertical: 1,
+        borderRadius: 3,
+    },
+    mentionBadgeText: {
+        fontSize: 8.5,
+        letterSpacing: 0.3,
+        lineHeight: 11,
+    },
+    rowMeta: { alignItems: 'flex-end', gap: 4, marginTop: 2 },
+    rowTime: { fontSize: 10, letterSpacing: -0.2 },
     sampleBadge: {
         paddingHorizontal: 5,
         paddingVertical: 1,
