@@ -691,25 +691,40 @@ export default function ProfileSettingsScreen() {
                                         );
                                     })}
                                 </View>
-                                <View
-                                    style={[
-                                        styles.swatchHint,
-                                        { backgroundColor: colors.accent + '14' },
-                                    ]}>
-                                    <Feather
-                                        name="info"
-                                        size={13}
-                                        color={colors.accent}
-                                        style={styles.swatchHintIcon}
-                                    />
-                                    <ThemedText
-                                        type="small"
-                                        style={{ color: colors.inkSec, flex: 1 }}>
-                                        Greyed-out swatches are claimed by other members.
-                                        Pick a different color to keep things readable on
-                                        shared views.
-                                    </ThemedText>
-                                </View>
+                                {/* Only render the "greyed-out swatches" hint
+                                    when there's actually a claimer to point
+                                    at. Solo households (no co-parent yet, no
+                                    other members with a color set) never see
+                                    a greyed swatch, so the hint copy reads as
+                                    factually wrong there. */}
+                                {claimedBy.size > 0 ? (
+                                    <View
+                                        style={[
+                                            styles.swatchHint,
+                                            {
+                                                backgroundColor:
+                                                    colors.accent + '14',
+                                            },
+                                        ]}>
+                                        <Feather
+                                            name="info"
+                                            size={13}
+                                            color={colors.accent}
+                                            style={styles.swatchHintIcon}
+                                        />
+                                        <ThemedText
+                                            type="small"
+                                            style={{
+                                                color: colors.inkSec,
+                                                flex: 1,
+                                            }}>
+                                            Greyed-out swatches are claimed by
+                                            other members. Pick a different
+                                            color to keep things readable on
+                                            shared views.
+                                        </ThemedText>
+                                    </View>
+                                ) : null}
                                 {colorError ? (
                                     <ThemedText
                                         type="small"
@@ -1008,8 +1023,14 @@ const styles = StyleSheet.create({
     },
 
     // ── Section headers (mono caps + optional sub)
+    // Flush left at the card's outer edge so labels sit at the same x
+    // position as the card border directly below them. The previous
+    // `Spacing.four` (16) horizontal padding pushed labels in 16px past
+    // the card edge, which read as misaligned against the cards and
+    // against the avatar hero (which is centered relative to the
+    // scrollContent's edge-to-edge area).
     sectionHeader: {
-        paddingHorizontal: Spacing.four,
+        paddingHorizontal: 0,
         paddingBottom: Spacing.two,
         gap: 4,
     },
