@@ -449,10 +449,6 @@ export default function ProfileSettingsScreen() {
                                         source={{ uri: avatarSignedUrl }}
                                         style={styles.avatarImage}
                                         contentFit="cover"
-                                        // Signed URLs include a token that
-                                        // makes them effectively unique per
-                                        // upload, so transitions land cleanly.
-                                        transition={200}
                                     />
                                 ) : (
                                     <ThemedText style={styles.avatarInitial}>
@@ -853,8 +849,53 @@ function AccountRow({
     last?: boolean;
     onPress?: () => void;
 }) {
-    const Inner = (
-        <>
+    if (onPress) {
+        return (
+            <Pressable
+                onPress={onPress}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${label.toLowerCase()}`}
+                style={({ pressed }) => [
+                    styles.accountRow,
+                    !last && {
+                        borderBottomColor: colors.hair,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                    },
+                    pressed && styles.pressed,
+                ]}>
+                <ThemedText
+                    type="smallBold"
+                    style={{ flex: 1, color: colors.text }}>
+                    {label}
+                </ThemedText>
+                <ThemedText
+                    numberOfLines={1}
+                    style={[
+                        styles.accountRowValue,
+                        {
+                            color: colors.textSecondary,
+                            fontFamily: FontFamily.monoMedium,
+                        },
+                    ]}>
+                    {value}
+                </ThemedText>
+                <Feather
+                    name="chevron-right"
+                    size={14}
+                    color={colors.inkFaint}
+                />
+            </Pressable>
+        );
+    }
+    return (
+        <View
+            style={[
+                styles.accountRow,
+                !last && {
+                    borderBottomColor: colors.hair,
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                },
+            ]}>
             <ThemedText
                 type="smallBold"
                 style={{ flex: 1, color: colors.text }}>
@@ -871,43 +912,6 @@ function AccountRow({
                 ]}>
                 {value}
             </ThemedText>
-            {onPress ? (
-                <Feather
-                    name="chevron-right"
-                    size={14}
-                    color={colors.inkFaint}
-                />
-            ) : null}
-        </>
-    );
-    if (onPress) {
-        return (
-            <Pressable
-                onPress={onPress}
-                accessibilityRole="button"
-                accessibilityLabel={`Edit ${label.toLowerCase()}`}
-                style={({ pressed }) => [
-                    styles.accountRow,
-                    !last && {
-                        borderBottomColor: colors.hair,
-                        borderBottomWidth: StyleSheet.hairlineWidth,
-                    },
-                    pressed && styles.pressed,
-                ]}>
-                {Inner}
-            </Pressable>
-        );
-    }
-    return (
-        <View
-            style={[
-                styles.accountRow,
-                !last && {
-                    borderBottomColor: colors.hair,
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                },
-            ]}>
-            {Inner}
         </View>
     );
 }
