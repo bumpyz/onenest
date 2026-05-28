@@ -52,7 +52,6 @@ import { ChildrenSheet } from '@/components/task/children-sheet';
 import { DuePickerSheet } from '@/components/task/due-picker-sheet';
 import { ListsSheet } from '@/components/task/lists-sheet';
 import { PrioritySheet } from '@/components/task/priority-sheet';
-import { RecurringSheet } from '@/components/task/recurring-sheet';
 import { ReminderSheet } from '@/components/task/reminder-picker-sheet';
 import { TaskOverflowSheet } from '@/components/task/task-overflow-sheet';
 import { ThemedText } from '@/components/themed-text';
@@ -115,7 +114,6 @@ export default function TaskDetailScreen() {
     const [assigneeSheetOpen, setAssigneeSheetOpen] = useState(false);
     const [dueSheetOpen, setDueSheetOpen] = useState(false);
     const [reminderSheetOpen, setReminderSheetOpen] = useState(false);
-    const [recurringSheetOpen, setRecurringSheetOpen] = useState(false);
     const [prioritySheetOpen, setPrioritySheetOpen] = useState(false);
     const [listsSheetOpen, setListsSheetOpen] = useState(false);
     const [childrenSheetOpen, setChildrenSheetOpen] = useState(false);
@@ -568,27 +566,9 @@ export default function TaskDetailScreen() {
                                 )
                             }
                         />
-                        <SRow
-                            label="Recurring"
-                            chevron={!isCaregiver}
-                            onPress={
-                                isCaregiver
-                                    ? undefined
-                                    : () => setRecurringSheetOpen(true)
-                            }
-                            right={
-                                <ThemedText
-                                    style={[
-                                        styles.detailMonoSm,
-                                        {
-                                            color: colors.inkFaint,
-                                            fontFamily: FontFamily.monoMedium,
-                                        },
-                                    ]}>
-                                    One-time
-                                </ThemedText>
-                            }
-                        />
+                        {/* Recurring row removed (#383 cut from scope). When
+                            task-level recurrence ships, restore the SRow + the
+                            RecurringSheet under it. */}
                         <SRow
                             label="Priority"
                             chevron={!isCaregiver}
@@ -1081,12 +1061,6 @@ export default function TaskDetailScreen() {
             <ReminderSheet
                 open={reminderSheetOpen}
                 onClose={() => setReminderSheetOpen(false)}
-                onSaved={refetchTask}
-                task={task}
-            />
-            <RecurringSheet
-                open={recurringSheetOpen}
-                onClose={() => setRecurringSheetOpen(false)}
                 onSaved={refetchTask}
                 task={task}
             />
