@@ -1085,7 +1085,7 @@ export default function CustodyOverrideEditorScreen() {
                 <DatePickerSheet
                     open={fromSheetOpen}
                     title="From date"
-                    sub="Pick the start of the override range. To make it a single-day override, set the same date in the To box."
+                    sub="Start of the override range."
                     initialDate={fromDate}
                     onSave={(next) => {
                         setFromDate(next);
@@ -1097,7 +1097,7 @@ export default function CustodyOverrideEditorScreen() {
                 <DatePickerSheet
                     open={toSheetOpen}
                     title="To date"
-                    sub="Pick the inclusive end of the override range."
+                    sub="Inclusive end of the override range."
                     initialDate={toDate}
                     onSave={(next) => {
                         // Snap forward if user picked something earlier

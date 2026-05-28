@@ -86,7 +86,14 @@ export function DatePickerSheet({
             onPrimary={handlePrimary}
             onSecondary={onClose}
             primaryDisabled={!draft}
-            height={460}>
+            // 540 fits the full 6-row MiniCalendar grid + day-header row
+            // + our month nav header + the SheetShell title/footer chrome
+            // without scrolling. (At the prior 460 the calendar's last
+            // row clipped behind the footer and the body became
+            // scrollable.) SheetShell's maxHeight:85% still clamps on
+            // short viewports — those will scroll, but most desktops +
+            // tall phones render the whole month in-view.
+            height={540}>
             {/* Month header — caps mono label + prev/next arrows.
                 Same chrome as the web DateField modal (datetime-fields.web)
                 so the navigation feels identical everywhere a calendar
