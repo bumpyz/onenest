@@ -51,6 +51,7 @@ import {
     memberColorMap,
 } from '@/lib/colors';
 import { custodyScopeWord } from '@/lib/custody';
+import { firstNameOf } from '@/lib/names';
 import {
     generateCaregiverBriefTasksForHandoff,
     getOpenCaregiverBriefTasksAt,
@@ -301,7 +302,7 @@ export function CustodyStripToday({
         }
         const withWhom = currentMember;
         return withWhom
-            ? `With ${withWhom.display_name} · comes to you ${formatHandoffShort(custody.nextHandoff?.at)}`
+            ? `With ${firstNameOf(withWhom.display_name)} · comes to you ${formatHandoffShort(custody.nextHandoff?.at)}`
             : '';
         void nextOtherSide;
     })();

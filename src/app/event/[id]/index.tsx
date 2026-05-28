@@ -91,6 +91,7 @@ import {
 } from '@/components/event/event-responsible-sheet';
 import { EventWhenSheet } from '@/components/event/event-when-sheet';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
+import { firstNameOf } from '@/lib/names';
 import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
 import {
     createTask,
@@ -1436,7 +1437,7 @@ export default function EventDetailScreen() {
                                             return (
                                                 <ResponsibleChip
                                                     key={m.profile_id}
-                                                    name={m.display_name}
+                                                    name={firstNameOf(m.display_name)}
                                                     color={
                                                         m.color ??
                                                         colorForResponsible(
@@ -1530,7 +1531,9 @@ export default function EventDetailScreen() {
                                                     styles.responsibleName,
                                                     { color: colors.text },
                                                 ]}>
-                                                {responsibleMember.display_name}
+                                                {firstNameOf(
+                                                    responsibleMember.display_name,
+                                                )}
                                             </ThemedText>
                                         </View>
                                     ) : (

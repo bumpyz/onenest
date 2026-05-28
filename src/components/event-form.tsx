@@ -43,6 +43,7 @@ import {
     Typography,
 } from '@/constants/theme';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
+import { firstNameOf } from '@/lib/names';
 import type {
     Child,
     HouseholdMember,
@@ -1066,10 +1067,10 @@ export function EventForm({
                                         selectedIds.has(m.profile_id);
                                     const isLead =
                                         selected && m.profile_id === leadId;
-                                    const label =
-                                        currentUserId === m.profile_id
-                                            ? 'Me'
-                                            : m.display_name;
+                                    // First name across all chips — design
+                                    // convention. Drops the legacy "Me"
+                                    // self-label per #design-fidelity audit.
+                                    const label = firstNameOf(m.display_name);
                                     return (
                                         <PersonChip
                                             key={m.profile_id}

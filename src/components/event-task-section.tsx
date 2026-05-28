@@ -44,6 +44,7 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily, Typography } from '@/constants/theme';
 import { colorForResponsible } from '@/lib/colors';
+import { firstNameOf } from '@/lib/names';
 import type { Child, HouseholdMember, List } from '@/lib/db';
 import { withAlpha } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
@@ -428,10 +429,12 @@ export function EventTaskSection({
                                                 task.assigneeProfileIds.includes(
                                                     m.profile_id,
                                                 );
-                                            const label =
-                                                currentUserId === m.profile_id
-                                                    ? 'Me'
-                                                    : m.display_name;
+                                            // First name across all chips
+                                            // per design convention; drops
+                                            // legacy "Me" self-label.
+                                            const label = firstNameOf(
+                                                m.display_name,
+                                            );
                                             return (
                                                 <PersonChip
                                                     key={m.profile_id}

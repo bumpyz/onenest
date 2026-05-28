@@ -70,6 +70,7 @@ import {
     memberColorMap,
 } from '@/lib/colors';
 import { setTaskCompleted, updateTask } from '@/lib/db';
+import { firstNameOf } from '@/lib/names';
 import { errorMessage } from '@/lib/errors';
 import { withAlpha } from '@/lib/platform-styles';
 import {
@@ -1161,11 +1162,7 @@ function AssigneeStack({
                 numberOfLines={1}
                 style={[styles.assigneeName, { color: palette.text }]}>
                 {assignees
-                    .map((m) =>
-                        currentUserId === m.profile_id
-                            ? 'Me'
-                            : m.display_name,
-                    )
+                    .map((m) => firstNameOf(m.display_name))
                     .join(', ')}
             </ThemedText>
         </View>

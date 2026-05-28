@@ -64,6 +64,7 @@ import { useLists } from '@/hooks/use-lists';
 import { useMyRole } from '@/hooks/use-my-role';
 import { createTask, type TaskPriority } from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
+import { firstNameOf } from '@/lib/names';
 import {
     REMINDER_PRESETS,
     computeReminderAt,
@@ -426,11 +427,9 @@ export default function NewTaskScreen() {
                                         return (
                                             <PersonChip
                                                 key={m.profile_id}
-                                                name={
-                                                    user.id === m.profile_id
-                                                        ? 'Me'
-                                                        : m.display_name
-                                                }
+                                                // First name across all chips
+                                                // per design convention.
+                                                name={firstNameOf(m.display_name)}
                                                 color={
                                                     m.color ?? colors.inkFaint
                                                 }

@@ -34,6 +34,7 @@ import { useUpcomingEvents } from '@/hooks/use-upcoming-events';
 import { useWeekSummary } from '@/hooks/use-week-summary';
 import { withAlpha, FAB_SHADOW } from '@/lib/platform-styles';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
+import { firstNameOf } from '@/lib/names';
 import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
 import { resolveResponsibleProfileId } from '@/lib/responsible-resolver';
 import {
@@ -1297,7 +1298,8 @@ function TimelineCard({
                             if (!m) return null;
                             return {
                                 key: m.profile_id,
-                                name: m.display_name,
+                                // First name across all chips per design convention.
+                                name: firstNameOf(m.display_name),
                                 color:
                                     m.color ??
                                     colorForResponsible(
@@ -1610,7 +1612,7 @@ function EventRow({
                 <MemberStack
                     members={[
                         {
-                            name: responsibleMember.display_name,
+                            name: firstNameOf(responsibleMember.display_name),
                             color: responsibleColor,
                             key: responsibleMember.profile_id,
                         },

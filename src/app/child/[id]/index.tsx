@@ -34,6 +34,7 @@
 
 import { Feather } from '@expo/vector-icons';
 import { format, parseISO, startOfDay } from 'date-fns';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -304,16 +305,27 @@ export default function ChildDetailScreen() {
                 style={styles.scroll}
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}>
-                <View
-                    style={[
-                        styles.hero,
-                        {
-                            backgroundColor: withAlpha(
+                <View style={styles.hero}>
+                    {/* Tinted gradient backdrop — kid color at the top
+                        fading into the page bg, matching the canvas's
+                        `linear-gradient(160deg, kidColor 22% → bg)` rule.
+                        Absolute fill behind the safe-area + top bar so
+                        every pixel under the chrome is gradient. */}
+                    <LinearGradient
+                        colors={[
+                            withAlpha(
                                 kidColor,
                                 scheme === 'dark' ? 0x40 / 255 : 0x22 / 255,
                             ),
-                        },
-                    ]}>
+                            colors.background,
+                        ]}
+                        // 160° in CSS maps roughly to start={0,0}/end={1,1}
+                        // diagonal in RN — close enough for the design intent
+                        // without doing trig at render time.
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={StyleSheet.absoluteFill}
+                    />
                     {/* Safe-area + top bar */}
                     <SafeAreaView edges={['top']}>
                         <View style={styles.topBar}>
