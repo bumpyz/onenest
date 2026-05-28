@@ -9,13 +9,6 @@ export type Profile = {
      * the user hasn't picked one — the client falls back to the device's current tz.
      */
     default_timezone: string | null;
-    /**
-     * Storage path within the profile-avatars bucket — `{profile_id}/avatar.{ext}`
-     * (#402, migration 0061). Null when the user has not uploaded a photo;
-     * the UI falls back to the initial-in-color avatar. The bucket is
-     * private; getProfileAvatarSignedUrl mints a signed URL for display.
-     */
-    avatar_url: string | null;
     created_at: string;
 };
 
@@ -713,72 +706,10 @@ export async function updateMyDefaultTimezone(tz: string | null): Promise<void> 
     if (error) throw error;
 }
 
-// ─── Profile avatars (migration 0061, #402) ─────────────────────────────────
-//
-// Same pattern as contact-avatars: private bucket, storage path stored on
-// the row, signed URLs minted at read time. Owner-only writes (RLS gates
-// on auth.uid() == path's first segment); reads are open to any
-// authenticated user since member chips render avatars across surfaces.
-
-/** Upload the caller's avatar photo to the profile-avatars bucket. Returns
- *  the storage path (suitable for storing in profiles.avatar_url) on
- *  success. Path layout is `{profile_id}/avatar.{ext}` — auth.uid() is
- *  the first path segment and the bucket's RLS policies use that for
- *  ownership checks. Re-uploads overwrite the same path via upsert. */
-export async function uploadMyAvatar(
-    file: Blob | File | ArrayBuffer,
-    ext: string,
-): Promise<string> {
-    const userId = await currentUserId();
-    const cleanExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-    const path = `${userId}/avatar.${cleanExt}`;
-    const { error } = await supabase.storage
-        .from('profile-avatars')
-        .upload(path, file as Blob, {
-            upsert: true,
-            contentType: cleanExt === 'png' ? 'image/png' : 'image/jpeg',
-        });
-    if (error) throw error;
-    return path;
-}
-
-/** Persist (or clear) the caller's avatar_url. Pass null to remove the
- *  photo reference; pair with deleteMyAvatar to also drop the bytes. */
-export async function setMyAvatarUrl(path: string | null): Promise<void> {
-    const userId = await currentUserId();
-    const { error } = await supabase
-        .from('profiles')
-        .update({ avatar_url: path })
-        .eq('id', userId);
-    if (error) throw error;
-}
-
-/** Mints a signed URL for a profile avatar path. Same shape as
- *  getContactAvatarSignedUrl — one-hour default expiry is plenty for
- *  a session of browsing member chips. */
-export async function getProfileAvatarSignedUrl(
-    path: string,
-    expiresInSec = 3600,
-): Promise<string | null> {
-    const { data, error } = await supabase.storage
-        .from('profile-avatars')
-        .createSignedUrl(path, expiresInSec);
-    if (error) {
-        console.error('getProfileAvatarSignedUrl failed', error);
-        return null;
-    }
-    return data?.signedUrl ?? null;
-}
-
-/** Removes an avatar file from Storage. Caller is responsible for also
- *  clearing profiles.avatar_url via setMyAvatarUrl(null). Errors are
- *  logged but not thrown — an orphan file is harmless. */
-export async function deleteMyAvatar(path: string): Promise<void> {
-    const { error } = await supabase.storage
-        .from('profile-avatars')
-        .remove([path]);
-    if (error) console.error('deleteMyAvatar failed', error);
-}
+// Profile avatars (#402) cut from scope — initials-in-color avatars
+// carry enough identity for the surfaces we render. The corresponding
+// avatar_url column + profile-avatars Storage bucket + RLS policies
+// are dropped by migration 0062.
 
 export async function updateHouseholdType(
     householdId: string,

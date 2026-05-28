@@ -12,10 +12,8 @@
 // (ProfileEdit at line 660).
 
 import { Feather } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import { Image } from 'expo-image';
 import { Redirect, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
     Alert,
     Modal,
@@ -39,13 +37,9 @@ import { useMyProfile } from '@/hooks/use-my-profile';
 import { signOut } from '@/lib/auth';
 import { PARENT_PALETTE } from '@/lib/colors';
 import {
-    deleteMyAvatar,
-    getProfileAvatarSignedUrl,
-    setMyAvatarUrl,
     updateMyColor,
     updateMyDefaultTimezone,
     updateMyDisplayName,
-    uploadMyAvatar,
 } from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
 import { resolveDefaultTimezone } from '@/lib/timezones';
@@ -125,31 +119,9 @@ export default function ProfileSettingsScreen() {
 
     const [signingOut, setSigningOut] = useState(false);
 
-    // #402: avatar state. `avatarSignedUrl` is the time-limited GET URL we
-    // render; `uploadingAvatar` flips the pencil bug to a spinner; the
-    // sheet-less `Alert.alert` action sheet on long-press / future overflow
-    // lives outside the screen for now (v1 = single tap → picker).
-    const [avatarSignedUrl, setAvatarSignedUrl] = useState<string | null>(null);
-    const [uploadingAvatar, setUploadingAvatar] = useState(false);
-    const [avatarError, setAvatarError] = useState<string | null>(null);
-    useEffect(() => {
-        let cancelled = false;
-        if (!profile?.avatar_url) {
-            setAvatarSignedUrl(null);
-            return;
-        }
-        (async () => {
-            const url = await getProfileAvatarSignedUrl(profile.avatar_url!);
-            if (!cancelled) setAvatarSignedUrl(url);
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, [profile?.avatar_url]);
-
-    // #402: time zone picker state. The TimezonePicker primitive (#148)
-    // takes value + onChange + onCancel. We mount it inside a Modal so
-    // the rest of the screen stays in place behind it.
+    // Time-zone picker state. The TimezonePicker primitive (#148) takes
+    // value + onChange + onCancel. We mount it inside a Modal so the
+    // rest of the screen stays in place behind it.
     const [tzPickerOpen, setTzPickerOpen] = useState(false);
     const [savingTz, setSavingTz] = useState(false);
     const [tzError, setTzError] = useState<string | null>(null);
@@ -220,89 +192,6 @@ export default function ProfileSettingsScreen() {
         } finally {
             setSavingColor(null);
         }
-    };
-
-    const onPickAvatar = async () => {
-        if (uploadingAvatar) return;
-        setAvatarError(null);
-        try {
-            // Permissions on native — web doesn't need them and the API
-            // is a no-op there. Same shape as ContactForm's avatar pick.
-            if (Platform.OS !== 'web') {
-                const perm =
-                    await ImagePicker.requestMediaLibraryPermissionsAsync();
-                if (!perm.granted) {
-                    setAvatarError('Photo access permission was denied.');
-                    return;
-                }
-            }
-            const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ImagePicker.MediaTypeOptions.Images,
-                allowsEditing: true,
-                aspect: [1, 1],
-                quality: 0.85,
-            });
-            if (result.canceled || result.assets.length === 0) return;
-            const asset = result.assets[0];
-            if (!asset) return;
-            const response = await fetch(asset.uri);
-            const blob = await response.blob();
-            const ext = (asset.fileName?.split('.').pop() ?? 'jpg').toLowerCase();
-            setUploadingAvatar(true);
-            const path = await uploadMyAvatar(blob, ext);
-            await setMyAvatarUrl(path);
-            await refetchProfile();
-        } catch (err) {
-            console.error('avatar upload failed', err);
-            const msg = errorMessage(err);
-            if (Platform.OS === 'web') setAvatarError(msg);
-            else Alert.alert("Couldn't upload photo", msg);
-        } finally {
-            setUploadingAvatar(false);
-        }
-    };
-
-    const onRemoveAvatar = async () => {
-        if (!profile?.avatar_url) return;
-        setUploadingAvatar(true);
-        setAvatarError(null);
-        try {
-            await deleteMyAvatar(profile.avatar_url);
-            await setMyAvatarUrl(null);
-            await refetchProfile();
-        } catch (err) {
-            console.error('avatar remove failed', err);
-            const msg = errorMessage(err);
-            if (Platform.OS === 'web') setAvatarError(msg);
-            else Alert.alert("Couldn't remove photo", msg);
-        } finally {
-            setUploadingAvatar(false);
-        }
-    };
-
-    // Avatar interaction. On native we surface a 2-action sheet
-    // (Choose / Remove) when a photo is already set; on web we go
-    // straight to picker. "Remove" only appears when avatar_url is set.
-    const onAvatarPress = () => {
-        if (uploadingAvatar) return;
-        const hasPhoto = !!profile?.avatar_url;
-        if (Platform.OS === 'web' || !hasPhoto) {
-            void onPickAvatar();
-            return;
-        }
-        Alert.alert(
-            'Profile photo',
-            undefined,
-            [
-                { text: 'Choose new photo', onPress: () => void onPickAvatar() },
-                {
-                    text: 'Remove photo',
-                    style: 'destructive',
-                    onPress: () => void onRemoveAvatar(),
-                },
-                { text: 'Cancel', style: 'cancel' },
-            ],
-        );
     };
 
     const onPickTimezone = async (tz: string) => {
@@ -413,20 +302,12 @@ export default function ProfileSettingsScreen() {
                         Result reads as a gradient halo on both native and
                         web without needing a real `box-shadow` (RN native
                         doesn't expose multi-stop shadows). */}
+                    {/* Identity hero — initials in member color with a soft
+                        two-stop halo. The photo-upload affordance was cut
+                        from scope (#402 dropped); the swatch picker below
+                        carries the personalization. */}
                     <View style={styles.avatarHero}>
-                        <Pressable
-                            onPress={onAvatarPress}
-                            disabled={uploadingAvatar}
-                            accessibilityRole="button"
-                            accessibilityLabel={
-                                profile?.avatar_url
-                                    ? 'Change profile photo'
-                                    : 'Upload profile photo'
-                            }
-                            style={({ pressed }) => [
-                                styles.avatarHeroWrap,
-                                pressed && !uploadingAvatar && styles.pressed,
-                            ]}>
+                        <View style={styles.avatarHeroWrap}>
                             <View
                                 style={[
                                     styles.avatarOuterHalo,
@@ -444,61 +325,11 @@ export default function ProfileSettingsScreen() {
                                     styles.avatar,
                                     { backgroundColor: avatarColor },
                                 ]}>
-                                {avatarSignedUrl ? (
-                                    <Image
-                                        source={{ uri: avatarSignedUrl }}
-                                        style={styles.avatarImage}
-                                        contentFit="cover"
-                                    />
-                                ) : (
-                                    <ThemedText style={styles.avatarInitial}>
-                                        {initial}
-                                    </ThemedText>
-                                )}
+                                <ThemedText style={styles.avatarInitial}>
+                                    {initial}
+                                </ThemedText>
                             </View>
-                            <View
-                                style={[
-                                    styles.avatarPencilBug,
-                                    {
-                                        backgroundColor: colors.backgroundElement,
-                                        borderColor: colors.hair,
-                                    },
-                                ]}>
-                                <Feather
-                                    name={
-                                        uploadingAvatar
-                                            ? 'upload-cloud'
-                                            : 'edit-2'
-                                    }
-                                    size={11}
-                                    color={colors.text}
-                                />
-                            </View>
-                        </Pressable>
-                        <ThemedText
-                            style={[
-                                styles.avatarCaption,
-                                {
-                                    color: colors.textSecondary,
-                                    fontFamily: FontFamily.monoMedium,
-                                },
-                            ]}>
-                            {uploadingAvatar
-                                ? 'Uploading…'
-                                : profile?.avatar_url
-                                  ? 'Tap to change photo'
-                                  : 'Tap to upload photo'}
-                        </ThemedText>
-                        {avatarError ? (
-                            <ThemedText
-                                type="small"
-                                style={[
-                                    styles.errorText,
-                                    { color: BrandColors.error },
-                                ]}>
-                                {avatarError}
-                            </ThemedText>
-                        ) : null}
+                        </View>
                     </View>
 
                     {/* Display name */}
@@ -1000,26 +831,6 @@ const styles = StyleSheet.create({
         fontSize: 36,
         fontWeight: '700',
         letterSpacing: -1,
-    },
-    avatarImage: {
-        width: 96,
-        height: 96,
-        borderRadius: 48,
-    },
-    avatarPencilBug: {
-        position: 'absolute',
-        right: 0,
-        bottom: 0,
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        borderWidth: StyleSheet.hairlineWidth,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    avatarCaption: {
-        fontSize: 11,
-        letterSpacing: -0.1,
     },
 
     // ── Section headers (mono caps + optional sub)
