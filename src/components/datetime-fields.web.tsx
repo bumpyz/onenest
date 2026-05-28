@@ -21,6 +21,7 @@ import { Feather } from '@expo/vector-icons';
 import { MiniCalendar } from '@/components/ds/mini-calendar';
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily, Spacing } from '@/constants/theme';
+import { blurActiveElement } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
 /** Render-prop API exposed by `renderTrigger`. Mirrors the native
@@ -81,7 +82,15 @@ export function DateField({ value, onChange, renderTrigger }: DateProps) {
         setMonthAnchor(seed);
     }, [modalOpen, value]);
 
-    const open = () => setModalOpen(true);
+    const open = () => {
+        // Chromium warns "Blocked aria-hidden on an element because its
+        // descendant retained focus" when a Modal mounts while the
+        // trigger Pressable is still focused — RN-Web sets aria-hidden
+        // on the background tree but the focused button is in that
+        // tree. Blur first; same pattern SheetShell uses on open.
+        blurActiveElement();
+        setModalOpen(true);
+    };
     const cancel = () => setModalOpen(false);
     const done = () => {
         if (draft) onChange(formatYmd(draft));
