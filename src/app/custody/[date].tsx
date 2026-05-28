@@ -415,8 +415,13 @@ export default function CustodyOverrideEditorScreen() {
 
     // Conflict count — events in [fromDate, toDate] whose
     // responsible_profile_id is set AND differs from the selected
-    // custodian. v1 approximation; Phase F will refine when the
-    // reassign-on-save logic actually runs.
+    // custodian. Same filter the server uses inside the
+    // reassign_events_for_override RPC (migration 0058, #500), so
+    // the preview number and the actual reassignment stay in sync —
+    // if we say "3 events will be reassigned", exactly 3 events
+    // get their lead swapped on save (assuming reassignEvents toggle
+    // is on AND the override auto-approves; pending overrides defer
+    // reassignment to the approval RPC).
     const conflictCount = useMemo(() => {
         if (!selectedCustodianId) return 0;
         const fromTs = parseISO(fromDate).getTime();

@@ -1,4 +1,5 @@
 import { addDays } from 'date-fns';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getEventsForRange, type Event } from '@/lib/db';
@@ -40,6 +41,18 @@ export function useEvents(
     useEffect(() => {
         refetch();
     }, [refetch]);
+
+    // Refetch when the consuming screen regains focus — picks up
+    // server-side changes that happen while we're on a different
+    // screen. The custody override editor (#500) reassigns events
+    // server-side on save; without this hook the calendar would
+    // still show stale responsible assignments after the user
+    // navigates back.
+    useFocusEffect(
+        useCallback(() => {
+            refetch();
+        }, [refetch]),
+    );
 
     return { events, isLoading, error, refetch };
 }
