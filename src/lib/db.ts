@@ -154,6 +154,25 @@ export type InvitationPreview = {
     expires_at: string;
 };
 
+/**
+ * Extended invitation preview for the Phase 9 Join screen (#296). Includes
+ * everything `InvitationPreview` has plus the household-type tag, the
+ * inviter's member color, and aggregated parent/kid name + color arrays so
+ * the join screen can render the family-preview avatar stacks before the
+ * invitee accepts. The arrays line up positionally — `parent_names[i]`
+ * always pairs with `parent_colors[i]`. Colors may be empty string when a
+ * member hasn't picked one yet; the renderer falls back to accent in that
+ * case. Populated by RPC `get_invitation_full_preview` (migration 0063).
+ */
+export type InvitationFullPreview = InvitationPreview & {
+    household_type: HouseholdType;
+    inviter_color: string | null;
+    parent_names: string[];
+    parent_colors: string[];
+    kid_names: string[];
+    kid_colors: string[];
+};
+
 export type NewChildInput = {
     displayName: string;
     birthdate?: string | null;
@@ -1425,6 +1444,24 @@ export async function getInvitationPreview(token: string): Promise<InvitationPre
     const { data, error } = await supabase.rpc('get_invitation_preview', { p_token: token });
     if (error) throw error;
     const rows = (data ?? []) as InvitationPreview[];
+    return rows[0] ?? null;
+}
+
+/**
+ * Extended preview for the redesigned Join screen (#296). Returns null when
+ * the token is invalid / expired / already accepted (same eligibility as
+ * `getInvitationPreview`). The arrays are guaranteed non-null but may be
+ * empty (e.g. a solo-parent household has no parent_names other than the
+ * inviter, who is excluded from the stack on purpose).
+ */
+export async function getInvitationFullPreview(
+    token: string,
+): Promise<InvitationFullPreview | null> {
+    const { data, error } = await supabase.rpc('get_invitation_full_preview', {
+        p_token: token,
+    });
+    if (error) throw error;
+    const rows = (data ?? []) as InvitationFullPreview[];
     return rows[0] ?? null;
 }
 

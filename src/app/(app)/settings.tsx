@@ -29,6 +29,7 @@ import { findPattern } from '@/lib/custody';
 import { useCustodySchedule } from '@/hooks/use-custody-schedule';
 import { memberColorMap } from '@/lib/colors';
 import { deleteMyAccount, type HouseholdType } from '@/lib/db';
+import { labelForHouseholdType } from '@/lib/household-types';
 import { useAuth } from '@/providers/auth-provider';
 import {
     useAppColorScheme,
@@ -678,13 +679,7 @@ export default function SettingsScreen() {
                             />
                             <SRow
                                 label="Family type"
-                                right={
-                                    householdType === 'single_parent'
-                                        ? 'Just me + my kids'
-                                        : householdType === 'couple'
-                                          ? 'My partner and me'
-                                          : 'Separated co-parents'
-                                }
+                                right={labelForHouseholdType(householdType)}
                                 chevron
                                 onPress={() => router.push('/settings/household')}
                             />
