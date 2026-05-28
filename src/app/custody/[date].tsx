@@ -43,8 +43,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
     ApprovalBanner,
     CaregiverPickRow,
+    DatePickerSheet,
     DateRangeBoxes,
-    DateTimePickerSheet,
     FormSwitch,
     KidCheckRow,
     KindChip,
@@ -192,7 +192,6 @@ export default function CustodyOverrideEditorScreen() {
 
     // ─── editor state ────────────────────────────────────────────────
     const [kind, setKind] = useState<CustodyOverrideKind>('family_trip');
-    const [singleDay, setSingleDay] = useState(true);
     const [fromDate, setFromDate] = useState<string>(seedDate);
     const [toDate, setToDate] = useState<string>(seedDate);
     // Selected preset chip — UI affordance only; the actual dates live
@@ -238,16 +237,16 @@ export default function CustodyOverrideEditorScreen() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [schedule?.id, members?.length, fromDate]);
 
-    // Keep toDate >= fromDate. If user pushes fromDate past toDate,
-    // snap toDate to match.
+    // Keep toDate >= fromDate. If the user pushes fromDate past toDate
+    // (via a preset chip or by tapping the From row directly), snap
+    // toDate forward to match. Single-day mode is implicit when from
+    // and to are equal — no separate toggle needed.
     useEffect(() => {
-        if (singleDay && fromDate !== toDate) {
-            setToDate(fromDate);
-        } else if (!singleDay && toDate < fromDate) {
+        if (toDate < fromDate) {
             setToDate(fromDate);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [fromDate, singleDay]);
+    }, [fromDate]);
 
     // ─── range data for preview + conflict count ─────────────────────
     // Pull a week window starting Monday of fromDate so the preview
@@ -503,9 +502,8 @@ export default function CustodyOverrideEditorScreen() {
         if (!range) return;
         setFromDate(range.from);
         setToDate(range.to);
-        // Multi-day presets (weekends) flip singleDay off so the UI
-        // matches the actual range.
-        setSingleDay(range.from === range.to);
+        // Single-day vs range is now implicit (from === to). No
+        // separate toggle to keep in sync.
     };
 
     const onToggleKid = (kidId: string) => {
@@ -666,20 +664,12 @@ export default function CustodyOverrideEditorScreen() {
                         </View>
                     </SGroup>
 
-                    {/* When */}
+                    {/* When — single-day is implicit when From == To.
+                        No separate toggle: the user just leaves both
+                        boxes on the same date for a one-day override,
+                        or picks a later date for the To box to extend
+                        the range. */}
                     <SGroup label="When">
-                        <SRow
-                            label="Single day"
-                            right={
-                                <FormSwitch
-                                    value={singleDay}
-                                    onValueChange={(next) => {
-                                        setSingleDay(next);
-                                        if (next) setToDate(fromDate);
-                                    }}
-                                />
-                            }
-                        />
                         <View style={styles.whenPadding}>
                             <ThemedText
                                 style={[
@@ -689,7 +679,7 @@ export default function CustodyOverrideEditorScreen() {
                                         fontFamily: FontFamily.monoSemiBold,
                                     },
                                 ]}>
-                                {singleDay ? 'DATE' : 'DATE RANGE'}
+                                DATE RANGE
                             </ThemedText>
                             <DateRangeBoxes
                                 fromValue={format(
@@ -703,11 +693,7 @@ export default function CustodyOverrideEditorScreen() {
                                 )}
                                 toSub={format(parseISO(toDate), 'yyyy')}
                                 onPressFrom={() => setFromSheetOpen(true)}
-                                onPressTo={
-                                    singleDay
-                                        ? undefined
-                                        : () => setToSheetOpen(true)
-                                }
+                                onPressTo={() => setToSheetOpen(true)}
                             />
                             <View style={styles.presetRow}>
                                 <PresetChip
@@ -1092,35 +1078,32 @@ export default function CustodyOverrideEditorScreen() {
                     </Pressable>
                 </View>
 
-                {/* Date picker sheets */}
-                <DateTimePickerSheet
+                {/* Date picker sheets — DatePickerSheet renders the
+                    MiniCalendar directly in the sheet body, so the tap
+                    goes from "From box" → calendar in one hop (no
+                    intermediary "Pick a date" trigger button + modal). */}
+                <DatePickerSheet
                     open={fromSheetOpen}
-                    title={singleDay ? 'Override date' : 'From date'}
-                    sub="Pick the start of the override."
+                    title="From date"
+                    sub="Pick the start of the override range. To make it a single-day override, set the same date in the To box."
                     initialDate={fromDate}
-                    initialTime=""
-                    allDay
                     onSave={(next) => {
-                        setFromDate(next.date);
-                        if (singleDay) setToDate(next.date);
+                        setFromDate(next);
                         setSelectedPreset(null);
                         setFromSheetOpen(false);
                     }}
                     onClose={() => setFromSheetOpen(false)}
                 />
-                <DateTimePickerSheet
+                <DatePickerSheet
                     open={toSheetOpen}
                     title="To date"
                     sub="Pick the inclusive end of the override range."
                     initialDate={toDate}
-                    initialTime=""
-                    allDay
                     onSave={(next) => {
-                        // Snap to fromDate if user picks something
-                        // earlier — keep the range valid without an
+                        // Snap forward if user picked something earlier
+                        // than From — keep the range valid without an
                         // error toast.
-                        const picked =
-                            next.date < fromDate ? fromDate : next.date;
+                        const picked = next < fromDate ? fromDate : next;
                         setToDate(picked);
                         setSelectedPreset(null);
                         setToSheetOpen(false);

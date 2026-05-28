@@ -71,6 +71,11 @@ export { TmplRow } from './tmpl-row';
 export { CIRow } from './ci-row';
 export { TextInputSheet } from './text-input-sheet';
 export { DateTimePickerSheet } from './date-time-picker-sheet';
+// DatePickerSheet — date-only picker that mounts MiniCalendar directly
+// in the sheet body. Use this when you want the calendar to BE the
+// sheet (no intermediate "Pick a date" trigger button + secondary modal
+// hop). The override editor uses it for From/To.
+export { DatePickerSheet } from './date-picker-sheet';
 export { RepeatsPickerSheet } from './repeats-picker-sheet';
 
 // ── Lists v2 (FAB rule spec v2, design_handoff_fab_rule) ─────────────
