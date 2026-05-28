@@ -814,17 +814,32 @@ export default function CustodyOverrideEditorScreen() {
                     </SGroup>
 
                     {/* With whom — household parents first, then external
-                        co-parents. The default custodian for the chosen
-                        From date renders muted (selecting them is a no-op). */}
+                        co-parents. The CURRENT effective custodian (pattern
+                        + applied overrides) renders muted because saving
+                        them is a no-op — they already have the kids.
+                        Crucially this is NOT the pattern default; an
+                        existing override on the date can flip which
+                        parent is muted (and which is the meaningful
+                        "switch back" target). */}
                     <SGroup label="With whom">
                         {parents.map((p, idx) => {
-                            const defaultForRange =
-                                schedule &&
-                                resolveCustodianOnDate(
-                                    schedule,
-                                    new Map(),
-                                    parseISO(fromDate),
-                                ).profileId === p.profile_id;
+                            // Apply existing overrides to determine who
+                            // ACTUALLY has the kids on the From date.
+                            // Without this, a day that's already
+                            // overridden to Parent 2 still mutes Parent
+                            // 1 (the pattern default) and you can't
+                            // tap them to switch back.
+                            const effectiveOverrideMap =
+                                buildOverrideMap(weekOverrides ?? []);
+                            const effectiveProfileId = schedule
+                                ? resolveCustodianOnDate(
+                                      schedule,
+                                      effectiveOverrideMap,
+                                      parseISO(fromDate),
+                                  ).profileId
+                                : null;
+                            const isCurrentCustodian =
+                                effectiveProfileId === p.profile_id;
                             return (
                                 <CaregiverPickRow
                                     key={p.profile_id}
@@ -834,14 +849,14 @@ export default function CustodyOverrideEditorScreen() {
                                         colorMap,
                                     )}
                                     sub={
-                                        defaultForRange
-                                            ? 'Default for these days'
+                                        isCurrentCustodian
+                                            ? 'Currently has the kids'
                                             : 'Household parent'
                                     }
                                     selected={
                                         selectedCustodianId === p.profile_id
                                     }
-                                    muted={defaultForRange}
+                                    muted={isCurrentCustodian}
                                     onPress={() =>
                                         setSelectedCustodianId(p.profile_id)
                                     }
