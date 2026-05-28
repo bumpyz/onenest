@@ -802,6 +802,11 @@ export function EventForm({
         paddingVertical: Spacing.two,
         fontSize: 16,
         height: 44,
+        // Explicit fontFamily so RN-Web TextInputs don't fall through
+        // to the OS default — PlacesAutocomplete + Notes + the maps URL
+        // field were rendering in the system sans-serif instead of
+        // Geist, visibly different from ThemedText siblings.
+        fontFamily: FontFamily.sansRegular,
     };
 
     return (
@@ -1131,6 +1136,20 @@ export function EventForm({
                             broadcast to the household," which is misleading. Zero kids = the
                             event simply isn't tagged to any kid; nothing about privacy. The
                             "Mark private" Switch below is the explicit lever for visibility. */}
+                        {/* Divider — Responsible / Children are two
+                            distinct sub-blocks inside the Who card.
+                            Without the hairline they ran together
+                            visually; with it they read as separate
+                            scope (alternation rules) vs scope-target
+                            (kids tagged) clusters. */}
+                        {children.length > 0 ? (
+                            <View
+                                style={[
+                                    styles.whoDivider,
+                                    { backgroundColor: colors.hair },
+                                ]}
+                            />
+                        ) : null}
                         {children.length > 0 ? (
                             <View style={styles.field}>
                                 {/* Section sub-label mirrors RESPONSIBLE (lines
@@ -1149,11 +1168,11 @@ export function EventForm({
                                     ]}>
                                     FOR CHILD(REN)
                                 </ThemedText>
-                                <ThemedText themeColor="textSecondary" type="small">
-                                    {selectedChildIds.size === 0
-                                        ? 'Leave blank for an adult-only event.'
-                                        : 'Tagged kids appear with chips on the calendar.'}
-                                </ThemedText>
+                                {/* Helper text removed (the conditional
+                                    "Leave blank…" / "Tagged kids…" line)
+                                    — the chip strip below is self-
+                                    explanatory and the extra copy was
+                                    making the Who section feel busy. */}
                                 <View style={styles.chipRow}>
                                     {/* PersonChip again — children use the
                                         same chip vocabulary as parents
@@ -1183,6 +1202,17 @@ export function EventForm({
                             </View>
                         ) : null}
 
+                        {/* Divider between scope (Responsible / For)
+                            and visibility (Mark private). Different
+                            concerns — keeps the Who card's structure
+                            readable as scope above the line, privacy
+                            below. */}
+                        <View
+                            style={[
+                                styles.whoDivider,
+                                { backgroundColor: colors.hair },
+                            ]}
+                        />
                         {/* Mark private toggle (#466). Visible to parents
                             (caregivers can't create events; the `locked`
                             override-mode also disables this so an
@@ -1191,12 +1221,7 @@ export function EventForm({
                             saved event sets events.is_private = true and
                             the Calendar / Home renderers will show a
                             generic Busy block to viewers who AREN'T in
-                            the responsibles list. Responsibles still
-                            see the full event everywhere. The toggle
-                            sits adjacent to the per-child chip rack so
-                            "scope (who's tagged)" and "visibility (who
-                            sees the title)" read as the two distinct
-                            knobs they are. */}
+                            the responsibles list. */}
                         <View style={styles.field}>
                             {/* Two-tier layout: title + switch on one
                                 row, description on its own line below.
@@ -1222,14 +1247,21 @@ export function EventForm({
                                     disabled={locked}
                                 />
                             </View>
-                            <ThemedText
-                                themeColor="textSecondary"
-                                type="small"
-                                style={styles.privacyCaption}>
-                                {isPrivate
-                                    ? 'Other adults see this slot as Busy. Tagged people see the full event.'
-                                    : 'Visible to everyone in the household.'}
-                            </ThemedText>
+                            {/* Caption only renders on the ON state. The
+                                OFF state ("Visible to everyone in the
+                                household.") was redundant — that's just
+                                the normal event behavior; surfacing it
+                                as caption copy made the section feel
+                                cluttered with no informational gain. */}
+                            {isPrivate ? (
+                                <ThemedText
+                                    themeColor="textSecondary"
+                                    type="small"
+                                    style={styles.privacyCaption}>
+                                    Other adults see this slot as Busy.
+                                    Tagged people see the full event.
+                                </ThemedText>
+                            ) : null}
                         </View>
                     </FormGroup>
 
@@ -2084,15 +2116,20 @@ export function EventForm({
 
 const styles = StyleSheet.create({
     // Alternation FormRow — sits directly beneath the Responsible chip
-    // strip as a continuation of the same selector. Earlier versions
-    // pulled it edge-to-edge with negative horizontal margins and a
-    // hairline top border so it looked like a settings-row sibling;
-    // that made the row read as a SEPARATE section from Responsible.
-    // Alternates is conceptually part of "who's on duty" — it shapes
-    // how Responsible resolves on each occurrence. Kept inline with no
-    // divider so the chip strip and the row read as one block.
+    // strip as a continuation of the same selector. No divider above,
+    // tight margin so it reads as one block with the chips.
     alternationRowWrap: {
         marginTop: 6,
+    },
+    // Hairline between sub-blocks inside the Who card — separates the
+    // Responsible cluster (chips + Alternates) from the For/Children
+    // cluster from the Mark-private toggle. Renders as a 0.5px line
+    // pulled flush to the FormGroup card edges (negative horizontal
+    // margins counter the card's 12px internal padding).
+    whoDivider: {
+        height: StyleSheet.hairlineWidth,
+        marginHorizontal: -12,
+        marginVertical: 2,
     },
     alternationRow: {
         flexDirection: 'row',
