@@ -170,7 +170,13 @@ export default function NotificationsScreen() {
 
         // Real: conflicts from summary
         // The summary's Conflict shape is one row per (event + colliding
-        // busy block); craft an inbox row per conflict.
+        // busy block); craft an inbox row per conflict. Tap routes to
+        // the dedicated conflict resolver (/conflict/[id]) which owns
+        // the side-by-side compare + Reassign / Reschedule / Mute /
+        // Open in calendar actions. The route's `[id]` is the event id;
+        // the resolver re-fetches the conflict context server-side so
+        // we don't have to thread blockStartsAt / member_profile_id
+        // through the URL.
         for (const c of summary?.conflicts ?? []) {
             const start = new Date(c.event.starts_at);
             list.push({
@@ -180,6 +186,7 @@ export default function NotificationsScreen() {
                 body: `${c.event.title} overlaps a busy block`,
                 at: start,
                 unread: true,
+                href: `/conflict/${c.event.id}`,
             });
         }
 

@@ -402,8 +402,16 @@ export default function DigestScreen() {
                                     <Pressable
                                         key={`${c.event.id}-${c.blockStartsAt}`}
                                         onPress={() =>
+                                            // Route to the conflict
+                                            // resolver, not the event
+                                            // detail — the resolver owns
+                                            // Reassign / Reschedule /
+                                            // Mute / Open-in-calendar
+                                            // actions for the conflict
+                                            // context, which event detail
+                                            // doesn't surface.
                                             router.push({
-                                                pathname: '/event/[id]',
+                                                pathname: '/conflict/[id]',
                                                 params: { id: c.event.id },
                                             })
                                         }
