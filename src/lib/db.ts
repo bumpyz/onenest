@@ -2421,6 +2421,68 @@ export async function setEventRemindersFor(
     if (insError && insError.code !== 'PGRST205') throw insError;
 }
 
+// ─── Notification preferences (migration 0054, R3 #420) ─────────────────
+//
+// Per-profile per-kind enable/disable. Sparse model: absent row =
+// enabled. Only present rows represent a user's explicit override
+// from the default. The cron edge functions JOIN this table when
+// deciding whether to fire — disabled kinds get skipped silently.
+
+export type NotificationPreference = {
+    profile_id: string;
+    kind: NotificationKind | 'all';
+    enabled: boolean;
+    updated_at: string;
+};
+
+/** Returns the caller's notification preferences. Absent kinds are
+ *  implicitly enabled. UI maps the result into a per-kind enabled?
+ *  lookup, defaulting to true when the kind has no row. */
+export async function listMyNotificationPreferences(): Promise<
+    NotificationPreference[]
+> {
+    const { data, error } = await supabase
+        .from('notification_preferences')
+        .select('*');
+    if (error) {
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
+    return (data ?? []) as NotificationPreference[];
+}
+
+/** Upsert a single (kind, enabled) preference. Setting enabled=true
+ *  removes the row (since default is enabled, the explicit row is
+ *  only needed to express "muted"). This keeps the table small. */
+export async function setNotificationPreference(
+    kind: NotificationKind | 'all',
+    enabled: boolean,
+): Promise<void> {
+    const userId = await currentUserId();
+    if (enabled) {
+        // Delete the override row — absent = default-on.
+        const { error } = await supabase
+            .from('notification_preferences')
+            .delete()
+            .eq('profile_id', userId)
+            .eq('kind', kind);
+        if (error && error.code !== 'PGRST205') throw error;
+        return;
+    }
+    const { error } = await supabase
+        .from('notification_preferences')
+        .upsert(
+            {
+                profile_id: userId,
+                kind,
+                enabled,
+                updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'profile_id,kind' },
+        );
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
 // ─── Notifications (migration 0052, R1 #381) ────────────────────────────
 //
 // Persisted per-recipient notification log. Writes are gated through

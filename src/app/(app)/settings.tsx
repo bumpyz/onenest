@@ -960,6 +960,32 @@ export default function SettingsScreen() {
                         hand-off / conflict / activity prefs are useful
                         regardless of role. */}
                     <SGroup label="Notifications">
+                        {/* R3 (#420): per-kind notification preferences
+                            sub-route. Server-side (notification_preferences
+                            table) — honored by the event-reminders cron +
+                            future sunday-summary refactor. The SToggle
+                            rows below are legacy local-only AsyncStorage
+                            state; they should migrate to the new table
+                            (or get removed) in a follow-up. The sub-route
+                            is the authoritative source. */}
+                        <SRow
+                            label="Manage by kind"
+                            right={
+                                <ThemedText
+                                    style={{
+                                        fontFamily: FontFamily.monoMedium,
+                                        fontSize: 12,
+                                        letterSpacing: -0.2,
+                                        color: colors.textSecondary,
+                                    }}>
+                                    7 kinds
+                                </ThemedText>
+                            }
+                            chevron
+                            onPress={() =>
+                                router.push('/settings/notifications')
+                            }
+                        />
                         <SToggle
                             label="Weekly digest"
                             sub="Sunday at 7pm — conflicts, unassigned events, hand-offs"

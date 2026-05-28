@@ -16,7 +16,7 @@ import { format, parseISO } from 'date-fns';
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { SheetShell } from '@/components/ds';
+import { DateTimePickerSheet, SheetShell } from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
 import { Colors, FontFamily } from '@/constants/theme';
 import { updateTask, type Task } from '@/lib/db';
@@ -70,6 +70,23 @@ export function ReminderSheet({
     }, [open, task.reminder_at, task.due_at]);
     const [saving, setSaving] = useState(false);
 
+    // Custom datetime state (#385). When the user picks 'custom', we
+    // stash the chosen instant here as an ISO string and surface it
+    // via the row's sub-label. Save reads this when selected==='custom'.
+    // Seeded from task.reminder_at iff it doesn't match any preset.
+    const seedCustomAt = (): string | null => {
+        if (!task.reminder_at) return null;
+        if (task.due_at && task.reminder_at === task.due_at) return null;
+        const preset = presetForReminderAt(task.due_at, task.reminder_at);
+        return preset ? null : task.reminder_at;
+    };
+    const [customAt, setCustomAt] = useState<string | null>(seedCustomAt());
+    const [customPickerOpen, setCustomPickerOpen] = useState(false);
+    useEffect(() => {
+        if (open) setCustomAt(seedCustomAt());
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, task.reminder_at, task.due_at]);
+
     // Build the option list with absolute-time subs. When due_at is null
     // we render the same labels but skip the absolute time sub since it
     // can't be computed; the sheet's sub-copy explains the prerequisite.
@@ -111,11 +128,15 @@ export function ReminderSheet({
                 muted: !due,
             });
         }
+        // #385: Custom… now opens DateTimePickerSheet inline. Sub
+        // reflects the picked datetime when present, otherwise the
+        // tap-to-pick affordance copy.
         opts.push({
             id: 'custom',
             label: 'Custom…',
-            sub: 'Pick exact time',
-            muted: true, // wheel picker is out of scope for v2; future enhancement
+            sub: customAt
+                ? format(parseISO(customAt), 'MMM d · HH:mm')
+                : 'Pick exact time',
         });
         return opts;
     })();
@@ -127,15 +148,22 @@ export function ReminderSheet({
             //   'off'    → null
             //   'at_due' → due_at (or null if no due)
             //   preset id → computeReminderAt(due, preset)
-            //   'custom' → not yet supported; treat as no-op (close sheet)
+            //   'custom' → customAt (the datetime the user picked
+            //              via DateTimePickerSheet) — #385.
             let computedReminderAt: string | null;
             if (selected === 'off') {
                 computedReminderAt = null;
             } else if (selected === 'at_due') {
                 computedReminderAt = task.due_at;
             } else if (selected === 'custom') {
-                onClose();
-                return;
+                if (!customAt) {
+                    // User picked 'custom' but never set a datetime —
+                    // treat as a no-op so we don't clear an existing
+                    // reminder accidentally.
+                    onClose();
+                    return;
+                }
+                computedReminderAt = customAt;
             } else {
                 const preset: ReminderPreset | null =
                     REMINDER_PRESETS.find((p) => p.id === selected) ?? null;
@@ -201,7 +229,16 @@ export function ReminderSheet({
                     return (
                         <Pressable
                             key={String(o.id)}
-                            onPress={() => setSelected(o.id)}
+                            onPress={() => {
+                                setSelected(o.id);
+                                // #385: Custom… selection also opens
+                                // the datetime picker so the user can
+                                // commit a concrete instant in a
+                                // single tap chain.
+                                if (o.id === 'custom') {
+                                    setCustomPickerOpen(true);
+                                }
+                            }}
                             disabled={o.muted && o.id !== 'off'}
                             accessibilityRole="radio"
                             accessibilityState={{ checked: isSelected }}
@@ -253,6 +290,41 @@ export function ReminderSheet({
                     );
                 })}
             </View>
+            {/* #385: Custom datetime picker mounted as a sibling Modal.
+                Opens when the user taps the 'Custom…' row; Save stores
+                the picked datetime as an ISO string in customAt and
+                the outer ReminderSheet's Save handler reads it. The
+                ReminderSheet stays open so the user can confirm or
+                switch to a preset before committing. */}
+            <DateTimePickerSheet
+                open={customPickerOpen}
+                title="Custom reminder"
+                sub="Pick the exact date + time the reminder should fire."
+                initialDate={
+                    customAt
+                        ? format(parseISO(customAt), 'yyyy-MM-dd')
+                        : task.due_at
+                          ? format(parseISO(task.due_at), 'yyyy-MM-dd')
+                          : format(new Date(), 'yyyy-MM-dd')
+                }
+                initialTime={
+                    customAt
+                        ? format(parseISO(customAt), 'HH:mm')
+                        : task.due_at
+                          ? format(parseISO(task.due_at), 'HH:mm')
+                          : '09:00'
+                }
+                onSave={({ date, time }) => {
+                    // Compose a local-time ISO string from the picked
+                    // YYYY-MM-DD + HH:MM. parseISO interprets these as
+                    // local midnight/hour, which matches how event /
+                    // task starts_at are stored elsewhere.
+                    const iso = new Date(`${date}T${time}:00`).toISOString();
+                    setCustomAt(iso);
+                    setCustomPickerOpen(false);
+                }}
+                onClose={() => setCustomPickerOpen(false)}
+            />
         </SheetShell>
     );
 }

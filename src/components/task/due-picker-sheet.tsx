@@ -199,17 +199,13 @@ export function DuePickerSheet({
                     onPress={() => applyPreset('none')}
                     colors={colors}
                 />
-                {/* Custom… — defer to a future wheel/system picker. For
-                    now muted/disabled so the design slot still reads. */}
-                <DueChip
-                    label="Custom…"
-                    muted
-                    selected={false}
-                    onPress={() => {
-                        /* deferred: opens a wheel picker; out of scope for v2 */
-                    }}
-                    colors={colors}
-                />
+                {/* Removed the "Custom…" preset chip (R4, #405). The
+                    MiniCalendar below already supports picking any date
+                    + the Time card accepts arbitrary times — having a
+                    separate "Custom…" affordance implied a fourth mode
+                    that didn't exist. The preset chips now act purely
+                    as accelerators ("Today/Tomorrow/Next week/None"); a
+                    user wanting an arbitrary date taps the calendar. */}
             </View>
 
             {/* MiniCalendar */}
