@@ -1,33 +1,49 @@
-// Native DateField / TimeField. Web has its own variant (datetime-fields.web.tsx)
-// that uses <input type="date"> / <input type="time"> — the browser supplies a
-// real picker for free. This file is what bundles on iOS + Android.
+// Native DateField + TimeField. Web has its own variant (datetime-fields.web.tsx)
+// that uses the same pattern but with web-modal positioning.
 //
-// Implementation (UX-020 fix):
-//   - DateField + TimeField render a Pressable showing the formatted current
-//     value (or a placeholder when empty). Tapping opens a platform-native
-//     picker via @react-native-community/datetimepicker.
-//   - iOS uses the inline `DateTimePicker` component inside a Modal we mount,
-//     because iOS's "default" presentation is in-flow / inline rather than a
-//     system modal. We wrap it in our own modal with Done/Cancel buttons so
-//     the user has clear commit + dismiss controls.
-//   - Android uses the imperative `DateTimePickerAndroid.open()` — no JSX
-//     mount needed, the OS handles modal + commit/cancel internally.
+// Both DateField and TimeField render a Pressable trigger that opens a
+// Modal containing a custom in-app picker UI:
+//   • DateField → MiniCalendar (our ds primitive) with a month-nav header
+//     and Cancel/Done buttons.
+//   • TimeField → paired hour/minute stepper columns + ":00/:15/:30/:45"
+//     quick presets + Cancel/Done buttons.
 //
-// The `value` + `onChange` API matches the web variant exactly so callers stay
-// platform-agnostic. Empty string means "no value picked yet" and renders a
-// placeholder + opens the picker at today / now.
+// Both replace the platform's native date/time pickers (#502 + #503 close
+// out the cross-platform unification). Rationale:
+//   1. The OS pickers look out of place against the rest of the app's
+//      chrome — different per platform, no theming, don't follow our
+//      Mist Forest / Charcoal Forest palette.
+//   2. The hour/minute stepper is the same pattern used inside the
+//      DueDateSheet (event reminders), so users see one unified date
+//      / time vocabulary across the app.
+//   3. We already ship the MiniCalendar primitive; reusing it here means
+//      a future palette refresh ripples to every date picker in one place.
+//
+// Presentation:
+//   • Native (iOS + Android): bottom-sheet modal sliding from below.
+//     Matches platform conventions for transient pickers.
+//   • Web (datetime-fields.web.tsx): centered overlay matching desktop
+//     modal conventions. Same picker bodies, different shell.
+//
+// The `value` + `onChange` API matches the web variant exactly so callers
+// stay platform-agnostic. Empty string means "no value picked yet" and
+// renders a placeholder; the picker opens at today / noon.
 
 import { Feather } from '@expo/vector-icons';
-import DateTimePicker, {
-    DateTimePickerAndroid,
-    type DateTimePickerEvent,
-} from '@react-native-community/datetimepicker';
-import { useState } from 'react';
-import { Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { addMonths, format as fmt, parse, subMonths } from 'date-fns';
+import { useEffect, useState } from 'react';
+import { Modal, Pressable, StyleSheet, View } from 'react-native';
 
+import { MiniCalendar } from '@/components/ds/mini-calendar';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { Colors, FontFamily, Spacing, Typography } from '@/constants/theme';
+import { withAlpha } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
+
+// Union of the light + dark palette types so child components (the
+// `TimeStepperColumn` helper below) can accept whichever palette the
+// caller has picked. Mirrors the pattern used in MiniCalendar.
+type Palette = (typeof Colors)['light'] | (typeof Colors)['dark'];
 
 // ─── Date parsing / formatting helpers ──────────────────────────────────────
 // Storage shape: YYYY-MM-DD. Display shape: "Mon, May 23" (no year unless the
@@ -35,24 +51,18 @@ import { useAppColorScheme } from '@/providers/theme-provider';
 
 function parseYmd(ymd: string): Date | null {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
-    const [y, m, d] = ymd.split('-').map(Number);
-    const dt = new Date(y, m - 1, d);
-    if (Number.isNaN(dt.getTime())) return null;
-    return dt;
+    const dt = parse(ymd, 'yyyy-MM-dd', new Date());
+    return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
 function formatYmd(date: Date): string {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    return fmt(date, 'yyyy-MM-dd');
 }
 
 function formatDisplayDate(ymd: string): string {
     const d = parseYmd(ymd);
     if (!d) return '';
-    const today = new Date();
-    const sameYear = d.getFullYear() === today.getFullYear();
+    const sameYear = d.getFullYear() === new Date().getFullYear();
     return d.toLocaleDateString(undefined, {
         weekday: 'short',
         month: 'short',
@@ -61,48 +71,21 @@ function formatDisplayDate(ymd: string): string {
     });
 }
 
-function parseHm(hm: string): { h: number; m: number } | null {
+function parseHm(hm: string): { hour: number; minute: number } | null {
     if (!/^\d{2}:\d{2}$/.test(hm)) return null;
     const [h, m] = hm.split(':').map(Number);
     if (h < 0 || h > 23 || m < 0 || m > 59) return null;
-    return { h, m };
+    return { hour: h, minute: m };
 }
 
-function formatHm(date: Date): string {
-    const h = String(date.getHours()).padStart(2, '0');
-    const m = String(date.getMinutes()).padStart(2, '0');
-    return `${h}:${m}`;
+function formatHm(hour: number, minute: number): string {
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
-function formatDisplayTime(hm: string): string {
+function formatDisplayHm(hm: string): string {
     const parsed = parseHm(hm);
     if (!parsed) return '';
-    const d = new Date();
-    d.setHours(parsed.h, parsed.m, 0, 0);
-    return d.toLocaleTimeString(undefined, {
-        hour: 'numeric',
-        minute: '2-digit',
-    });
-}
-
-// ─── Shared field shell ─────────────────────────────────────────────────────
-// Same visual treatment as the web variant — 44px tall, bordered, padded —
-// so the form looks consistent across platforms.
-
-function useFieldStyles() {
-    const scheme = useAppColorScheme();
-    const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
-    return {
-        colors,
-        wrapper: {
-            borderColor: colors.backgroundSelected,
-            borderWidth: 1,
-            borderRadius: Spacing.two,
-            paddingHorizontal: Spacing.three,
-            justifyContent: 'center' as const,
-            height: 44,
-        },
-    };
+    return formatHm(parsed.hour, parsed.minute);
 }
 
 // ─── DateField ──────────────────────────────────────────────────────────────
@@ -110,12 +93,10 @@ function useFieldStyles() {
 /** Render-prop API exposed by `renderTrigger`. Callers get the open()
  *  function plus the current YYYY-MM-DD value and the human-formatted
  *  display string so they can compose their own button chrome (e.g. a
- *  FormRow with a chevron) and still trigger the platform date picker. */
+ *  FormRow with a chevron) and still trigger the picker. */
 export type DateFieldTriggerProps = {
     open: () => void;
-    /** Raw YYYY-MM-DD (empty when unset). */
     value: string;
-    /** Locale-formatted display string ("Mon, May 23") — empty when unset. */
     display: string;
 };
 
@@ -123,44 +104,38 @@ type DateProps = {
     value: string; // YYYY-MM-DD (empty string = unset)
     onChange: (value: string) => void;
     /** Optional render-prop override. When provided, the caller renders
-     *  its own trigger chrome (e.g. a FormRow row with a chevron) and
-     *  invokes the picker by calling `open()`. The iOS-native modal
-     *  still renders alongside the custom trigger. When omitted,
-     *  DateField falls back to its default bordered pill. */
+     *  its own trigger chrome and invokes the picker by calling `open()`. */
     renderTrigger?: (api: DateFieldTriggerProps) => React.ReactNode;
 };
 
 export function DateField({ value, onChange, renderTrigger }: DateProps) {
-    const { colors, wrapper } = useFieldStyles();
-    // iOS uses the in-flow DateTimePicker component, so we mount it inside a
-    // Modal we control. Android fires DateTimePickerAndroid.open() imperatively
-    // and never needs a JSX mount.
-    const [iosModalOpen, setIosModalOpen] = useState(false);
-    // Draft value while the iOS spinner is moving but before Done is tapped.
-    // Lets the user spin around and back without each tick firing onChange.
-    const [iosDraft, setIosDraft] = useState<Date | null>(null);
+    const scheme = useAppColorScheme();
+    const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
-    const currentDate = parseYmd(value) ?? new Date();
-    const display = formatDisplayDate(value);
+    const [modalOpen, setModalOpen] = useState(false);
+    // Draft date while modal open; commits to onChange only on Done.
+    const [draft, setDraft] = useState<Date | null>(null);
+    // Month being viewed — independent of draft so the user can flip
+    // months without snapping back to the selected day.
+    const [monthAnchor, setMonthAnchor] = useState<Date>(new Date());
 
-    const open = () => {
-        if (Platform.OS === 'android') {
-            DateTimePickerAndroid.open({
-                value: currentDate,
-                mode: 'date',
-                onChange: (event: DateTimePickerEvent, picked?: Date) => {
-                    // Android fires onChange with `type === 'dismissed'` when the
-                    // user cancels — in that case we keep the existing value.
-                    if (event.type === 'set' && picked) {
-                        onChange(formatYmd(picked));
-                    }
-                },
-            });
-            return;
-        }
-        setIosDraft(currentDate);
-        setIosModalOpen(true);
+    // Seed draft + monthAnchor whenever the modal opens. Without this,
+    // re-opening after a cancel would resume the in-progress edit.
+    useEffect(() => {
+        if (!modalOpen) return;
+        const seed = parseYmd(value) ?? new Date();
+        setDraft(seed);
+        setMonthAnchor(seed);
+    }, [modalOpen, value]);
+
+    const open = () => setModalOpen(true);
+    const cancel = () => setModalOpen(false);
+    const done = () => {
+        if (draft) onChange(formatYmd(draft));
+        setModalOpen(false);
     };
+
+    const display = formatDisplayDate(value);
 
     return (
         <>
@@ -176,82 +151,155 @@ export function DateField({ value, onChange, renderTrigger }: DateProps) {
                             : 'Pick a date'
                     }
                     style={({ pressed }) => [
-                        wrapper,
-                        styles.fieldRow,
+                        styles.fieldWrapper,
+                        {
+                            borderColor: colors.hair,
+                            backgroundColor: colors.backgroundElement,
+                        },
                         pressed && styles.pressed,
                     ]}>
                     <ThemedText
                         style={{
-                            color: value ? colors.text : colors.textSecondary,
-                            fontSize: 16,
+                            color: value ? colors.text : colors.inkFaint,
+                            fontFamily: FontFamily.monoMedium,
+                            fontSize: 13,
+                            letterSpacing: -0.2,
                             flex: 1,
                         }}>
                         {display || 'Pick a date'}
                     </ThemedText>
-                    {/* UX-032: trailing calendar icon signals "this is interactive
-                        and opens a picker" — mirrors the calendar icon browsers
-                        render inside HTML <input type="date">. Without this the
-                        field looked identical to a static read-only label. */}
-                    <Feather
-                        name="calendar"
-                        size={16}
-                        color={colors.textSecondary}
-                    />
+                    <Feather name="calendar" size={14} color={colors.inkSec} />
                 </Pressable>
             )}
-            {Platform.OS === 'ios' && iosModalOpen ? (
-                <Modal
-                    transparent
-                    animationType="fade"
-                    onRequestClose={() => setIosModalOpen(false)}>
-                    <Pressable
-                        style={styles.modalBackdrop}
-                        onPress={() => setIosModalOpen(false)}
-                    />
-                    <View
-                        style={[
-                            styles.modalSheet,
-                            { backgroundColor: colors.backgroundElement },
-                        ]}>
-                        <DateTimePicker
-                            value={iosDraft ?? currentDate}
-                            mode="date"
-                            display="spinner"
-                            onChange={(_e, picked) => {
-                                if (picked) setIosDraft(picked);
-                            }}
-                        />
-                        <View style={styles.modalButtonRow}>
-                            <Pressable
-                                onPress={() => setIosModalOpen(false)}
-                                style={({ pressed }) => [
-                                    styles.modalButton,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText themeColor="textSecondary">Cancel</ThemedText>
-                            </Pressable>
-                            <Pressable
-                                onPress={() => {
-                                    if (iosDraft) onChange(formatYmd(iosDraft));
-                                    setIosModalOpen(false);
-                                }}
-                                style={({ pressed }) => [
-                                    styles.modalButton,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText style={{ color: '#1F2940', fontWeight: '600' }}>
-                                    Done
-                                </ThemedText>
-                            </Pressable>
-                        </View>
+
+            <Modal
+                visible={modalOpen}
+                transparent
+                animationType="slide"
+                onRequestClose={cancel}>
+                <Pressable style={styles.backdrop} onPress={cancel} />
+                <View
+                    style={[
+                        styles.sheetNative,
+                        {
+                            backgroundColor: colors.backgroundElement,
+                            borderColor: colors.hair,
+                        },
+                    ]}>
+                    {/* Month header — caps mono label + prev/next arrows. */}
+                    <View style={styles.monthHeader}>
+                        <Pressable
+                            onPress={() =>
+                                setMonthAnchor((m) => subMonths(m, 1))
+                            }
+                            accessibilityRole="button"
+                            accessibilityLabel="Previous month"
+                            style={({ pressed }) => [
+                                styles.monthNavBtn,
+                                {
+                                    borderColor: colors.hair,
+                                    backgroundColor: colors.backgroundInset,
+                                },
+                                pressed && styles.pressed,
+                            ]}>
+                            <Feather
+                                name="chevron-left"
+                                size={14}
+                                color={colors.text}
+                            />
+                        </Pressable>
+                        <ThemedText
+                            style={[
+                                styles.monthLabel,
+                                {
+                                    color: colors.text,
+                                    fontFamily: FontFamily.monoSemiBold,
+                                },
+                            ]}>
+                            {fmt(monthAnchor, 'MMMM yyyy').toUpperCase()}
+                        </ThemedText>
+                        <Pressable
+                            onPress={() =>
+                                setMonthAnchor((m) => addMonths(m, 1))
+                            }
+                            accessibilityRole="button"
+                            accessibilityLabel="Next month"
+                            style={({ pressed }) => [
+                                styles.monthNavBtn,
+                                {
+                                    borderColor: colors.hair,
+                                    backgroundColor: colors.backgroundInset,
+                                },
+                                pressed && styles.pressed,
+                            ]}>
+                            <Feather
+                                name="chevron-right"
+                                size={14}
+                                color={colors.text}
+                            />
+                        </Pressable>
                     </View>
-                </Modal>
-            ) : null}
+
+                    <MiniCalendar
+                        monthAnchor={monthAnchor}
+                        selected={draft}
+                        onSelect={(d) => {
+                            setDraft(d);
+                            if (d.getMonth() !== monthAnchor.getMonth()) {
+                                setMonthAnchor(d);
+                            }
+                        }}
+                        colors={colors}
+                    />
+
+                    <View style={styles.buttonRow}>
+                        <Pressable
+                            onPress={cancel}
+                            accessibilityRole="button"
+                            accessibilityLabel="Cancel"
+                            style={({ pressed }) => [
+                                styles.btn,
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={{
+                                    color: colors.inkSec,
+                                    fontWeight: '500',
+                                }}>
+                                Cancel
+                            </ThemedText>
+                        </Pressable>
+                        <Pressable
+                            onPress={done}
+                            accessibilityRole="button"
+                            accessibilityLabel="Done"
+                            disabled={!draft}
+                            style={({ pressed }) => [
+                                styles.btn,
+                                { backgroundColor: colors.accent },
+                                !draft && { opacity: 0.5 },
+                                pressed && draft && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={{
+                                    color: colors.onAccent,
+                                    fontWeight: '600',
+                                }}>
+                                Done
+                            </ThemedText>
+                        </Pressable>
+                    </View>
+                </View>
+            </Modal>
         </>
     );
 }
 
-// ─── TimeField ──────────────────────────────────────────────────────────────
+// ─── TimeField ────────────────────────────────────────────────────────
+//
+// Same Pressable trigger pattern → Modal with hour/minute stepper UI.
+// Matches the web variant's design exactly so a DATE / TIME field row
+// inside DateTimePickerSheet reads as one visual family across platforms.
 
 type TimeProps = {
     value: string; // HH:mm 24h (empty string = unset)
@@ -259,37 +307,47 @@ type TimeProps = {
 };
 
 export function TimeField({ value, onChange }: TimeProps) {
-    const { colors, wrapper } = useFieldStyles();
-    const [iosModalOpen, setIosModalOpen] = useState(false);
-    const [iosDraft, setIosDraft] = useState<Date | null>(null);
+    const scheme = useAppColorScheme();
+    const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
-    // Construct a Date with today's date + the parsed time, so the picker has a
-    // sensible starting point. Falls back to "right now" when value is empty.
-    const baseDate = (() => {
+    const [modalOpen, setModalOpen] = useState(false);
+    const [draftHour, setDraftHour] = useState<number>(12);
+    const [draftMinute, setDraftMinute] = useState<number>(0);
+
+    useEffect(() => {
+        if (!modalOpen) return;
         const parsed = parseHm(value);
-        const d = new Date();
-        if (parsed) d.setHours(parsed.h, parsed.m, 0, 0);
-        return d;
-    })();
-    const display = formatDisplayTime(value);
-
-    const open = () => {
-        if (Platform.OS === 'android') {
-            DateTimePickerAndroid.open({
-                value: baseDate,
-                mode: 'time',
-                is24Hour: false,
-                onChange: (event: DateTimePickerEvent, picked?: Date) => {
-                    if (event.type === 'set' && picked) {
-                        onChange(formatHm(picked));
-                    }
-                },
-            });
-            return;
+        if (parsed) {
+            setDraftHour(parsed.hour);
+            setDraftMinute(parsed.minute);
+        } else {
+            setDraftHour(12);
+            setDraftMinute(0);
         }
-        setIosDraft(baseDate);
-        setIosModalOpen(true);
+    }, [modalOpen, value]);
+
+    const open = () => setModalOpen(true);
+    const cancel = () => setModalOpen(false);
+    const done = () => {
+        onChange(formatHm(draftHour, draftMinute));
+        setModalOpen(false);
     };
+
+    // Hour wraps 0..23 (24-hour clock — same convention used app-wide).
+    const incHour = () => setDraftHour((h) => (h + 1) % 24);
+    const decHour = () => setDraftHour((h) => (h - 1 + 24) % 24);
+    // Minute steps 5 at a time (the common event-planning granularity).
+    // Wraps 0..55. Users who land on a non-5 minute value snap to the
+    // nearest 5 on the next increment.
+    const incMinute = () =>
+        setDraftMinute((m) => (Math.floor(m / 5) * 5 + 5) % 60);
+    const decMinute = () =>
+        setDraftMinute((m) => {
+            const base = Math.ceil(m / 5) * 5;
+            return (base - 5 + 60) % 60;
+        });
+
+    const display = formatDisplayHm(value);
 
     return (
         <>
@@ -302,88 +360,259 @@ export function TimeField({ value, onChange }: TimeProps) {
                         : 'Pick a time'
                 }
                 style={({ pressed }) => [
-                    wrapper,
-                    styles.fieldRow,
+                    styles.fieldWrapper,
+                    {
+                        borderColor: colors.hair,
+                        backgroundColor: colors.backgroundElement,
+                    },
                     pressed && styles.pressed,
                 ]}>
                 <ThemedText
                     style={{
-                        color: value ? colors.text : colors.textSecondary,
-                        fontSize: 16,
+                        color: value ? colors.text : colors.inkFaint,
+                        fontFamily: FontFamily.monoMedium,
+                        fontSize: 13,
+                        letterSpacing: -0.2,
                         flex: 1,
                     }}>
                     {display || 'Pick a time'}
                 </ThemedText>
-                <Feather
-                    name="clock"
-                    size={16}
-                    color={colors.textSecondary}
-                />
+                <Feather name="clock" size={14} color={colors.inkSec} />
             </Pressable>
-            {Platform.OS === 'ios' && iosModalOpen ? (
-                <Modal
-                    transparent
-                    animationType="fade"
-                    onRequestClose={() => setIosModalOpen(false)}>
-                    <Pressable
-                        style={styles.modalBackdrop}
-                        onPress={() => setIosModalOpen(false)}
-                    />
-                    <View
+
+            <Modal
+                visible={modalOpen}
+                transparent
+                animationType="slide"
+                onRequestClose={cancel}>
+                <Pressable style={styles.backdrop} onPress={cancel} />
+                <View
+                    style={[
+                        styles.timeSheetNative,
+                        {
+                            backgroundColor: colors.backgroundElement,
+                            borderColor: colors.hair,
+                        },
+                    ]}>
+                    <ThemedText
                         style={[
-                            styles.modalSheet,
-                            { backgroundColor: colors.backgroundElement },
+                            styles.timeHeader,
+                            {
+                                color: colors.inkFaint,
+                                fontFamily: FontFamily.monoSemiBold,
+                            },
                         ]}>
-                        <DateTimePicker
-                            value={iosDraft ?? baseDate}
-                            mode="time"
-                            display="spinner"
-                            onChange={(_e, picked) => {
-                                if (picked) setIosDraft(picked);
-                            }}
+                        PICK A TIME
+                    </ThemedText>
+
+                    <View style={styles.timeCols}>
+                        <TimeStepperColumn
+                            label="HOUR"
+                            value={draftHour}
+                            onIncrement={incHour}
+                            onDecrement={decHour}
+                            colors={colors}
                         />
-                        <View style={styles.modalButtonRow}>
-                            <Pressable
-                                onPress={() => setIosModalOpen(false)}
-                                style={({ pressed }) => [
-                                    styles.modalButton,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText themeColor="textSecondary">Cancel</ThemedText>
-                            </Pressable>
-                            <Pressable
-                                onPress={() => {
-                                    if (iosDraft) onChange(formatHm(iosDraft));
-                                    setIosModalOpen(false);
-                                }}
-                                style={({ pressed }) => [
-                                    styles.modalButton,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText style={{ color: '#1F2940', fontWeight: '600' }}>
-                                    Done
-                                </ThemedText>
-                            </Pressable>
-                        </View>
+                        <ThemedText
+                            style={[
+                                styles.timeColon,
+                                {
+                                    color: colors.inkSec,
+                                    fontFamily: FontFamily.monoSemiBold,
+                                },
+                            ]}>
+                            :
+                        </ThemedText>
+                        <TimeStepperColumn
+                            label="MIN"
+                            value={draftMinute}
+                            onIncrement={incMinute}
+                            onDecrement={decMinute}
+                            colors={colors}
+                        />
                     </View>
-                </Modal>
-            ) : null}
+
+                    <View style={styles.timePresets}>
+                        {[0, 15, 30, 45].map((m) => {
+                            const active = draftMinute === m;
+                            return (
+                                <Pressable
+                                    key={m}
+                                    onPress={() => setDraftMinute(m)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={`Set minute to ${m}`}
+                                    style={({ pressed }) => [
+                                        styles.timePreset,
+                                        {
+                                            backgroundColor: active
+                                                ? withAlpha(
+                                                      colors.accent,
+                                                      0x18 / 255,
+                                                  )
+                                                : colors.backgroundInset,
+                                            borderColor: active
+                                                ? withAlpha(
+                                                      colors.accent,
+                                                      0x66 / 255,
+                                                  )
+                                                : colors.hair,
+                                        },
+                                        pressed && styles.pressed,
+                                    ]}>
+                                    <ThemedText
+                                        style={{
+                                            color: active
+                                                ? colors.accent
+                                                : colors.inkSec,
+                                            fontFamily:
+                                                FontFamily.monoSemiBold,
+                                            fontSize: 11,
+                                            letterSpacing: 0.3,
+                                        }}>
+                                        :{String(m).padStart(2, '0')}
+                                    </ThemedText>
+                                </Pressable>
+                            );
+                        })}
+                    </View>
+
+                    <View style={styles.buttonRow}>
+                        <Pressable
+                            onPress={cancel}
+                            accessibilityRole="button"
+                            accessibilityLabel="Cancel"
+                            style={({ pressed }) => [
+                                styles.btn,
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={{
+                                    color: colors.inkSec,
+                                    fontWeight: '500',
+                                }}>
+                                Cancel
+                            </ThemedText>
+                        </Pressable>
+                        <Pressable
+                            onPress={done}
+                            accessibilityRole="button"
+                            accessibilityLabel="Done"
+                            style={({ pressed }) => [
+                                styles.btn,
+                                { backgroundColor: colors.accent },
+                                pressed && styles.pressed,
+                            ]}>
+                            <ThemedText
+                                style={{
+                                    color: colors.onAccent,
+                                    fontWeight: '600',
+                                }}>
+                                Done
+                            </ThemedText>
+                        </Pressable>
+                    </View>
+                </View>
+            </Modal>
         </>
     );
 }
 
+/** One stepper column inside the time picker — caps mono sub-label,
+ *  up chevron, padded 2-digit value tile, down chevron. */
+function TimeStepperColumn({
+    label,
+    value,
+    onIncrement,
+    onDecrement,
+    colors,
+}: {
+    label: string;
+    value: number;
+    onIncrement: () => void;
+    onDecrement: () => void;
+    colors: Palette;
+}) {
+    return (
+        <View style={styles.timeCol}>
+            <ThemedText
+                style={[
+                    styles.timeColLabel,
+                    {
+                        color: colors.inkFaint,
+                        fontFamily: FontFamily.monoSemiBold,
+                    },
+                ]}>
+                {label}
+            </ThemedText>
+            <Pressable
+                onPress={onIncrement}
+                accessibilityRole="button"
+                accessibilityLabel={`Increase ${label.toLowerCase()}`}
+                style={({ pressed }) => [
+                    styles.timeArrowBtn,
+                    {
+                        borderColor: colors.hair,
+                        backgroundColor: colors.backgroundInset,
+                    },
+                    pressed && styles.pressed,
+                ]}>
+                <Feather name="chevron-up" size={14} color={colors.text} />
+            </Pressable>
+            <View
+                style={[
+                    styles.timeValueTile,
+                    {
+                        borderColor: withAlpha(colors.accent, 0x66 / 255),
+                        backgroundColor: withAlpha(
+                            colors.accent,
+                            0x0e / 255,
+                        ),
+                    },
+                ]}>
+                <ThemedText
+                    style={[
+                        styles.timeValueText,
+                        {
+                            color: colors.text,
+                            fontFamily: FontFamily.monoSemiBold,
+                        },
+                    ]}>
+                    {String(value).padStart(2, '0')}
+                </ThemedText>
+            </View>
+            <Pressable
+                onPress={onDecrement}
+                accessibilityRole="button"
+                accessibilityLabel={`Decrease ${label.toLowerCase()}`}
+                style={({ pressed }) => [
+                    styles.timeArrowBtn,
+                    {
+                        borderColor: colors.hair,
+                        backgroundColor: colors.backgroundInset,
+                    },
+                    pressed && styles.pressed,
+                ]}>
+                <Feather name="chevron-down" size={14} color={colors.text} />
+            </Pressable>
+        </View>
+    );
+}
+
 const styles = StyleSheet.create({
-    // UX-032: flex row so the text takes available width and the calendar/clock
-    // icon sits flush right.
-    fieldRow: {
+    // Shared trigger chrome — mirrors the web variant exactly so DATE
+    // and TIME fields side-by-side inside DateTimePickerSheet read as
+    // siblings of one design family across all three platforms.
+    fieldWrapper: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: Spacing.two,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 10,
+        paddingHorizontal: Spacing.three,
+        paddingVertical: Spacing.two,
+        height: 40,
     },
-    pressed: { opacity: 0.7 },
-    // Bottom-sheet modal style for iOS. Backdrop captures taps outside the
-    // sheet to dismiss (matches iOS conventions).
-    modalBackdrop: {
+    backdrop: {
         position: 'absolute',
         top: 0,
         left: 0,
@@ -391,25 +620,123 @@ const styles = StyleSheet.create({
         bottom: 0,
         backgroundColor: 'rgba(0, 0, 0, 0.4)',
     },
-    modalSheet: {
+    // Bottom-sheet shell for native — slides from below, fills the
+    // viewport width minus a comfortable side margin, rounded top
+    // corners so it reads as a sheet. Bottom padding adds breathing
+    // room above the home-bar / nav-bar.
+    sheetNative: {
         position: 'absolute',
         left: 0,
         right: 0,
         bottom: 0,
-        paddingTop: Spacing.three,
-        paddingBottom: Spacing.six,
-        paddingHorizontal: Spacing.four,
-        borderTopLeftRadius: Spacing.three,
-        borderTopRightRadius: Spacing.three,
+        padding: 16,
+        paddingBottom: 32,
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        gap: 12,
     },
-    modalButtonRow: {
+    timeSheetNative: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        padding: 16,
+        paddingBottom: 32,
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        gap: 14,
+        alignItems: 'center',
+    },
+    monthHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+    },
+    monthLabel: {
+        ...Typography.monoCaps,
+        fontSize: 11,
+        flex: 1,
+        textAlign: 'center',
+    },
+    monthNavBtn: {
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    buttonRow: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
-        gap: Spacing.three,
-        paddingTop: Spacing.two,
+        gap: 8,
+        marginTop: 4,
+        alignSelf: 'stretch',
     },
-    modalButton: {
-        paddingVertical: Spacing.two,
-        paddingHorizontal: Spacing.three,
+    btn: {
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 8,
     },
+    timeHeader: {
+        ...Typography.monoCaps,
+        fontSize: 11,
+        alignSelf: 'center',
+    },
+    timeCols: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 14,
+    },
+    timeCol: {
+        alignItems: 'center',
+        gap: 6,
+    },
+    timeColLabel: {
+        ...Typography.monoCaps,
+        fontSize: 9,
+    },
+    timeArrowBtn: {
+        width: 56,
+        height: 28,
+        borderRadius: 8,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    timeValueTile: {
+        width: 56,
+        paddingVertical: 8,
+        borderRadius: 10,
+        borderWidth: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    timeValueText: {
+        fontSize: 26,
+        letterSpacing: -0.5,
+        fontWeight: '600',
+    },
+    timeColon: {
+        fontSize: 26,
+        fontWeight: '600',
+        marginTop: 22,
+    },
+    timePresets: {
+        flexDirection: 'row',
+        gap: 6,
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+    },
+    timePreset: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 999,
+        borderWidth: 1,
+    },
+    pressed: { opacity: 0.7 },
 });
