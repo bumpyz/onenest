@@ -42,9 +42,46 @@ drop index if exists public.custody_overrides_household_wide_unique;
 -- ─── (1c) drop legacy lookup index ─────────────────────────────────────
 drop index if exists public.custody_overrides_household_date_child_idx;
 
+-- ─── (1d-pre) drop the policy that references child_id ─────────────────
+-- Migration 0050 created an external-co-parent SELECT policy whose
+-- USING clause references custody_overrides.child_id. Postgres won't
+-- let us drop a column another object depends on, so we drop the
+-- policy first, then drop the column, then recreate the policy
+-- against child_ids (1d-post below). Behaviorally equivalent — same
+-- "external co-parent sees overrides on their linked kid OR
+-- household-wide overrides" semantic, just keyed off the array
+-- column.
+drop policy if exists "custody_overrides read external coparent"
+    on public.custody_overrides;
+
 -- ─── (1d) drop child_id column ─────────────────────────────────────────
 alter table public.custody_overrides
     drop column if exists child_id;
+
+-- ─── (1d-post) recreate the external-co-parent SELECT policy ───────────
+-- child_ids = '{}' (or NULL — defensive; the column is NOT NULL with
+-- default '{}') means household-wide. Otherwise the external profile
+-- needs to be linked to at least one kid in the array.
+create policy "custody_overrides read external coparent"
+    on public.custody_overrides for select
+    using (
+        exists (
+            select 1 from public.child_external_coparents cec
+            join public.children c on c.id = cec.child_id
+            where c.household_id = public.custody_overrides.household_id
+              and cec.profile_id = auth.uid()
+              and (
+                  -- household-wide (empty / null array) → visible to
+                  -- every external co-parent of a household kid
+                  coalesce(
+                      array_length(public.custody_overrides.child_ids, 1),
+                      0
+                  ) = 0
+                  -- otherwise the linked kid must be in the scope
+                  or cec.child_id = any(public.custody_overrides.child_ids)
+              )
+        )
+    );
 
 -- ─── (2) create_custody_override RPC ───────────────────────────────────
 -- Computes:
