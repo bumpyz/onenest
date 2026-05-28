@@ -339,20 +339,57 @@ export default function CustodyPatternEditorScreen() {
         };
         const emptyOverrides = new Map();
         const monday = startOfWeek(new Date(), { weekStartsOn: 1 });
-        const buildWeek = (offset: number) =>
-            Array.from({ length: 7 }, (_, d) => {
-                const date = addDays(monday, offset * 7 + d);
-                const r = resolveCustodianOnDate(
-                    draftSchedule,
-                    emptyOverrides,
-                    date,
-                );
-                if (r.bothPresent) return colors.shared;
-                return r.profileId === parentAId ? colorA : colorB;
-            });
+
+        // Resolve 15 days (2 visible weeks + 1 lookahead) in a single
+        // pass. The lookahead day lets us decide whether the right edge
+        // of week 2's Sunday is a hand-off without having to special-
+        // case the last column.
+        type Slot = { color: string; key: string };
+        const slots: Slot[] = Array.from({ length: 15 }, (_, d) => {
+            const date = addDays(monday, d);
+            const r = resolveCustodianOnDate(
+                draftSchedule,
+                emptyOverrides,
+                date,
+            );
+            if (r.bothPresent) {
+                return { color: colors.shared, key: 'AB' };
+            }
+            const isA = r.profileId === parentAId;
+            return {
+                color: isA ? colorA : colorB,
+                // #491 finding follow-up: cycle-transition detection
+                // keys off the parent identity, not the color. Two
+                // distinct parent_ids can theoretically share a color
+                // (legacy default palette collision) — but the resolver
+                // is the source of truth either way.
+                key: r.profileId ?? 'unknown',
+            };
+        });
+
+        // A hand-off lives at the right edge of day N when day N's
+        // custodian differs from day N+1's. Compute once for the full
+        // 14-day window, then split into per-week index sets.
+        const allHandoffs: number[] = [];
+        for (let i = 0; i < slots.length - 1; i++) {
+            if (slots[i].key !== slots[i + 1].key) {
+                allHandoffs.push(i);
+            }
+        }
+
         return [
-            { start: monday, days: buildWeek(0) },
-            { start: addDays(monday, 7), days: buildWeek(1) },
+            {
+                start: monday,
+                days: slots.slice(0, 7).map((s) => s.color),
+                handoffIndices: allHandoffs.filter((i) => i < 7),
+            },
+            {
+                start: addDays(monday, 7),
+                days: slots.slice(7, 14).map((s) => s.color),
+                handoffIndices: allHandoffs
+                    .filter((i) => i >= 7 && i < 14)
+                    .map((i) => i - 7),
+            },
         ];
     }, [
         patternId,
@@ -583,7 +620,14 @@ export default function CustodyPatternEditorScreen() {
                                             color: c,
                                         }))}
                                         size="sm"
-                                        handoffIndex={handoffDayIndex}
+                                        // #491 follow-up: ticks come
+                                        // from the resolver's actual
+                                        // cycle transitions, not the
+                                        // user's day-of-week metadata.
+                                        // For 7-7 the list is a single
+                                        // index; for 2-2-3 / 2-2-5-5 /
+                                        // 3-4-4-3 it's multiple per week.
+                                        handoffIndices={w.handoffIndices}
                                         hideDayLabels={false}
                                     />
                                 </View>

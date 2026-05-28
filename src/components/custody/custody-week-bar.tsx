@@ -41,6 +41,7 @@ export function CustodyWeekBar({
     days,
     todayIndex,
     handoffIndex,
+    handoffIndices,
     size = 'md',
     /** Override default M-S day labels. Length must match `days`. */
     labels,
@@ -55,6 +56,11 @@ export function CustodyWeekBar({
     /** Index 0-6 where a hand-off happens. Renders the warn-color tick
      *  per the editor preview design (CustodyPatternEditor:235-241). */
     handoffIndex?: number;
+    /** Multi-handoff variant — for cycle patterns (2-2-3, 2-2-5-5,
+     *  3-4-4-3) where the rotation flips on several days per week.
+     *  When set, takes precedence over the single `handoffIndex`.
+     *  Each entry renders the same warn-color tick on that column. */
+    handoffIndices?: ReadonlyArray<number>;
     size?: CustodyWeekBarSize;
     labels?: ReadonlyArray<string>;
     hideDayLabels?: boolean;
@@ -77,12 +83,22 @@ export function CustodyWeekBar({
     // (0x33 light / 0x5C dark) so the bar reads against each page bg.
     const bodyAlpha = isDark ? 0x5c / 255 : 0x33 / 255;
 
+    // Multi-tick wins over single. Build a Set for O(1) per-column lookup
+    // so the inner loop stays linear regardless of how many handoffs the
+    // caller passes (cycle patterns can legitimately have 3+).
+    const handoffSet =
+        handoffIndices && handoffIndices.length > 0
+            ? new Set(handoffIndices)
+            : null;
+
     return (
         <View style={styles.wrap}>
             <View style={[styles.row, { gap: dims.gap }]}>
                 {days.map((d, i) => {
                     const isToday = i === todayIndex;
-                    const isHandoff = i === handoffIndex;
+                    const isHandoff = handoffSet
+                        ? handoffSet.has(i)
+                        : i === handoffIndex;
                     return (
                         <View
                             key={i}
