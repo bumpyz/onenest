@@ -8,15 +8,33 @@
 -- carry enough identity for the surfaces we render today, and the
 -- upload UX wasn't pulling its weight.
 --
--- This migration reverses 0061:
+-- This migration reverses the parts of 0061 that touch user-defined
+-- schema:
 --   1. Drop the four storage.objects RLS policies scoped to the bucket.
---   2. Empty + delete the `profile-avatars` Storage bucket. Buckets with
---      remaining objects can't be deleted, so we wipe rows from
---      storage.objects first (matched by bucket_id).
---   3. Drop `profiles.avatar_url`.
+--   2. Drop `profiles.avatar_url`.
 --
--- Idempotent throughout — `drop policy if exists`, conditional delete,
--- `drop column if exists`.
+-- The `profile-avatars` Storage bucket itself is NOT removed by this
+-- migration. Supabase ships a protective trigger that blocks direct
+-- DELETE on `storage.objects` even from the postgres role:
+--
+--     ERROR: Direct deletion from storage tables is not allowed.
+--            Use the Storage API instead. (SQLSTATE 42501)
+--
+-- So the only safe path to remove the bucket is via the Supabase
+-- dashboard or the Storage API. Leaving the bucket in place is
+-- harmless — it has no objects (nobody ever uploaded; the feature was
+-- cut before public release), the RLS policies are gone so it's
+-- inaccessible to clients, and it never accrues cost. Delete it via:
+--
+--     Supabase Studio → Storage → profile-avatars → ⋮ → Delete bucket
+--
+-- or, programmatically:
+--
+--     curl -X DELETE \
+--          -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+--          "${SUPABASE_URL}/storage/v1/bucket/profile-avatars"
+--
+-- Idempotent throughout — `drop policy if exists`, `drop column if exists`.
 
 -- ─── 1. Drop RLS policies ────────────────────────────────────────────────
 
@@ -28,15 +46,7 @@ begin
     execute $sql$drop policy if exists "profile-avatars delete" on storage.objects$sql$;
 end$$;
 
--- ─── 2. Drop the Storage bucket ─────────────────────────────────────────
---
--- Wipe any objects first so the bucket can be deleted. RLS is bypassed
--- here because migrations run as the postgres role.
-
-delete from storage.objects where bucket_id = 'profile-avatars';
-delete from storage.buckets where id = 'profile-avatars';
-
--- ─── 3. Drop the column ─────────────────────────────────────────────────
+-- ─── 2. Drop the column ─────────────────────────────────────────────────
 
 alter table public.profiles
     drop column if exists avatar_url;
