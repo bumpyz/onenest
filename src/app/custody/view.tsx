@@ -46,6 +46,7 @@ import { useHouseholds } from '@/hooks/use-households';
 import { useMyRole } from '@/hooks/use-my-role';
 import {
     buildOverrideMap,
+    custodyScopeWord,
     findPattern,
     handoffsWithinWeek,
     resolveCustodianOnDate,
@@ -228,20 +229,26 @@ export default function CustodyViewScreen() {
         ? (childrenList ?? []).find((c) => c.id === childId) ?? null
         : null;
 
-    // Subtitle — for caregivers: "Alex is on duty this week. Hand-off
-    // Sunday at 18:00." For external viewers: "<Kid>'s schedule.
-    // Hand-off Sunday at 18:00."
+    // Subtitle — pattern-aware scope. 7-7 says "this week"; everything
+    // else says "today" because the kids switch within the week.
+    // External viewers see kid-centric copy; caregivers see the
+    // currently-on-duty parent.
     const currentMember = (members ?? []).find(
         (m) => m.profile_id === currentWeek?.weekCustody.currentParentId,
     );
+    const subScope = custodyScopeWord(schedule?.pattern_id);
     const subtitleSentence1 = isExternal
         ? stripChild
             ? `${stripChild.display_name}'s schedule.`
             : 'Schedule.'
         : currentWeek?.weekCustody.bothPresent
-          ? 'Together this week.'
+          ? subScope === 'this week'
+              ? 'Together this week.'
+              : 'Together today.'
           : currentMember
-            ? `${currentMember.display_name} is on duty this week.`
+            ? subScope === 'this week'
+                ? `${currentMember.display_name} is on duty this week.`
+                : `${currentMember.display_name} has the kids today.`
             : 'Schedule.';
     const subtitleSentence2 = nextHandoff
         ? `Hand-off ${format(nextHandoff.at, 'EEEE')} at ${format(nextHandoff.at, 'HH:mm')}.`

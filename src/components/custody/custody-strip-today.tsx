@@ -50,6 +50,7 @@ import {
     colorForResponsible,
     memberColorMap,
 } from '@/lib/colors';
+import { custodyScopeWord } from '@/lib/custody';
 import {
     generateCaregiverBriefTasksForHandoff,
     getOpenCaregiverBriefTasksAt,
@@ -224,11 +225,19 @@ export function CustodyStripToday({
         colorMap,
     );
     const isMe = !!user && weekCustody.currentParentId === user.id;
-    // Caregiver-observer framing: "Alex is on duty this week" / "Alex &
-    // Riley both on duty" (#397 README · Top label). Co-parent default
-    // keeps the existing "You have / X has the kids" phrasing.
+    // Pattern-aware scope. 7-7 alternating-weeks keeps "this week";
+    // every other pattern uses "today" because the kids switch within
+    // the week. Mirrors the same helper used by /custody/schedule
+    // and /custody/view subtitles.
+    const scope = custodyScopeWord(schedule?.pattern_id);
+    // Caregiver-observer framing: "Alex is on duty today" (cycle) /
+    // "Alex is on duty this week" (7-7) / "Alex & Riley both on duty"
+    // (AB). Co-parent default keeps the existing "You have / X has
+    // the kids" phrasing — that one's already time-scope-neutral.
     const coparentTopLabel = weekCustody.bothPresent
-        ? 'Together this week'
+        ? scope === 'this week'
+            ? 'Together this week'
+            : 'Together today'
         : isMe
           ? 'You have the kids'
           : currentMember
@@ -249,7 +258,7 @@ export function CustodyStripToday({
                   : 'Both parents on duty';
           })()
         : currentMember
-          ? `${currentMember.display_name} is on duty this week`
+          ? `${currentMember.display_name} is on duty ${scope}`
           : 'No parent on duty';
     const topLabel =
         viewer === 'caregiver' ? caregiverTopLabel : coparentTopLabel;

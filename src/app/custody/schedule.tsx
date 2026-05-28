@@ -35,6 +35,7 @@ import { useMyRole } from '@/hooks/use-my-role';
 import { useSwapRequests } from '@/hooks/use-swap-requests';
 import {
     buildOverrideMap,
+    custodyScopeWord,
     findPattern,
     handoffsWithinWeek,
     resolveCustodianOnDate,
@@ -581,9 +582,25 @@ export default function CustodyScheduleScreen() {
                                 styles.subtitle,
                                 { color: colors.inkSec },
                             ]}>
-                            {currentMember
-                                ? `${currentMember.display_name}'s week this week.`
-                                : 'This week.'}
+                            {(() => {
+                                // #491 follow-up: pattern-aware scope word.
+                                // 7-7 = "this week" (one parent owns the
+                                // whole week). Every other pattern uses
+                                // "today" because the kids switch within
+                                // the week — "Alex's week this week" lies
+                                // about half the days on 2-2-3 etc.
+                                const scope = custodyScopeWord(
+                                    schedule?.pattern_id,
+                                );
+                                if (!currentMember) {
+                                    return scope === 'this week'
+                                        ? 'This week.'
+                                        : 'Today.';
+                                }
+                                return scope === 'this week'
+                                    ? `${currentMember.display_name}'s week this week.`
+                                    : `${currentMember.display_name} has the kids today.`;
+                            })()}
                             {/* Second design sentence — "Hand-off Sunday
                                 May 31 at 18:00." MEDIUM finding from the
                                 audit: previously dropped, leaving the

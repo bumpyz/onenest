@@ -92,6 +92,23 @@ export function findPattern(id: string | null | undefined): CustodyPattern | nul
 }
 
 /**
+ * Returns the time-scope word that reads accurately for the given
+ * pattern's rhythm. 7-7 keeps "this week" (one parent has the whole
+ * week). Every other pattern uses "today" because the kids switch
+ * within the week — saying "Riley's week this week" for 2-2-3 lies
+ * about half the days.
+ *
+ * Subtitle copy across the custody surfaces (CustodyScheduleV2,
+ * CustodyViewScreen, CustodyStripToday) routes through this so the
+ * phrasing is consistent everywhere.
+ */
+export function custodyScopeWord(
+    patternId: string | null | undefined,
+): 'this week' | 'today' {
+    return patternId === '7-7' ? 'this week' : 'today';
+}
+
+/**
  * Returns the cycle index (0-based) for the given date relative to the schedule's anchor.
  * Handles dates before the anchor correctly via positive modulo.
  *
