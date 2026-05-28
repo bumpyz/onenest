@@ -16,7 +16,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { DateField, TimeField } from '@/components/datetime-fields';
 import { ThemedText } from '@/components/themed-text';
-import { Colors, FontFamily } from '@/constants/theme';
+import { Colors, Typography } from '@/constants/theme';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
 import { SheetShell } from './sheet-shell';
@@ -74,34 +74,33 @@ export function DateTimePickerSheet({
             secondary="Cancel"
             onPrimary={() => onSave({ date, time })}
             onSecondary={onClose}
-            height={allDay ? 320 : 380}>
+            height={allDay ? 260 : 300}>
             <View style={styles.body}>
-                <View style={styles.field}>
+                {/* Each field is a horizontal row: caps mono label on
+                    the left (fixed 56px so DATE and TIME line up
+                    vertically across the two rows), picker control fills
+                    the remaining width on the right. Tighter than the
+                    prior stacked layout (label above, picker below)
+                    since the label takes ~16px of vertical real estate
+                    per row that we now reclaim. */}
+                <View style={styles.fieldRow}>
                     <ThemedText
-                        style={[
-                            styles.label,
-                            {
-                                color: colors.inkFaint,
-                                fontFamily: FontFamily.monoSemiBold,
-                            },
-                        ]}>
+                        style={[styles.label, { color: colors.inkFaint }]}>
                         DATE
                     </ThemedText>
-                    <DateField value={date} onChange={setDate} />
+                    <View style={styles.fieldControl}>
+                        <DateField value={date} onChange={setDate} />
+                    </View>
                 </View>
                 {!allDay ? (
-                    <View style={styles.field}>
+                    <View style={styles.fieldRow}>
                         <ThemedText
-                            style={[
-                                styles.label,
-                                {
-                                    color: colors.inkFaint,
-                                    fontFamily: FontFamily.monoSemiBold,
-                                },
-                            ]}>
+                            style={[styles.label, { color: colors.inkFaint }]}>
                             TIME
                         </ThemedText>
-                        <TimeField value={time} onChange={setTime} />
+                        <View style={styles.fieldControl}>
+                            <TimeField value={time} onChange={setTime} />
+                        </View>
                     </View>
                 ) : null}
             </View>
@@ -110,11 +109,24 @@ export function DateTimePickerSheet({
 }
 
 const styles = StyleSheet.create({
-    body: { gap: 14 },
-    field: { gap: 8 },
-    label: {
-        fontSize: 10,
-        letterSpacing: 0.4,
-        textTransform: 'uppercase',
+    // 10px between the two field rows — tighter than the prior 14
+    // since each row is now ~28px tall instead of the stacked layout's
+    // ~52px (label + 8px gap + control), and the overall sheet feels
+    // padded enough without extra inter-row breathing room.
+    body: { gap: 10 },
+    fieldRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
     },
+    // Fixed-width label slot so DATE and TIME align vertically across
+    // both rows (different glyph counts otherwise drift the picker's
+    // leading edge). Typography is the shared Typography.monoCaps preset
+    // — same vocabulary used by event-form fieldMonoLabel and
+    // event-task-section metaLabel.
+    label: {
+        ...Typography.monoCaps,
+        width: 56,
+    },
+    fieldControl: { flex: 1 },
 });

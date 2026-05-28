@@ -241,6 +241,18 @@ export const Typography = {
         fontFamily: FontFamily.monoRegular,
         fontSize: 9,
     },
+    /** 10 / 600 / 0.4 / uppercase — mono caps sub-labels inside form
+     *  sections ("RESPONSIBLE", "FOR CHILD(REN)", "TITLE", DATE / TIME
+     *  inside DateTimePickerSheet, ASSIGNED TO / IN LISTS inside
+     *  EventTaskSection). Distinct from `sectionHeader` (11pt **sans**) —
+     *  this is the *inside-a-card* sub-label vocabulary that uses mono
+     *  for that tabular feel. */
+    monoCaps: {
+        fontFamily: FontFamily.monoSemiBold,
+        fontSize: 10,
+        letterSpacing: 0.4,
+        textTransform: 'uppercase' as const,
+    },
 } as const;
 
 export const Spacing = {

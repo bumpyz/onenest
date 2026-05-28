@@ -8,14 +8,11 @@ import {
     Pressable,
     ScrollView,
     StyleSheet,
-    Switch,
     TextInput,
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ChildBadge } from '@/components/child-badge';
-import { DateField, TimeField } from '@/components/datetime-fields';
 import {
     AIHelper,
     AnyoneChip,
@@ -32,18 +29,16 @@ import {
 } from '@/components/ds';
 import { EventTaskSection, type LocalTask } from '@/components/event-task-section';
 import { PlacesAutocomplete } from '@/components/places-autocomplete';
-import {
-    ScrollOverflowChevron,
-    useHorizontalOverflow,
-} from '@/components/scroll-overflow-indicator';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
 import {
-    UNASSIGNED_COLOR,
-    colorForResponsible,
-    memberColorMap,
-} from '@/lib/colors';
+    BrandColors,
+    Colors,
+    FontFamily,
+    Spacing,
+    Typography,
+} from '@/constants/theme';
+import { colorForResponsible, memberColorMap } from '@/lib/colors';
 import type {
     Child,
     HouseholdMember,
@@ -57,8 +52,6 @@ import { errorMessage } from '@/lib/errors';
 import { withAlpha } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
 import {
-    RECURRENCE_PRESET_OPTIONS,
-    WEEKDAY_OPTIONS,
     buildRRule,
     formatRecurrenceLabel,
     parseRecurrence,
@@ -223,20 +216,21 @@ type Props = {
 // screens-extra-2.jsx FormSectionLabel + FormGroup.
 
 // Section order (matches screens-extra-2.jsx EventCreate):
-//   Title (naked) → WHEN → WHO → WHERE → ATTACH → NOTES.
-// Each section is a caps-mono <FormSectionLabel> followed by a rounded-12 hairline
-// <FormGroup> card. The outer <FormCard> wrapper was removed so each group is its
-// own surface — better visual rhythm and matches the design's section-grouped
-// layout. Destructive actions (Delete / Remove override) live in a sticky bottom
-// action bar instead of inline at the end of the scroll.
+//   Title (naked) → WHEN → WHO → WHERE → ATTACH → NOTIFICATIONS → NOTES.
+// Each section is a caps-mono <FormSectionLabel> followed by a rounded-12
+// hairline <FormGroup> card (flush variant when its body is composed of
+// FormRow primitives, padded variant when it wraps custom sub-blocks like
+// WHO's RESPONSIBLE / FOR CHILD(REN) chip clusters). Destructive actions
+// (Delete / Remove override) live in a sticky bottom action bar instead of
+// inline at the end of the scroll.
 //
-// Note: the design's FormRow helper (label-left + value-right) is intentionally
-// NOT applied here. The new event-responsible bundle moves event editing into
-// an inline-editable EventDetail surface that mirrors TaskDetail v2 (see #413),
-// which uses the existing SRow primitive from `@/components/ds`. Once that
-// retrofit lands, this EventForm becomes the create-only path and the modal
-// /event/[id]/edit route retires alongside it. Doing the row refactor here
-// would be wasted effort against a component on death row.
+// FormRow is used throughout this form (Starts / Ends / All day / Repeats /
+// Alternates / Mark private / To-do list / Quick tasks / Remind me / Also
+// notify other parent) and on the read side via EventDetail. The two
+// surfaces share one vocabulary now — this comment used to predict the
+// /event/[id]/edit modal getting retired in favor of an inline-edit
+// EventDetail; that work landed (#413, #422) and EventForm is now the
+// create + edit surface for both /event/new and /event/[id]/edit.
 /**
  * Spec 04.2 Starts/Ends row formatter. Renders the date + time as
  * "Tue May 26 · 16:00" (mono), collapsing to just "Tue May 26" when
@@ -309,8 +303,6 @@ export function EventForm({
     // the name to something that doesn't match the picked place.
     const [pickedPlace, setPickedPlace] = useState<LocationPlaceInput | null>(null);
     const [pickedPlaceAddress, setPickedPlaceAddress] = useState<string>('');
-    // UX-010: overflow indicator for the saved-locations chip strip.
-    const locationsOverflow = useHorizontalOverflow();
     const [notes, setNotes] = useState(initialValues.notes);
     // "Mark private" toggle (#466). When true, the writer persists
     // events.is_private = true; Calendar/Home gate their rendering so
@@ -627,12 +619,12 @@ export function EventForm({
         );
     }, [locations, locationName, pickedPlace]);
 
-    // Manual Maps URL field appears only when the user is typing a brand-new location
-    // by hand — picking a saved chip or a Google suggestion fills it for them.
-    const showMapsUrlField =
-        locationName.trim().length > 0 &&
-        matchedLocation === null &&
-        pickedPlace === null;
+    // (The previous `showMapsUrlField` derivation drove an inline
+    // manual Maps URL TextInput that surfaced under the search bar
+    // whenever the user was typing a brand-new place. It read as
+    // visual clutter mid-search and was dropped — custom-location-
+    // with-URL creation belongs in Settings → Locations, not inline
+    // in the event creator.)
 
     const busy = submitting || deleting;
     // Locked-but-still-cancellable: in occurrence mode every field except the responsible
@@ -793,22 +785,6 @@ export function EventForm({
         }
     };
 
-    const inputStyle = {
-        color: colors.text,
-        borderColor: colors.backgroundSelected,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        fontSize: 16,
-        height: 44,
-        // Explicit fontFamily so RN-Web TextInputs don't fall through
-        // to the OS default — PlacesAutocomplete + Notes + the maps URL
-        // field were rendering in the system sans-serif instead of
-        // Geist, visibly different from ThemedText siblings.
-        fontFamily: FontFamily.sansRegular,
-    };
-
     return (
         <ThemedView style={styles.container}>
             {/* KeyboardAvoidingView: iOS soft keyboard otherwise covers the
@@ -896,14 +872,13 @@ export function EventForm({
                         field and gets its own visual treatment. */}
                     <View style={styles.field}>
                         <ThemedText
-                            type="small"
-                            style={{
-                                color: colors.textSecondary,
-                                fontFamily: FontFamily.monoRegular,
-                                fontSize: 10,
-                                letterSpacing: -0.2,
-                                marginBottom: 4,
-                            }}>
+                            style={[
+                                styles.fieldMonoLabel,
+                                {
+                                    color: colors.textSecondary,
+                                    marginBottom: 4,
+                                },
+                            ]}>
                             TITLE
                         </ThemedText>
                         <TextInput
@@ -997,14 +972,31 @@ export function EventForm({
                     </FormGroup>
 
                     {/* ─── WHO ──────────────────────────────────────────── */}
-                    {/* gap={8} on the FormGroup tightens the vertical
-                        rhythm between the Responsible cluster, Children,
-                        and Mark-private sub-blocks — default gap is 12
-                        (Spacing.three) which read too loose with the
-                        hairline dividers in place. */}
+                    {/* FormGroup is now `flush` (padding 0) so every row
+                        and sub-block shares the FormRow vocabulary's
+                        14px horizontal inset. That fixes the prior
+                        misalignment where the Alternates FormRow's
+                        label sat at 12 + 14 = 26 (FormGroup pad +
+                        FormRow pad) while the RESPONSIBLE/FOR labels
+                        and chips sat at 12 — Starts/Ends in the WHEN
+                        card sit at 14, so nothing inside Who matched
+                        them. Now: every label (RESPONSIBLE, Alternates,
+                        FOR CHILD(REN), Mark private) and the first
+                        chip's leading edge all start at the same 14px
+                        inset. */}
                     <FormSectionLabel>Who</FormSectionLabel>
-                    <FormGroup gap={8}>
-                        <View style={styles.field}>
+                    <FormGroup flush>
+                        {/* RESPONSIBLE sub-block — 14/12 inset matches
+                            FormRow's padding so the mono label and first
+                            chip leading edge line up with Starts/Ends. */}
+                        <View
+                            style={[
+                                styles.whoSubBlock,
+                                {
+                                    borderBottomColor: colors.hair,
+                                    borderBottomWidth: StyleSheet.hairlineWidth,
+                                },
+                            ]}>
                             {/* Multi-select responsible parent. Tap a chip
                                 to tag/untag; first-added becomes lead
                                 automatically, and the lead chip gets a
@@ -1018,44 +1010,20 @@ export function EventForm({
                                 change which selected member is lead, the
                                 user opens EventDetail and uses
                                 EventResponsibleSheet (which has the
-                                dedicated lead picker row).
-                                Section sub-label is mono-caps per
-                                screens-extra-2.jsx:493-495 (10pt /
-                                inkMuted / 0.4 letter-spacing / 600 /
-                                uppercase / marginBottom 8). */}
+                                dedicated lead picker row). */}
                             <ThemedText
                                 style={[
                                     styles.fieldMonoLabel,
-                                    {
-                                        color: colors.textSecondary,
-                                        // monoSemiBold to match design's
-                                        // `fontWeight: 600` (screens-extra-2.jsx
-                                        // line 493). monoRegular is 400 and
-                                        // under-reads at 10pt caps — UX
-                                        // audit flagged the drift.
-                                        fontFamily: FontFamily.monoSemiBold,
-                                    },
+                                    { color: colors.textSecondary },
                                 ]}>
                                 RESPONSIBLE
                             </ThemedText>
                             <View style={styles.chipRow}>
-                                {/* PersonChip from @/components/ds matches the
-                                    design spec exactly (4/9/4 padding, 20px
-                                    avatar at the leading edge, member-color
-                                    +22 bg + +88 border when selected,
-                                    trailing check glyph). Replaces a local
-                                    chip that rendered a colored dot + label
-                                    only — no avatar, no check, wrong
-                                    background semantics. */}
                                 {members.map((m) => {
                                     const color = colorForResponsible(
                                         m.profile_id,
                                         colorMap,
                                     );
-                                    // Parent chip is "selected" only when
-                                    // alternation is OFF and the id is in
-                                    // the tagged set — alternation owns
-                                    // responsibility when on.
                                     const selected =
                                         alternation === null &&
                                         selectedIds.has(m.profile_id);
@@ -1095,96 +1063,51 @@ export function EventForm({
                                     }
                                 />
                             </View>
-                            {/* Alternates moved out of the chip strip
-                                and into a FormRow at the bottom of the
-                                Who section, matching the spec's
-                                options-entry vocabulary. The picker
-                                sheet handles the 3 options + per-mode
-                                explainer copy. */}
-                            {showAlternationChips && !lockExceptResponsible ? (
-                                <View style={styles.alternationRowWrap}>
-                                    <FormRow
-                                        label="Alternates"
-                                        value={
-                                            alternation === 'same_day'
-                                                ? 'Same day'
-                                                : alternation === 'previous_day'
-                                                  ? 'Overnight'
-                                                  : 'Off'
-                                        }
-                                        muted={!alternation}
-                                        chevron
-                                        onPress={() =>
-                                            setAlternationPickerOpen(true)
-                                        }
-                                        disabled={locked}
-                                        last
-                                    />
-                                </View>
-                            ) : null}
                         </View>
 
-                        {/* Event-type chip picker removed in the Phase 5 redesign.
-                            Per the design + product direction, the type field is being
-                            dropped from the create flow (Calendar / Home event blocks
-                            also dropped the type-icon prefix). The state + db column
-                            remain wired through this form for backwards-compat: existing
-                            events with an event_type keep it on save, and the value
-                            carries through onSubmit. The picker UI is what's gone. */}
+                        {/* Alternates — now a top-level FormRow inside
+                            the flush FormGroup, so its label aligns
+                            exactly with Starts/Ends/All day/Repeats
+                            (all 14px inset, 14/500/-0.2 typography). */}
+                        {showAlternationChips && !lockExceptResponsible ? (
+                            <FormRow
+                                label="Alternates"
+                                value={
+                                    alternation === 'same_day'
+                                        ? 'Same day'
+                                        : alternation === 'previous_day'
+                                          ? 'Overnight'
+                                          : 'Off'
+                                }
+                                muted={!alternation}
+                                chevron
+                                onPress={() => setAlternationPickerOpen(true)}
+                                disabled={locked}
+                            />
+                        ) : null}
 
-                        {/* Per-child multi-select. Hidden entirely for households with no kids
-                            so empty households (single roommate, couples without kids) don't
-                            see a dead UI affordance.
-                            Copy update (#466): the previous "Leave blank for household-wide
-                            events" copy conflated scope ("which kid does this affect") with
-                            visibility ("who sees this") — it read like "leave blank to
-                            broadcast to the household," which is misleading. Zero kids = the
-                            event simply isn't tagged to any kid; nothing about privacy. The
-                            "Mark private" Switch below is the explicit lever for visibility. */}
-                        {/* Divider — Responsible / Children are two
-                            distinct sub-blocks inside the Who card.
-                            Without the hairline they ran together
-                            visually; with it they read as separate
-                            scope (alternation rules) vs scope-target
-                            (kids tagged) clusters. */}
+                        {/* FOR CHILD(REN) sub-block. Same 14/12 inset as
+                            the RESPONSIBLE block so chip leading edges
+                            align with the FormRow labels above and
+                            below it. */}
                         {children.length > 0 ? (
                             <View
                                 style={[
-                                    styles.whoDivider,
-                                    { backgroundColor: colors.hair },
-                                ]}
-                            />
-                        ) : null}
-                        {children.length > 0 ? (
-                            <View style={styles.field}>
-                                {/* Section sub-label mirrors RESPONSIBLE (lines
-                                    1005-1019) so every "Who" / scope row inside
-                                    the form uses the same mono-caps vocabulary.
-                                    Previously this used `smallBold` which read as
-                                    a different hierarchy and broke the rhythm of
-                                    the Who section — UX audit flagged it. */}
+                                    styles.whoSubBlock,
+                                    {
+                                        borderBottomColor: colors.hair,
+                                        borderBottomWidth:
+                                            StyleSheet.hairlineWidth,
+                                    },
+                                ]}>
                                 <ThemedText
                                     style={[
                                         styles.fieldMonoLabel,
-                                        {
-                                            color: colors.textSecondary,
-                                            fontFamily: FontFamily.monoSemiBold,
-                                        },
+                                        { color: colors.textSecondary },
                                     ]}>
                                     FOR CHILD(REN)
                                 </ThemedText>
-                                {/* Helper text removed (the conditional
-                                    "Leave blank…" / "Tagged kids…" line)
-                                    — the chip strip below is self-
-                                    explanatory and the extra copy was
-                                    making the Who section feel busy. */}
                                 <View style={styles.chipRow}>
-                                    {/* PersonChip again — children use the
-                                        same chip vocabulary as parents
-                                        (20px avatar + name + check on
-                                        selected). Kid's identity color
-                                        tints the avatar bg + chip when
-                                        selected. */}
                                     {children.map((c) => {
                                         const selected = selectedChildIds.has(
                                             c.id,
@@ -1207,253 +1130,338 @@ export function EventForm({
                             </View>
                         ) : null}
 
-                        {/* Divider between scope (Responsible / For)
-                            and visibility (Mark private). Different
-                            concerns — keeps the Who card's structure
-                            readable as scope above the line, privacy
-                            below. */}
-                        <View
-                            style={[
-                                styles.whoDivider,
-                                { backgroundColor: colors.hair },
-                            ]}
-                        />
-                        {/* Mark private toggle (#466). Visible to parents
-                            (caregivers can't create events; the `locked`
-                            override-mode also disables this so an
-                            occurrence override doesn't accidentally
-                            re-publish a private series). When on, the
-                            saved event sets events.is_private = true and
-                            the Calendar / Home renderers will show a
-                            generic Busy block to viewers who AREN'T in
-                            the responsibles list. */}
-                        <View style={styles.field}>
-                            {/* Two-tier layout: title + switch on one
-                                row, description on its own line below.
-                                Originally the title and description
-                                were both inside a flex-column wrap
-                                that the switch centered on — which
-                                meant the switch shifted vertically
-                                every time the description grew from
-                                one line to two (the OFF copy fits on
-                                one line, the ON copy wraps). Splitting
-                                the description out anchors the switch
-                                to the title row's height alone, so
-                                toggling no longer "bumps" the switch. */}
-                            <View style={styles.privacyTitleRow}>
-                                <ThemedText
-                                    type="smallBold"
-                                    style={styles.privacyTitle}>
-                                    Mark private
-                                </ThemedText>
+                        {/* Mark private — converted from a custom
+                            smallBold-typography row to a real FormRow so
+                            its label uses the same 14/500/-0.2 vocabulary
+                            as Starts / Ends / All day / Alternates. The
+                            FormSwitch sits in the value slot exactly like
+                            All day. last={!isPrivate} suppresses the
+                            bottom hairline when no caption follows, so
+                            the card edge sits flush below the row. */}
+                        <FormRow
+                            label="Mark private"
+                            value={
                                 <FormSwitch
                                     value={isPrivate}
                                     onValueChange={setIsPrivate}
                                     disabled={locked}
                                 />
-                            </View>
-                            {/* Caption only renders on the ON state. The
-                                OFF state ("Visible to everyone in the
-                                household.") was redundant — that's just
-                                the normal event behavior; surfacing it
-                                as caption copy made the section feel
-                                cluttered with no informational gain. */}
-                            {isPrivate ? (
+                            }
+                            last={!isPrivate}
+                        />
+                        {/* Caption only renders on the ON state. The
+                            OFF state ("Visible to everyone in the
+                            household.") was redundant — that's just the
+                            normal event behavior; surfacing it as caption
+                            copy made the section feel cluttered with no
+                            informational gain. */}
+                        {isPrivate ? (
+                            <View style={styles.privacyCaptionWrap}>
                                 <ThemedText
                                     themeColor="textSecondary"
-                                    type="small"
-                                    style={styles.privacyCaption}>
+                                    type="small">
                                     Other adults see this slot as Busy.
                                     Tagged people see the full event.
                                 </ThemedText>
-                            ) : null}
-                        </View>
+                            </View>
+                        ) : null}
                     </FormGroup>
 
                     {/* ─── WHERE ────────────────────────────────────────── */}
-                    {/* "(optional)" lives in the section label itself so
-                        the inner FormGroup doesn't need to repeat the
-                        "Location (optional)" sub-heading. One sub-heading
-                        per section keeps the Who/When/Where rhythm
-                        consistent. */}
+                    {/* Single card holding the saved-locations list and
+                        the search bar at the bottom. They share one
+                        surface (same bg, same outer border, same width
+                        — the search bar isn't recessed inside any inner
+                        padding) so the section reads as "the Where
+                        list" with search affordance at the foot.
+                        A hairline divider above the search row provides
+                        the clear delineation between picking-an-existing
+                        and searching-for-new. We use a custom card view
+                        (not FormGroup) because FormGroup uses
+                        `overflow: hidden` which would clip the Places
+                        suggestions dropdown — here we want the dropdown
+                        to extend naturally past the card's bottom edge.
+                        The trade-off is that a selected
+                        LocationSuggestionRow's accent tint can bleed
+                        a hairline past the card's rounded top corners;
+                        at the tint's ~5.5% alpha that bleed is
+                        imperceptible. */}
                     <FormSectionLabel>Where (optional)</FormSectionLabel>
-                    <FormGroup>
-                        <View style={styles.field}>
-                            {locations.length > 0 ? (
-                                // Saved locations now render edge-to-edge
-                                // inside the FormGroup card itself (no
-                                // inner sub-card). The FormGroup IS the
-                                // container; nesting a second card made
-                                // the section feel claustrophobic. The
-                                // ScrollView keeps the 3-row maxHeight
-                                // clamp so longer lists scroll within
-                                // the card.
-                                <View style={styles.locationListInline}>
-                                    <ScrollView
-                                        // 3 rows × ~58px each = 174.
-                                        style={{ maxHeight: 174 }}
-                                        nestedScrollEnabled
-                                        showsVerticalScrollIndicator>
-                                        {locations.map((loc, idx) => {
-                                            const selected =
-                                                matchedLocation?.id === loc.id;
-                                            const last =
-                                                idx === locations.length - 1;
-                                            return (
-                                                <LocationSuggestionRow
-                                                    key={loc.id}
-                                                    title={loc.name}
-                                                    sub={
-                                                        loc.formatted_address ||
-                                                        undefined
-                                                    }
-                                                    selected={selected}
-                                                    tagLabel={
-                                                        selected
-                                                            ? 'SAVED'
-                                                            : undefined
-                                                    }
-                                                    tagTone="neutral"
-                                                    last={last}
-                                                    onPress={
-                                                        locked
-                                                            ? undefined
-                                                            : () => {
-                                                                  // Same selection
-                                                                  // logic the old
-                                                                  // chip path used.
-                                                                  setLocationName(
-                                                                      loc.formatted_address ||
-                                                                          loc.name,
-                                                                  );
-                                                                  setLocationMapsUrl(
-                                                                      loc.google_maps_url ??
-                                                                          '',
-                                                                  );
-                                                                  if (
-                                                                      loc.google_place_id
-                                                                  ) {
-                                                                      setPickedPlace(
-                                                                          {
-                                                                              placeId:
-                                                                                  loc.google_place_id,
-                                                                              formattedAddress:
-                                                                                  loc.formatted_address ??
-                                                                                  '',
-                                                                          },
-                                                                      );
-                                                                      setPickedPlaceAddress(
-                                                                          loc.formatted_address ??
+                    <View
+                        style={[
+                            styles.whereCard,
+                            {
+                                backgroundColor: colors.backgroundElement,
+                                borderColor: colors.hair,
+                            },
+                        ]}>
+                        {locations.length > 0 ? (
+                            <View style={styles.whereListClip}>
+                                <ScrollView
+                                    // 3 rows × ~58px each = 174.
+                                    style={{ maxHeight: 174 }}
+                                    nestedScrollEnabled
+                                    showsVerticalScrollIndicator>
+                                    {locations.map((loc, idx) => {
+                                        const selected =
+                                            matchedLocation?.id === loc.id;
+                                        const last =
+                                            idx === locations.length - 1;
+                                        return (
+                                            <LocationSuggestionRow
+                                                key={loc.id}
+                                                title={loc.name}
+                                                sub={
+                                                    loc.formatted_address ||
+                                                    undefined
+                                                }
+                                                selected={selected}
+                                                tagLabel={
+                                                    selected ? 'SAVED' : undefined
+                                                }
+                                                tagTone="neutral"
+                                                last={last}
+                                                onPress={
+                                                    locked
+                                                        ? undefined
+                                                        : () => {
+                                                              // Same selection
+                                                              // logic the old
+                                                              // chip path used.
+                                                              setLocationName(
+                                                                  loc.formatted_address ||
+                                                                      loc.name,
+                                                              );
+                                                              setLocationMapsUrl(
+                                                                  loc.google_maps_url ??
+                                                                      '',
+                                                              );
+                                                              if (
+                                                                  loc.google_place_id
+                                                              ) {
+                                                                  setPickedPlace(
+                                                                      {
+                                                                          placeId:
+                                                                              loc.google_place_id,
+                                                                          formattedAddress:
+                                                                              loc.formatted_address ??
                                                                               '',
-                                                                      );
-                                                                  } else {
-                                                                      setPickedPlace(
-                                                                          null,
-                                                                      );
-                                                                      setPickedPlaceAddress(
+                                                                      },
+                                                                  );
+                                                                  setPickedPlaceAddress(
+                                                                      loc.formatted_address ??
                                                                           '',
-                                                                      );
-                                                                  }
+                                                                  );
+                                                              } else {
+                                                                  setPickedPlace(
+                                                                      null,
+                                                                  );
+                                                                  setPickedPlaceAddress(
+                                                                      '',
+                                                                  );
                                                               }
-                                                    }
-                                                />
-                                            );
-                                        })}
-                                    </ScrollView>
-                                </View>
-                            ) : null}
+                                                          }
+                                                }
+                                            />
+                                        );
+                                    })}
+                                </ScrollView>
+                            </View>
+                        ) : null}
 
+                        {/* Search bar — last row in the card, with a
+                            top hairline divider when a list precedes
+                            it. The padding (12/9) lives on this wrapper
+                            so PlacesAutocomplete can render a bare
+                            icon-plus-input row inside (and the
+                            suggestions dropdown extends naturally
+                            below). Width = full card content width
+                            minus the 12px horizontal padding — i.e. the
+                            bar reads at the same visual extent as the
+                            LocationSuggestionRows above. */}
+                        <View
+                            style={[
+                                styles.whereSearchInline,
+                                locations.length > 0 && {
+                                    // Section-break divider — needs to
+                                    // read as visibly heavier than the
+                                    // hairlines between individual
+                                    // LocationSuggestionRows above it.
+                                    // First attempt used `inkFaint @
+                                    // 0.4` but inkFaint is a light gray
+                                    // (#BCC4BE) — at 40% on a white
+                                    // card it ended up PALER than the
+                                    // row hairlines (which are based on
+                                    // near-black @ 10%). Tinting with
+                                    // the text color directly at 18%
+                                    // alpha gives a divider that's ~1.8×
+                                    // the saturation of the row
+                                    // hairlines, AND we widen to 2px so
+                                    // it doesn't get swallowed by sub-
+                                    // pixel rounding on web.
+                                    borderTopColor: withAlpha(
+                                        colors.text,
+                                        0.18,
+                                    ),
+                                    borderTopWidth: 2,
+                                },
+                            ]}>
                             <PlacesAutocomplete
-                                value={locationName}
-                                onChangeText={(t) => {
-                                    setLocationName(t);
-                                    // When typing away from the currently-matched saved location,
-                                    // clear the URL so we don't carry a stale link from the
-                                    // previous place into the new entry's URL field. Match
-                                    // against either the saved name OR the formatted address —
-                                    // either is what we put in the field when a chip was picked.
-                                    if (matchedLocation) {
-                                        const newLower = t.trim().toLowerCase();
-                                        const nameLower = matchedLocation.name.toLowerCase();
-                                        const addrLower = (
-                                            matchedLocation.formatted_address ?? ''
-                                        ).toLowerCase();
-                                        if (newLower !== nameLower && newLower !== addrLower) {
-                                            setLocationMapsUrl('');
-                                        }
+                            value={locationName}
+                            onChangeText={(t) => {
+                                setLocationName(t);
+                                // When typing away from the currently-matched saved location,
+                                // clear the URL so we don't carry a stale link from the
+                                // previous place into the new entry's URL field. Match
+                                // against either the saved name OR the formatted address —
+                                // either is what we put in the field when a chip was picked.
+                                if (matchedLocation) {
+                                    const newLower = t.trim().toLowerCase();
+                                    const nameLower = matchedLocation.name.toLowerCase();
+                                    const addrLower = (
+                                        matchedLocation.formatted_address ?? ''
+                                    ).toLowerCase();
+                                    if (newLower !== nameLower && newLower !== addrLower) {
+                                        setLocationMapsUrl('');
                                     }
-                                    // Any keystroke drops the picked-place context. If the
-                                    // user picks a Google suggestion next, onPickPlace will
-                                    // restore it on the same render cycle.
-                                    if (pickedPlace) {
-                                        setPickedPlace(null);
-                                        setPickedPlaceAddress('');
-                                    }
-                                }}
-                                onPickPlace={(details) => {
-                                    setLocationMapsUrl(details.googleMapsUri);
-                                    setPickedPlace({
-                                        placeId: details.placeId,
-                                        formattedAddress: details.formattedAddress,
-                                    });
-                                    setPickedPlaceAddress(details.formattedAddress);
-                                }}
-                                placeholder={
-                                    locations.length > 0
-                                        ? 'Pick a saved place or search for a new one'
-                                        : 'e.g. School field'
                                 }
-                                placeholderTextColor={colors.textSecondary}
-                                inputStyle={inputStyle}
-                                editable={!locked}
-                                // Don't ask Google to autocomplete a value that's already a
-                                // resolved saved entry (chip pick) — Google has no idea what
-                                // "Nadim's home" is, and showing "no results" on the dropdown
-                                // is worse than no dropdown at all. Memoized at the top of
-                                // the component so the autocomplete's debounce timer doesn't
-                                // reset on every parent re-render.
-                                skipFetchValues={skipFetchValues}
-                            />
+                                // Any keystroke drops the picked-place context. If the
+                                // user picks a Google suggestion next, onPickPlace will
+                                // restore it on the same render cycle.
+                                if (pickedPlace) {
+                                    setPickedPlace(null);
+                                    setPickedPlaceAddress('');
+                                }
+                            }}
+                            onPickPlace={(details) => {
+                                setLocationMapsUrl(details.googleMapsUri);
+                                setPickedPlace({
+                                    placeId: details.placeId,
+                                    formattedAddress: details.formattedAddress,
+                                });
+                                setPickedPlaceAddress(details.formattedAddress);
+                            }}
+                            placeholder={
+                                locations.length > 0
+                                    ? 'Pick a saved place or search for a new one'
+                                    : 'e.g. School field'
+                            }
+                            placeholderTextColor={colors.inkFaint}
+                            // Search-bar vocabulary (matches the Lists tab's
+                            // search input — hairline border, backgroundElement
+                            // fill, radius 10, leading search glyph, mono
+                            // 12pt input). Shell styling lives on `barStyle`
+                            // so the dropdown below doesn't inherit it; the
+                            // TextInput's text styling lives on `inputStyle`
+                            // (mono regular, color, web outline-none). This
+                            // brings the location field in line with the
+                            // app's other search affordances rather than
+                            // reading as a generic form input.
+                            leadingIcon={
+                                <Feather
+                                    name="search"
+                                    size={14}
+                                    color={colors.textSecondary}
+                                />
+                            }
+                            inputStyle={[
+                                styles.searchBarInput,
+                                {
+                                    color: colors.text,
+                                    fontFamily: FontFamily.monoRegular,
+                                },
+                                // RN-Web: strip the default browser input
+                                // outline so the field reads as part of
+                                // the card surface (same trick the Lists
+                                // + Contacts search bars use).
+                                Platform.OS === 'web'
+                                    ? ({ outlineStyle: 'none' } as object)
+                                    : null,
+                            ]}
+                            editable={!locked}
+                            // Don't ask Google to autocomplete a value that's already a
+                            // resolved saved entry (chip pick) — Google has no idea what
+                            // "Nadim's home" is, and showing "no results" on the dropdown
+                            // is worse than no dropdown at all. Memoized at the top of
+                            // the component so the autocomplete's debounce timer doesn't
+                            // reset on every parent re-render.
+                            skipFetchValues={skipFetchValues}
+                        />
+                        </View>
+                    </View>
 
-                            {/* Show the formatted address when a Place is in play (picked or
-                                sourced from a saved location with stored Places data). */}
+                    {/* "Picked location" confirmation card — rendered only
+                        when a place is actually in play. Wraps the
+                        resolved address + "Open in Google Maps" link in
+                        a small bordered sub-card so they read as a
+                        contained block of confirmation copy rather than
+                        loose text floating on the page background.
+                        The legacy inline manual Maps URL field was
+                        dropped (it surfaced while the user was still
+                        typing, before they'd committed to a brand-new
+                        place — visually distracting). Custom-with-URL
+                        creation lives in Settings → Locations where it
+                        belongs; events created with a brand-new name
+                        save as plain text locations. */}
+                    {pickedPlaceAddress ||
+                    matchedLocation?.formatted_address ||
+                    matchedLocation?.google_maps_url ? (
+                        <View
+                            style={[
+                                styles.whereMetaBlock,
+                                {
+                                    backgroundColor: colors.backgroundElement,
+                                    borderColor: colors.hair,
+                                },
+                            ]}>
                             {pickedPlaceAddress ||
                             matchedLocation?.formatted_address ? (
-                                <ThemedText themeColor="textSecondary" type="small">
-                                    {pickedPlaceAddress || matchedLocation?.formatted_address}
+                                <ThemedText
+                                    themeColor="textSecondary"
+                                    type="small">
+                                    {pickedPlaceAddress ||
+                                        matchedLocation?.formatted_address}
                                 </ThemedText>
                             ) : null}
 
                             {matchedLocation?.google_maps_url ? (
                                 <Pressable
-                                    onPress={() => openMaps(matchedLocation.google_maps_url!)}
-                                    style={({ pressed }) => [styles.mapsLink, pressed && styles.pressed]}>
-                                    <ThemedText type="small" style={{ color: colors.accent }}>
-                                        📍 Open in Google Maps
+                                    onPress={() =>
+                                        openMaps(matchedLocation.google_maps_url!)
+                                    }
+                                    accessibilityRole="link"
+                                    accessibilityLabel="Open in Google Maps"
+                                    style={({ pressed }) => [
+                                        styles.mapsLink,
+                                        pressed && styles.pressed,
+                                    ]}>
+                                    {/* Feather map-pin icon (accent-tinted)
+                                        replaces the prior 📍 system emoji,
+                                        which always rendered in the OS's
+                                        native red-pin palette and made the
+                                        link read as half-red / half-green
+                                        instead of a single cohesive accent
+                                        link. Both icon + label now share
+                                        colors.accent (#2D8B6E light /
+                                        #3FC198 dark — the forest accent
+                                        from the palette). */}
+                                    <Feather
+                                        name="map-pin"
+                                        size={13}
+                                        color={colors.accent}
+                                    />
+                                    <ThemedText
+                                        type="small"
+                                        style={{
+                                            color: colors.accent,
+                                            fontWeight: '600',
+                                        }}>
+                                        Open in Google Maps
                                     </ThemedText>
                                 </Pressable>
                             ) : null}
-
-                            {showMapsUrlField ? (
-                                <>
-                                    <TextInput
-                                        value={locationMapsUrl}
-                                        onChangeText={setLocationMapsUrl}
-                                        placeholder="Google Maps link (optional)"
-                                        placeholderTextColor={colors.textSecondary}
-                                        style={inputStyle}
-                                        autoCapitalize="none"
-                                        autoCorrect={false}
-                                        keyboardType="url"
-                                        editable={!locked}
-                                    />
-                                    <ThemedText themeColor="textSecondary" type="small">
-                                        New locations are saved for reuse next time.
-                                    </ThemedText>
-                                </>
-                            ) : null}
                         </View>
-                    </FormGroup>
+                    ) : null}
 
                     {/* ─── ATTACH ───────────────────────────────────────── */}
                     {/* Spec 04.2 canvas splits Attach into two chevron
@@ -1504,37 +1512,38 @@ export function EventForm({
                                 />
                             </FormGroup>
                             {quickTasksExpanded ? (
-                                <FormGroup>
-                                    <EventTaskSection
-                                        value={tasks}
-                                        onChange={setTasks}
-                                        members={members}
-                                        colorMap={colorMap}
-                                        currentUserId={currentUserId}
-                                        lists={lists}
-                                        children={children}
-                                        defaultChildIds={Array.from(
-                                            selectedChildIds,
-                                        )}
-                                        defaultListIds={
-                                            defaultListId
-                                                ? [defaultListId]
-                                                : []
-                                        }
-                                        onCompleteImmediate={
-                                            onCompleteTaskImmediate
-                                        }
-                                        defaultDueAt={(() => {
-                                            const dateStr = allDay
-                                                ? `${date}T00:00`
-                                                : `${date}T${startTime}`;
-                                            const d = new Date(dateStr);
-                                            return Number.isNaN(d.getTime())
-                                                ? null
-                                                : d.toISOString();
-                                        })()}
-                                    />
-                                </FormGroup>
+                                // EventTaskSection owns its own FormGroup
+                                // flush card + dashed "+ Add a task"
+                                // affordance now — no outer FormGroup
+                                // wrapper here (previously double-wrapped,
+                                // which read as a card-inside-a-card).
+                                <EventTaskSection
+                                    value={tasks}
+                                    onChange={setTasks}
+                                    members={members}
+                                    colorMap={colorMap}
+                                    currentUserId={currentUserId}
+                                    lists={lists}
+                                    children={children}
+                                    defaultChildIds={Array.from(
+                                        selectedChildIds,
+                                    )}
+                                    defaultListIds={
+                                        defaultListId ? [defaultListId] : []
+                                    }
+                                    onCompleteImmediate={
+                                        onCompleteTaskImmediate
+                                    }
+                                    defaultDueAt={(() => {
+                                        const dateStr = allDay
+                                            ? `${date}T00:00`
+                                            : `${date}T${startTime}`;
+                                        const d = new Date(dateStr);
+                                        return Number.isNaN(d.getTime())
+                                            ? null
+                                            : d.toISOString();
+                                    })()}
+                                />
                             ) : null}
                         </>
                     ) : null}
@@ -1573,20 +1582,40 @@ export function EventForm({
                     </FormGroup>
 
                     {/* ─── NOTES ────────────────────────────────────────── */}
+                    {/* FormGroup is `flush` and the TextInput fills the
+                        card directly — no inner field-wrapper, no inner
+                        input border. Previously the layout was a
+                        FormGroup card (border + 12px padding) containing
+                        a TextInput that ALSO had its own border + radius
+                        + padding, which read as a recessed box-inside-a-
+                        box. Now the FormGroup IS the textarea's visual
+                        shell; the input just contributes text padding +
+                        multiline height. */}
                     <FormSectionLabel>Notes</FormSectionLabel>
-                    <FormGroup>
-                        <View style={styles.field}>
-                            <TextInput
-                                value={notes}
-                                onChangeText={setNotes}
-                                placeholder="Any details to remember"
-                                placeholderTextColor={colors.textSecondary}
-                                multiline
-                                numberOfLines={3}
-                                style={[inputStyle, styles.multiline]}
-                                editable={!locked}
-                            />
-                        </View>
+                    <FormGroup flush>
+                        <TextInput
+                            value={notes}
+                            onChangeText={setNotes}
+                            placeholder="Any details to remember"
+                            placeholderTextColor={colors.textSecondary}
+                            multiline
+                            numberOfLines={3}
+                            style={[
+                                styles.notesTextarea,
+                                {
+                                    color: colors.text,
+                                    fontFamily: FontFamily.sansRegular,
+                                },
+                                // RN-Web: strip the default browser
+                                // input outline so focus doesn't draw
+                                // a competing blue ring against the
+                                // FormGroup's own hairline edge.
+                                Platform.OS === 'web'
+                                    ? ({ outlineStyle: 'none' } as object)
+                                    : null,
+                            ]}
+                            editable={!locked}
+                        />
                     </FormGroup>
 
                     {/* ─── SMART SUGGESTION ──────────────────────────────
@@ -1859,10 +1888,8 @@ export function EventForm({
                                 <View style={{ flex: 1 }}>
                                     <ThemedText
                                         style={{
+                                            ...Typography.body,
                                             color: colors.text,
-                                            fontSize: 13.5,
-                                            fontWeight: '500',
-                                            letterSpacing: -0.2,
                                         }}>
                                         {opt.label}
                                     </ThemedText>
@@ -1932,10 +1959,8 @@ export function EventForm({
                         ]}>
                         <ThemedText
                             style={{
+                                ...Typography.body,
                                 color: colors.text,
-                                fontSize: 13.5,
-                                fontWeight: '500',
-                                letterSpacing: -0.2,
                             }}>
                             None
                         </ThemedText>
@@ -1990,11 +2015,9 @@ export function EventForm({
                                 />
                                 <ThemedText
                                     style={{
+                                        ...Typography.body,
                                         flex: 1,
                                         color: colors.text,
-                                        fontSize: 13.5,
-                                        fontWeight: '500',
-                                        letterSpacing: -0.2,
                                     }}
                                     numberOfLines={1}>
                                     {l.name}
@@ -2076,11 +2099,9 @@ export function EventForm({
                                 returnKeyType="done"
                                 editable={!newListSaving}
                                 style={{
+                                    ...Typography.body,
                                     flex: 1,
                                     color: colors.text,
-                                    fontSize: 13.5,
-                                    fontWeight: '500',
-                                    letterSpacing: -0.2,
                                     paddingVertical: 0,
                                 }}
                             />
@@ -2111,24 +2132,84 @@ export function EventForm({
 }
 
 const styles = StyleSheet.create({
-    // Alternation FormRow — sits directly beneath the Responsible chip
-    // strip as a continuation of the same selector. No divider, no
-    // marginTop on the wrapper — the parent field's 4px gap already
-    // separates the chip row from this row. Negative marginBottom
-    // pulls the FormRow's internal 13px paddingTop tighter against
-    // the chips so the visual gap stays ~10px instead of ~17.
-    alternationRowWrap: {
+    // Custom sub-block inside the WHO card (now `flush`, padding 0).
+    // Vertical (12) and horizontal (14) padding match FormRow's own
+    // 13/14 — so the mono-caps label and chip leading edge align
+    // exactly with the FormRow labels (Alternates, Mark private)
+    // sitting above/below the block, which in turn align with the
+    // Starts/Ends/All day/Repeats rows in the WHEN card. Gap 6 keeps
+    // the mono caps label tight against the chip cluster (matches the
+    // prior `fieldMonoLabel.marginBottom: 2` + `field.gap: 4` math).
+    whoSubBlock: {
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        gap: 6,
+    },
+    // Caption shown under the Mark-private FormRow when isPrivate is
+    // on. Same 14px horizontal inset as the FormRow so the copy lines
+    // up with "Mark private" above it; negative top margin pulls it
+    // tight against the row without the FormRow's bottom hairline
+    // showing through.
+    privacyCaptionWrap: {
+        paddingHorizontal: 14,
+        paddingBottom: 12,
         marginTop: -6,
     },
-    // Hairline between sub-blocks inside the Who card — separates the
-    // Responsible cluster (chips + Alternates) from the For/Children
-    // cluster from the Mark-private toggle. Renders as a 0.5px line
-    // pulled flush to the FormGroup card edges (negative horizontal
-    // margins counter the card's 12px internal padding).
-    whoDivider: {
-        height: StyleSheet.hairlineWidth,
-        marginHorizontal: -12,
-        marginVertical: 2,
+    // Custom card wrapper for the Where section — mimics FormGroup's
+    // visual styling (hairline border, radius 12, backgroundElement bg)
+    // but WITHOUT `overflow: hidden`. We need the Places suggestions
+    // dropdown to extend naturally past the card's bottom edge when
+    // active, and overflow:hidden would clip it. The trade-off is that
+    // a selected LocationSuggestionRow's accent tint can bleed past
+    // the card's rounded top corners by a hairline; at ~5.5% alpha
+    // that bleed is imperceptible.
+    whereCard: {
+        borderRadius: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    // Clipping wrapper around the saved-locations ScrollView so the
+    // first row's accent tint (when selected) respects the card's
+    // rounded TOP corners. Bottom corners are flat — the search row
+    // sits below, so the list's bottom edge meets the hairline
+    // divider above the search bar (no rounding needed at that seam).
+    whereListClip: {
+        borderTopLeftRadius: 12,
+        borderTopRightRadius: 12,
+        overflow: 'hidden',
+    },
+    // Search-bar row wrapping PlacesAutocomplete inside the Where
+    // card. paddingVertical 11 matches LocationSuggestionRow's vertical
+    // rhythm so the search row reads at the same height as the saved-
+    // location rows above it (was 9; bumped per UX feedback that the
+    // input felt cramped).
+    whereSearchInline: {
+        paddingHorizontal: 12,
+        paddingVertical: 11,
+    },
+    // Meta affordances under the Where card — formatted address +
+    // Open-in-Maps link. Wrapped in a small bordered card so the
+    // address text and accent link don't float as loose text on the
+    // page background after a location is picked. Same border + radius
+    // + bg vocabulary as the Where card itself but at smaller padding
+    // so it reads as a sub-card / confirmation strip.
+    whereMetaBlock: {
+        marginTop: Spacing.two,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 10,
+        borderWidth: StyleSheet.hairlineWidth,
+        gap: 4,
+    },
+    // Text styling for the location search field's TextInput — mirrors
+    // the Lists tab's quickAddInput (fontSize 12, mono, letterSpacing
+    // -0.2, paddingVertical 0 since the wrapping `whereSearchInline`
+    // already provides the row's breathing room). Color + fontFamily +
+    // web outline are applied at the call site so the light/dark
+    // injection stays simple.
+    searchBarInput: {
+        fontSize: 12,
+        letterSpacing: -0.2,
+        paddingVertical: 0,
     },
     alternationRow: {
         flexDirection: 'row',
@@ -2190,25 +2271,6 @@ const styles = StyleSheet.create({
     smartSuggestionSub: { fontSize: 11, lineHeight: 16 },
     container: { flex: 1 },
     safe: { flex: 1 },
-    headerBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: Spacing.four,
-        paddingVertical: Spacing.two,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        // borderBottomColor injected per-render with colors.hair so the
-        // hairline tracks the theme. Was hardcoded '#ddd'.
-    },
-    headerBtn: { paddingVertical: Spacing.one, paddingHorizontal: Spacing.two },
-    // Save button styled as a pill per design (screens-extra-2.jsx:417-423)
-    // — accent background when enabled, ink-inset when disabled. Radius 7
-    // matches the design's `borderRadius: 7`.
-    headerSavePill: {
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 7,
-    },
     // Bottom padding leaves clear runway for the sticky bottom action bar so
     // the last section (Notes) isn't covered when the user scrolls to the end.
     // ~80px = bar padding (Spacing.three top + bottom) + deleteBtn (~44px) + a
@@ -2220,19 +2282,6 @@ const styles = StyleSheet.create({
     // sections inherit this — Notes' textarea sits 4px under its label
     // now, etc. Tighter feel without losing legibility.
     field: { gap: 4 },
-    // Mark-private row (#466). The title + switch share one row so the
-    // switch's vertical position only depends on the title's height
-    // (constant). The description sits on its own line below and can
-    // wrap freely without bumping the switch up or down when the user
-    // toggles. Caption gets a small marginTop so it visually reads as
-    // a sub-line of the title row, not a separate field.
-    privacyTitleRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-    },
-    privacyTitle: { flex: 1 },
-    privacyCaption: { marginTop: 2 },
     // Large/focused title input per design (screens-extra-2.jsx:433-446).
     // No box border — just a 1.5px accent underline. fontSize/weight/letter-
     // spacing inlined here; fontFamily is added at the call site so the
@@ -2246,48 +2295,39 @@ const styles = StyleSheet.create({
         paddingHorizontal: 0,
         borderBottomWidth: 1.5,
     },
-    allDayRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    timeRow: { flexDirection: 'row', gap: Spacing.three },
-    timeField: { flex: 1, gap: Spacing.two },
-    multiline: { height: 88, textAlignVertical: 'top', paddingTop: Spacing.two },
+    // Notes textarea — fills the flush FormGroup directly (no inner
+    // border/recess). Padding 14/12 matches FormRow's 14 horizontal /
+    // 13 vertical rhythm so the Notes text baseline aligns with every
+    // FormRow label and `whoSubBlock` mono label in the form.
+    // minHeight 96 gives ~3 lines of breathing room at 20px line-height
+    // plus the 24px vertical padding total; the field grows naturally
+    // past that as the user types more.
+    notesTextarea: {
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        fontSize: 13.5,
+        letterSpacing: -0.2,
+        lineHeight: 20,
+        minHeight: 96,
+        textAlignVertical: 'top',
+    },
     // 6px gap matches the design's chip rows (screens-extra-2.jsx:496);
     // tighter than Spacing.two (8) so chips read as a cluster, not a
     // sparse row. The form's other chip groups (alternation, recurrence,
     // children, locations) share this row style — keeping them all on the
     // same gap maintains visual rhythm.
     chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-    // Mono-caps section sub-label inside a FormGroup row — distinct from
-    // the bold sans `smallBold` used elsewhere. Design source uses this
-    // for the per-row label inside cards (e.g. "RESPONSIBLE", "FOR") —
-    // see screens-extra-2.jsx:493-495. 10pt mono / 0.4 letter-spacing /
-    // 600 / uppercase / inkMuted color / 8px bottom gap to the chip row.
+    // Mono-caps section sub-label inside a FormGroup row — used for
+    // RESPONSIBLE / FOR CHILD(REN) / TITLE etc. Pulls typography from
+    // the shared Typography.monoCaps preset (10/600/0.4/uppercase mono
+    // semibold) so a future palette / type refresh ripples to every
+    // form sub-label in one place. Only the marginBottom is per-call:
+    // 2px keeps the cluster tight against the chip row below (parent
+    // field's 4px gap + this 2px = ~6px label-baseline → chip-top
+    // distance).
     fieldMonoLabel: {
-        fontSize: 10,
-        fontWeight: '600',
-        letterSpacing: 0.4,
-        textTransform: 'uppercase',
-        // Tight 2px gap below the mono caps label — the parent field
-        // already adds a 4px gap to the next child, so the visual
-        // distance from label baseline → chip-row top stays ~6px.
-        // Previously 8 + 8 = 16, which made the cluster feel loose.
+        ...Typography.monoCaps,
         marginBottom: 2,
-    },
-    weekdayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.one, paddingTop: Spacing.one },
-    // Date field + Clear button on one row, only rendered when recurrence is active.
-    recurrenceEndRow: {
-        flexDirection: 'row',
-        alignItems: 'flex-end',
-        gap: Spacing.two,
-        paddingTop: Spacing.one,
-    },
-    recurrenceEndField: { flex: 1, gap: Spacing.two },
-    recurrenceClearBtn: {
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        borderRadius: Spacing.two,
-        borderWidth: 1,
-        height: 44,
-        justifyContent: 'center',
     },
     // Top-of-form card containing the "Apply changes to: series / occurrence" toggle.
     // Only rendered when editing a specific instance of a recurring event.
@@ -2296,19 +2336,8 @@ const styles = StyleSheet.create({
         borderRadius: Spacing.two,
         gap: Spacing.two,
     },
-    weekdayBtn: {
-        minWidth: 44,
-        height: 36,
-        paddingHorizontal: Spacing.two,
-        borderRadius: 18,
-        borderWidth: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    locationChipRow: { gap: Spacing.two, paddingVertical: Spacing.one },
-    // UX-010: relative-positioned wrapper so the overflow chevron pins to the
-    // saved-locations strip's visible right edge.
-    locationChipWrapper: { position: 'relative' },
+    // Apply-to toggle chips inside the applyToCard. Pill-shape with a
+    // colored border + transparent/accent-fill swap on selection.
     chip: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -2318,39 +2347,17 @@ const styles = StyleSheet.create({
         paddingHorizontal: Spacing.three,
         paddingVertical: Spacing.one,
     },
-    chipDot: { width: 8, height: 8, borderRadius: 4 },
-    // Inline LEAD tag on a responsible-parent chip when multiple are
-    // tagged. Neutral palette (matches the rack's design language —
-    // identity is already carried by the chip's fill color, the tag is
-    // just a disambiguator).
-    chipLeadTag: {
-        paddingHorizontal: 5,
-        paddingTop: 1,
-        paddingBottom: 1,
-        borderRadius: 3,
-        marginLeft: 2,
+    // "Open in Google Maps" link — flex row laying out the accent-tinted
+    // Feather map-pin icon + the accent-colored label with 6px between.
+    // Both children share colors.accent (the palette's forest green) so
+    // the link reads as one cohesive tap target, not a half-red-emoji /
+    // half-green-label mix as it did with the prior 📍 emoji prefix.
+    mapsLink: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingVertical: Spacing.one,
     },
-    chipLeadTagText: {
-        fontSize: 9,
-        fontWeight: '700',
-        letterSpacing: 0.3,
-        // textTransform = uppercase even though the literal string is
-        // already "LEAD" — matches the ResponsibleChip rack treatment
-        // and immunizes against future copy edits sneaking lowercase
-        // text into the tag.
-        textTransform: 'uppercase',
-    },
-    // Saved-locations list — renders edge-to-edge inside the FormGroup
-    // card itself (no inner sub-card border). Negative horizontal
-    // margins counter the FormGroup's 12px internal padding so the
-    // LocationSuggestionRow stack stretches the card's full width.
-    // overflow:hidden keeps any selected-row accent tint inside the
-    // card's rounded corners.
-    locationListInline: {
-        marginHorizontal: -12,
-        overflow: 'hidden',
-    },
-    mapsLink: { paddingVertical: Spacing.one },
     errorText: { color: BrandColors.error },
     deleteBtn: {
         paddingVertical: Spacing.three,

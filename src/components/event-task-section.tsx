@@ -3,6 +3,19 @@
 // submit handler diffs the final list against the snapshot taken on mount and walks the
 // DB writes (createTask / updateTask / deleteTask) after the event row exists.
 //
+// Visual vocabulary matches the rest of EventForm: FormGroup flush card with
+// hairline-divided task blocks. Inside each block, sub-rows use the mono-caps
+// label + chip-row pattern from the WHO section (PersonChip for parents and
+// children, AnyoneChip for the select-all, ListTagChip for list membership).
+// The Due picker is a FormRow chevron → DateTimePickerSheet — same vocabulary
+// as the WHEN section's Starts/Ends rows. The "+ Add a task" affordance is a
+// FormRow at the bottom of the card.
+//
+// (Both the date and time portions of the Due picker now ride through
+// DateTimePickerSheet's in-app modal UI — MiniCalendar for the date,
+// and the custom hour/minute stepper for the time, both on web and on
+// native. Task #502 closed.)
+//
 // Why "local" tasks (with both localId and optional dbId):
 //   * Stable React keys via localId (UUID generated client-side) so reordering / typing
 //     doesn't reset focus on every keystroke.
@@ -14,15 +27,25 @@
 // doesn't have to wait for the next form save. New tasks (no dbId yet) can also be
 // marked complete locally and will be created in their completed state on save.
 
+import { Feather } from '@expo/vector-icons';
 import { format } from 'date-fns';
 import * as Crypto from 'expo-crypto';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { useState } from 'react';
+import { Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
-import { DateField, TimeField } from '@/components/datetime-fields';
+import {
+    AnyoneChip,
+    DateTimePickerSheet,
+    FormGroup,
+    FormRow,
+    ListTagChip,
+    PersonChip,
+} from '@/components/ds';
 import { ThemedText } from '@/components/themed-text';
-import { BrandColors, Colors, Spacing } from '@/constants/theme';
-import { UNASSIGNED_COLOR, colorForResponsible } from '@/lib/colors';
+import { Colors, FontFamily, Typography } from '@/constants/theme';
+import { colorForResponsible } from '@/lib/colors';
 import type { Child, HouseholdMember, List } from '@/lib/db';
+import { withAlpha } from '@/lib/platform-styles';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
 export type LocalTask = {
@@ -118,6 +141,25 @@ type Props = {
     onCompleteImmediate?: (dbId: string, completed: boolean) => Promise<void>;
 };
 
+/**
+ * Formats a task's due ISO string for the FormRow value slot. Renders as
+ * "Tue May 26 · 16:00", collapsing to "Pick a date" when unset. Matches
+ * the WHEN section's formatWhenRow vocabulary exactly so the inline tasks
+ * read at the same density as the event's own Starts/Ends rows.
+ */
+function formatDueRow(iso: string | null): string {
+    if (!iso) return 'Pick a date';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return 'Pick a date';
+    const datePart = d.toLocaleDateString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+    });
+    const timePart = format(d, 'HH:mm');
+    return `${datePart} · ${timePart}`;
+}
+
 export function EventTaskSection({
     value,
     onChange,
@@ -134,6 +176,11 @@ export function EventTaskSection({
 }: Props) {
     const scheme = useAppColorScheme();
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
+
+    // Tracks which task's Due picker is currently open. -1 = closed.
+    // Using an index lets a single DateTimePickerSheet handle every row's
+    // due edits (sheets are mutex on screen anyway — only one open at a time).
+    const [duePickerIdx, setDuePickerIdx] = useState<number>(-1);
 
     if (disabled) return null;
 
@@ -160,6 +207,12 @@ export function EventTaskSection({
 
     const removeAt = (idx: number) => {
         onChange(value.filter((_, i) => i !== idx));
+        // Close the shared Due picker if it was open on the removed
+        // row (would point at a stale / undefined slot otherwise); and
+        // shift it down by one if it was open on a later row whose
+        // index just decremented.
+        if (duePickerIdx === idx) setDuePickerIdx(-1);
+        else if (duePickerIdx > idx) setDuePickerIdx((i) => i - 1);
     };
 
     const toggleAssignee = (idx: number, profileId: string) => {
@@ -206,8 +259,8 @@ export function EventTaskSection({
     };
 
     /**
-     * Combines the date + time strings from the two pickers into an ISO due_at. If
-     * either picker is blank, we keep the other and synthesize a sane companion (today
+     * Combines the date + time strings from the picker sheet into an ISO due_at. If
+     * either piece is blank, we keep the other and synthesize a sane companion (today
      * for date, noon for time) so the user never lands in a "partially set" no-op state.
      * Invalid combinations silently ignore so a half-typed time doesn't blow up the row.
      */
@@ -244,412 +297,387 @@ export function EventTaskSection({
         }
     };
 
-    const inputStyle = {
-        color: colors.text,
-        borderColor: colors.backgroundSelected,
-        borderWidth: 1,
-        borderRadius: Spacing.two,
-        paddingHorizontal: Spacing.two,
-        paddingVertical: Spacing.one,
-        fontSize: 14,
-        flex: 1,
-    };
+    const allAssigneeIds = members.map((m) => m.profile_id);
 
     return (
-        <View style={styles.field}>
-            <ThemedText type="smallBold">Tasks (optional)</ThemedText>
+        <View style={styles.section}>
             {value.length > 0 ? (
-                <ThemedText themeColor="textSecondary" type="small">
-                    Each task can be assigned to a parent. Defaults to the event time —
-                    edit later from the Lists tab to change due time.
-                </ThemedText>
+                <FormGroup flush>
+                    {value.map((task, idx) => {
+                        const done = !!task.completedAt;
+                        const isLast = idx === value.length - 1;
+                        const anyoneActive =
+                            allAssigneeIds.length > 0 &&
+                            allAssigneeIds.every((id) =>
+                                task.assigneeProfileIds.includes(id),
+                            );
+                        return (
+                            <View
+                                key={task.localId}
+                                style={[
+                                    styles.taskBlock,
+                                    !isLast && {
+                                        borderBottomColor: colors.hair,
+                                        borderBottomWidth:
+                                            StyleSheet.hairlineWidth,
+                                    },
+                                ]}>
+                                {/* Title row — 28px checkbox + flex title input
+                                    + remove glyph. Matches the form's
+                                    whoSubBlock 14/12 padding rhythm so titles
+                                    line up vertically with every FormRow label
+                                    and mono caps sub-label elsewhere. */}
+                                <View style={styles.titleRow}>
+                                    <Pressable
+                                        onPress={() => toggleComplete(idx)}
+                                        accessibilityRole="checkbox"
+                                        accessibilityState={{ checked: done }}
+                                        accessibilityLabel={
+                                            done
+                                                ? 'Mark task incomplete'
+                                                : 'Mark task complete'
+                                        }
+                                        hitSlop={6}
+                                        style={({ pressed }) => [
+                                            styles.checkbox,
+                                            {
+                                                backgroundColor: done
+                                                    ? colors.accent
+                                                    : 'transparent',
+                                                borderColor: done
+                                                    ? colors.accent
+                                                    : colors.hair,
+                                            },
+                                            pressed && styles.pressed,
+                                        ]}>
+                                        {done ? (
+                                            <Feather
+                                                name="check"
+                                                size={12}
+                                                color={colors.onAccent}
+                                            />
+                                        ) : null}
+                                    </Pressable>
+                                    <TextInput
+                                        value={task.title}
+                                        onChangeText={(t) =>
+                                            updateAt(idx, { title: t })
+                                        }
+                                        placeholder="Task title"
+                                        placeholderTextColor={colors.inkFaint}
+                                        style={[
+                                            styles.titleInput,
+                                            {
+                                                color: done
+                                                    ? colors.inkFaint
+                                                    : colors.text,
+                                                fontFamily:
+                                                    FontFamily.sansRegular,
+                                                textDecorationLine: done
+                                                    ? 'line-through'
+                                                    : 'none',
+                                            },
+                                            Platform.OS === 'web'
+                                                ? ({
+                                                      outlineStyle: 'none',
+                                                  } as object)
+                                                : null,
+                                        ]}
+                                    />
+                                    <Pressable
+                                        onPress={() => removeAt(idx)}
+                                        accessibilityRole="button"
+                                        accessibilityLabel="Remove task"
+                                        hitSlop={6}
+                                        style={({ pressed }) => [
+                                            styles.removeBtn,
+                                            pressed && styles.pressed,
+                                        ]}>
+                                        <Feather
+                                            name="x"
+                                            size={14}
+                                            color={colors.inkFaint}
+                                        />
+                                    </Pressable>
+                                </View>
+
+                                {/* ASSIGNED TO — mono caps sub-label + chip
+                                    row. Same vocabulary as the form's
+                                    RESPONSIBLE block: AnyoneChip for the
+                                    select-all toggle, PersonChip per member
+                                    with their identity color. */}
+                                <View style={styles.metaSubBlock}>
+                                    <ThemedText
+                                        style={[
+                                            styles.metaLabel,
+                                            { color: colors.textSecondary },
+                                        ]}>
+                                        ASSIGNED TO
+                                    </ThemedText>
+                                    <View style={styles.chipRow}>
+                                        <AnyoneChip
+                                            selected={anyoneActive}
+                                            onPress={() => toggleAnyone(idx)}
+                                        />
+                                        {members.map((m) => {
+                                            const color = colorForResponsible(
+                                                m.profile_id,
+                                                colorMap,
+                                            );
+                                            const selected =
+                                                task.assigneeProfileIds.includes(
+                                                    m.profile_id,
+                                                );
+                                            const label =
+                                                currentUserId === m.profile_id
+                                                    ? 'Me'
+                                                    : m.display_name;
+                                            return (
+                                                <PersonChip
+                                                    key={m.profile_id}
+                                                    name={label}
+                                                    color={color}
+                                                    selected={selected}
+                                                    onPress={() =>
+                                                        toggleAssignee(
+                                                            idx,
+                                                            m.profile_id,
+                                                        )
+                                                    }
+                                                />
+                                            );
+                                        })}
+                                    </View>
+                                </View>
+
+                                {/* CHILDREN — same shape as the form's FOR
+                                    CHILD(REN) sub-block. Hidden when the
+                                    household has no kids. */}
+                                {householdChildren.length > 0 ? (
+                                    <View style={styles.metaSubBlock}>
+                                        <ThemedText
+                                            style={[
+                                                styles.metaLabel,
+                                                { color: colors.textSecondary },
+                                            ]}>
+                                            FOR CHILD(REN)
+                                        </ThemedText>
+                                        <View style={styles.chipRow}>
+                                            {householdChildren.map((c) => {
+                                                const selected =
+                                                    task.childIds.includes(c.id);
+                                                return (
+                                                    <PersonChip
+                                                        key={c.id}
+                                                        name={c.display_name}
+                                                        color={c.color}
+                                                        selected={selected}
+                                                        onPress={() =>
+                                                            toggleChild(idx, c.id)
+                                                        }
+                                                    />
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                ) : null}
+
+                                {/* LISTS — ListTagChip (color dot + label +
+                                    check) — the canonical ds primitive for
+                                    "task is in these lists" picking. Hidden
+                                    when household has no lists (defensive;
+                                    Inbox always exists). */}
+                                {lists.length > 0 ? (
+                                    <View style={styles.metaSubBlock}>
+                                        <ThemedText
+                                            style={[
+                                                styles.metaLabel,
+                                                { color: colors.textSecondary },
+                                            ]}>
+                                            IN LISTS
+                                        </ThemedText>
+                                        <View style={styles.chipRow}>
+                                            {lists.map((l) => {
+                                                const selected =
+                                                    task.listIds.includes(l.id);
+                                                return (
+                                                    <ListTagChip
+                                                        key={l.id}
+                                                        color={l.color}
+                                                        label={l.name}
+                                                        selected={selected}
+                                                        onPress={() =>
+                                                            toggleList(idx, l.id)
+                                                        }
+                                                    />
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                ) : null}
+
+                                {/* DUE — FormRow chevron → DateTimePickerSheet.
+                                    Same shape as the WHEN section's
+                                    Starts/Ends rows so inline-task editing
+                                    reads at the same density as the event
+                                    itself. */}
+                                <FormRow
+                                    label="Due"
+                                    value={formatDueRow(task.dueAt)}
+                                    muted={!task.dueAt}
+                                    chevron
+                                    onPress={() => setDuePickerIdx(idx)}
+                                    last
+                                />
+                            </View>
+                        );
+                    })}
+                </FormGroup>
             ) : null}
 
-            {value.map((task, idx) => {
-                const done = !!task.completedAt;
-                return (
-                    <View
-                        key={task.localId}
-                        style={[
-                            styles.taskRow,
-                            {
-                                borderColor: colors.backgroundSelected,
-                                backgroundColor: done
-                                    ? colors.backgroundElement
-                                    : 'transparent',
-                            },
-                        ]}>
-                        <View style={styles.taskTitleRow}>
-                            <Pressable
-                                onPress={() => toggleComplete(idx)}
-                                accessibilityRole="checkbox"
-                                accessibilityState={{ checked: done }}
-                                accessibilityLabel={
-                                    done
-                                        ? 'Mark task incomplete'
-                                        : 'Mark task complete'
-                                }
-                                style={({ pressed }) => [
-                                    styles.checkbox,
-                                    {
-                                        backgroundColor: done
-                                            ? colors.accent
-                                            : 'transparent',
-                                        borderColor: done
-                                            ? colors.accent
-                                            : colors.backgroundSelected,
-                                    },
-                                    pressed && styles.pressed,
-                                ]}>
-                                {done ? (
-                                    <ThemedText style={styles.checkmark}>✓</ThemedText>
-                                ) : null}
-                            </Pressable>
-                            <TextInput
-                                value={task.title}
-                                onChangeText={(t) => updateAt(idx, { title: t })}
-                                placeholder="Task title"
-                                placeholderTextColor={colors.textSecondary}
-                                style={[
-                                    inputStyle,
-                                    done && {
-                                        textDecorationLine: 'line-through',
-                                        color: colors.textSecondary,
-                                    },
-                                ]}
-                            />
-                            <Pressable
-                                onPress={() => removeAt(idx)}
-                                accessibilityRole="button"
-                                accessibilityLabel="Remove task"
-                                style={({ pressed }) => [
-                                    styles.removeBtn,
-                                    pressed && styles.pressed,
-                                ]}>
-                                <ThemedText
-                                    type="small"
-                                    style={{ color: BrandColors.error, fontWeight: '600' }}>
-                                    ✕
-                                </ThemedText>
-                            </Pressable>
-                        </View>
-
-                        <View style={styles.assignRow}>
-                            <ThemedText themeColor="textSecondary" type="small">
-                                Assigned to:
-                            </ThemedText>
-                            {/* "Anyone" stays visible alongside the parent chips as a
-                                select-all toggle. Highlighted when every member is on the
-                                list; clicking again clears the list. */}
-                            {(() => {
-                                const allIds = members.map((m) => m.profile_id);
-                                const anyoneActive =
-                                    allIds.length > 0 &&
-                                    allIds.every((id) =>
-                                        task.assigneeProfileIds.includes(id),
-                                    );
-                                return (
-                                    <Pressable
-                                        onPress={() => toggleAnyone(idx)}
-                                        style={({ pressed }) => [
-                                            styles.assignChip,
-                                            {
-                                                borderColor: UNASSIGNED_COLOR,
-                                                backgroundColor: anyoneActive
-                                                    ? UNASSIGNED_COLOR
-                                                    : 'transparent',
-                                            },
-                                            pressed && styles.pressed,
-                                        ]}>
-                                        <ThemedText
-                                            type="small"
-                                            style={{
-                                                // Full-contrast text in the unselected
-                                                // state so the chip doesn't read as
-                                                // disabled (UX-011). The border + fill
-                                                // already carry the selection signal.
-                                                color: anyoneActive
-                                                    ? '#fff'
-                                                    : colors.text,
-                                                fontWeight: '500',
-                                            }}>
-                                            Anyone
-                                        </ThemedText>
-                                    </Pressable>
-                                );
-                            })()}
-                            {members.map((m) => {
-                                const color = colorForResponsible(m.profile_id, colorMap);
-                                const selected = task.assigneeProfileIds.includes(
-                                    m.profile_id,
-                                );
-                                const label =
-                                    currentUserId === m.profile_id ? 'Me' : m.display_name;
-                                return (
-                                    <Pressable
-                                        key={m.profile_id}
-                                        onPress={() => toggleAssignee(idx, m.profile_id)}
-                                        style={({ pressed }) => [
-                                            styles.assignChip,
-                                            {
-                                                borderColor: color,
-                                                backgroundColor: selected
-                                                    ? color
-                                                    : 'transparent',
-                                            },
-                                            pressed && styles.pressed,
-                                        ]}>
-                                        <ThemedText
-                                            type="small"
-                                            style={{
-                                                color: selected ? '#fff' : colors.text,
-                                                fontWeight: '500',
-                                            }}>
-                                            {label}
-                                        </ThemedText>
-                                    </Pressable>
-                                );
-                            })}
-                        </View>
-
-                        {/* List multi-select. A task can sit in any number of lists
-                            (e.g. "Buy cake" in both Urgent and Groceries). Empty
-                            selection at save time falls through to Inbox via the
-                            createTask default. Hidden when the household has no lists
-                            — defensive, since every household auto-gets an Inbox. */}
-                        {lists.length > 0 ? (
-                            <View style={styles.assignRow}>
-                                <ThemedText themeColor="textSecondary" type="small">
-                                    Lists:
-                                </ThemedText>
-                                {lists.map((l) => {
-                                    const selected = task.listIds.includes(l.id);
-                                    return (
-                                        <Pressable
-                                            key={l.id}
-                                            onPress={() => toggleList(idx, l.id)}
-                                            style={({ pressed }) => [
-                                                styles.assignChip,
-                                                {
-                                                    borderColor: l.color,
-                                                    backgroundColor: selected
-                                                        ? l.color
-                                                        : 'transparent',
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <ThemedText
-                                                type="small"
-                                                style={{
-                                                    color: selected
-                                                        ? colors.accent
-                                                        : colors.text,
-                                                    fontWeight: '500',
-                                                }}>
-                                                {l.name}
-                                            </ThemedText>
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        ) : null}
-
-                        {/* Children multi-select. Each chip shows the child's color
-                            badge so the picker is visually consistent with the event
-                            form's child row. Hidden when the household has no kids. */}
-                        {householdChildren.length > 0 ? (
-                            <View style={styles.assignRow}>
-                                <ThemedText themeColor="textSecondary" type="small">
-                                    Children:
-                                </ThemedText>
-                                {householdChildren.map((c) => {
-                                    const selected = task.childIds.includes(c.id);
-                                    return (
-                                        <Pressable
-                                            key={c.id}
-                                            onPress={() => toggleChild(idx, c.id)}
-                                            style={({ pressed }) => [
-                                                styles.assignChip,
-                                                {
-                                                    borderColor: c.color,
-                                                    backgroundColor: selected
-                                                        ? c.color
-                                                        : 'transparent',
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            {/* The chip's colored border + selected-state
-                                                background already convey "this is {child}'s
-                                                color" — duplicating the avatar badge alongside
-                                                the full name made the chip read as "circle +
-                                                first letter + full name in a bigger button",
-                                                which looked broken. Keep the spelled-out name
-                                                only.
-                                                UX-035: in the unselected state, an 8pt color
-                                                dot before the name restores the at-a-glance
-                                                child-identity signal that a 1pt border alone
-                                                under-communicates (parents + lists + children
-                                                chips can stack on the same task row). The
-                                                selected state already paints the chip the
-                                                child's color so the dot would be redundant. */}
-                                            {!selected ? (
-                                                <View
-                                                    style={[
-                                                        styles.childIdentityDot,
-                                                        { backgroundColor: c.color },
-                                                    ]}
-                                                />
-                                            ) : null}
-                                            <ThemedText
-                                                type="small"
-                                                style={{
-                                                    color: selected
-                                                        ? colors.textOnPastel
-                                                        : colors.text,
-                                                    fontWeight: '500',
-                                                }}>
-                                                {c.display_name}
-                                            </ThemedText>
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        ) : null}
-
-                        {/* Due date + time. Pre-filled with the event's start at row
-                            creation (defaultDueAt in props), editable here. We keep
-                            both pickers always visible so the user sees what they're
-                            actually saving — silently inheriting was confusing. */}
-                        <View style={styles.dueRow}>
-                            <ThemedText themeColor="textSecondary" type="small">
-                                Due:
-                            </ThemedText>
-                            <View style={styles.duePickers}>
-                                <DateField
-                                    value={
-                                        task.dueAt
-                                            ? format(new Date(task.dueAt), 'yyyy-MM-dd')
-                                            : ''
-                                    }
-                                    onChange={(d) =>
-                                        setDue(
-                                            idx,
-                                            d,
-                                            task.dueAt
-                                                ? format(new Date(task.dueAt), 'HH:mm')
-                                                : '',
-                                        )
-                                    }
-                                />
-                                <TimeField
-                                    value={
-                                        task.dueAt
-                                            ? format(new Date(task.dueAt), 'HH:mm')
-                                            : ''
-                                    }
-                                    onChange={(t) =>
-                                        setDue(
-                                            idx,
-                                            task.dueAt
-                                                ? format(
-                                                      new Date(task.dueAt),
-                                                      'yyyy-MM-dd',
-                                                  )
-                                                : '',
-                                            t,
-                                        )
-                                    }
-                                />
-                            </View>
-                        </View>
-                    </View>
-                );
-            })}
-
+            {/* "+ Add a task" — dashed-add affordance below the card. Sits
+                outside the FormGroup so it doesn't read as a task row
+                itself; mono caps "ADD A TASK" copy matches the dashed-add
+                pattern used elsewhere in v2 (custody preset chips, list
+                cards). */}
             <Pressable
                 onPress={addTask}
+                accessibilityRole="button"
+                accessibilityLabel="Add a task"
                 style={({ pressed }) => [
-                    styles.addBtn,
-                    { borderColor: colors.backgroundSelected },
+                    styles.addRow,
+                    {
+                        borderColor: withAlpha(colors.accent, 0x66 / 255),
+                        backgroundColor: withAlpha(colors.accent, 0x08 / 255),
+                    },
                     pressed && styles.pressed,
                 ]}>
-                <ThemedText type="small" style={{ color: colors.accent, fontWeight: '600' }}>
-                    + Add a task
+                <Feather name="plus" size={14} color={colors.accent} />
+                <ThemedText
+                    style={[
+                        styles.addRowText,
+                        {
+                            color: colors.accent,
+                            fontFamily: FontFamily.monoSemiBold,
+                        },
+                    ]}>
+                    ADD A TASK
                 </ThemedText>
             </Pressable>
+
+            {/* Single DateTimePickerSheet drives every row's due edits.
+                duePickerIdx === -1 closes the sheet; a real index opens it
+                pre-seeded with that task's current due (or empty strings
+                so the sheet defaults to today / noon). */}
+            <DateTimePickerSheet
+                open={duePickerIdx >= 0}
+                title="Due"
+                initialDate={
+                    duePickerIdx >= 0 && value[duePickerIdx]?.dueAt
+                        ? format(new Date(value[duePickerIdx].dueAt!), 'yyyy-MM-dd')
+                        : ''
+                }
+                initialTime={
+                    duePickerIdx >= 0 && value[duePickerIdx]?.dueAt
+                        ? format(new Date(value[duePickerIdx].dueAt!), 'HH:mm')
+                        : ''
+                }
+                onSave={({ date, time }) => {
+                    if (duePickerIdx >= 0) setDue(duePickerIdx, date, time);
+                    setDuePickerIdx(-1);
+                }}
+                onClose={() => setDuePickerIdx(-1)}
+            />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    field: { gap: Spacing.two },
-    taskRow: {
-        gap: Spacing.two,
-        padding: Spacing.two,
-        borderRadius: Spacing.two,
-        borderWidth: 1,
+    section: { gap: 8 },
+    // Each task occupies its own block inside the flush FormGroup card,
+    // with a bottom hairline divider between siblings (suppressed on the
+    // last row — the FormGroup's own bottom edge closes it). 14/12 outer
+    // padding matches the form's whoSubBlock so chip leading edges line
+    // up with every other section's mono caps + chip vocabulary.
+    taskBlock: {
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        gap: 8,
     },
-    taskTitleRow: {
+    // Title row sits inside the task block. 10px gap between checkbox,
+    // input, and remove glyph. The input flex:1's so it fills the row;
+    // the checkbox and remove buttons are fixed-width.
+    titleRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: Spacing.two,
+        gap: 10,
     },
+    // 22px square checkbox with hairline border / accent fill when done.
+    // Slightly larger than a chip's avatar so it reads as a control rather
+    // than a decoration.
     checkbox: {
         width: 22,
         height: 22,
-        borderRadius: 4,
-        borderWidth: 2,
+        borderRadius: 6,
+        borderWidth: 1.5,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    checkmark: { color: '#fff', fontSize: 14, fontWeight: '700' },
-    removeBtn: {
-        width: 28,
-        height: 28,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    assignRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: Spacing.one,
-    },
-    assignChip: {
-        borderWidth: 1,
-        borderRadius: 999,
-        paddingHorizontal: Spacing.two,
-        paddingVertical: 2,
-        // UX-035: children chip becomes a row so the identity dot sits inline
-        // before the name. Existing parent / list chips don't render the dot,
-        // so the flexDirection here is a no-op for them.
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-    },
-    childIdentityDot: {
-        width: 8,
-        height: 8,
-        borderRadius: 4,
-    },
-    dueRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.two,
-        flexWrap: 'wrap',
-    },
-    duePickers: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: Spacing.two,
+    // Task title input — flex-fills the row. Padding 0 vertical because
+    // the parent titleRow already provides the vertical rhythm; matches
+    // the notes textarea / search bar input pattern where the wrapper
+    // handles padding.
+    titleInput: {
         flex: 1,
+        fontSize: 14,
+        letterSpacing: -0.2,
+        paddingVertical: 0,
     },
-    addBtn: {
-        alignSelf: 'flex-start',
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        borderRadius: Spacing.two,
+    // Remove (X) glyph button — 24x24 hit area, no border/bg; the icon
+    // alone reads as an inline action. hitSlop on the Pressable provides
+    // the larger tap target.
+    removeBtn: {
+        width: 24,
+        height: 24,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    // Mono caps sub-block — label above, chip row below. Matches the
+    // form's whoSubBlock pattern (label monoSemiBold 10/600 with 0.4
+    // letter-spacing, 2px gap to chips). gap 6 keeps the cluster tight.
+    metaSubBlock: {
+        gap: 6,
+    },
+    // ASSIGNED TO / FOR CHILD(REN) / IN LISTS sub-labels — pulls
+    // typography from Typography.monoCaps so every form-internal caps
+    // sub-label across the app stays in sync (matches event-form's
+    // fieldMonoLabel + DateTimePickerSheet's label).
+    metaLabel: Typography.monoCaps,
+    // Chip row — matches the form's chipRow style (flex-wrap row with
+    // 6px gap between chips). PersonChip / AnyoneChip / ListTagChip all
+    // render at consistent heights so the row stays even.
+    chipRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 6,
+    },
+    // "+ ADD A TASK" affordance. Dashed-accent border + faint accent fill
+    // so it reads as a "tap me to create" affordance. Mono caps label
+    // matches the dashed-add vocabulary used elsewhere in v2 (custody
+    // preset chips, list cards trailing slot).
+    addRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        paddingVertical: 11,
+        borderRadius: 10,
         borderWidth: 1,
+        borderStyle: 'dashed',
+    },
+    addRowText: {
+        fontSize: 11,
+        letterSpacing: 0.4,
     },
     pressed: { opacity: 0.7 },
 });

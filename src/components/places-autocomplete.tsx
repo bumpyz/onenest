@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { Colors, Spacing } from '@/constants/theme';
+import { BrandColors, Colors, FontFamily, Spacing } from '@/constants/theme';
 import {
     autocompletePlaces,
     getPlaceDetails,
@@ -46,6 +46,25 @@ type Props = {
     /** Style for the inner TextInput; same shape as the form's other inputs. */
     inputStyle?: StyleProp<TextStyle>;
     /**
+     * Optional leading icon (e.g. <Feather name="search" .../>) rendered
+     * INSIDE the input bar, immediately to the left of the TextInput.
+     * When provided, the input + icon are wrapped in a flex row whose
+     * shell styling comes from `barStyle` — the bar reads as a single
+     * field with an inline icon (matching the Lists search-bar
+     * vocabulary). When omitted, the component renders a bare TextInput
+     * styled by `inputStyle` only (back-compat for existing callers).
+     */
+    leadingIcon?: React.ReactNode;
+    /**
+     * Style applied to the input-bar shell when `leadingIcon` is set
+     * (border, background, padding, radius). Ignored when leadingIcon
+     * is absent. Separate from `containerStyle` because containerStyle
+     * wraps both the input row AND the suggestions dropdown — bar
+     * styling needs to live on just the input row so the dropdown
+     * doesn't pick up the same border.
+     */
+    barStyle?: StyleProp<ViewStyle>;
+    /**
      * Strings (e.g. names + addresses of saved locations) that should NOT trigger a
      * Google autocomplete fetch when the input value matches them exactly. Used when
      * the parent has a chip picker for already-resolved entries — clicking the chip
@@ -65,6 +84,8 @@ export function PlacesAutocomplete({
     autoFocus = false,
     containerStyle,
     inputStyle,
+    leadingIcon,
+    barStyle,
     skipFetchValues,
 }: Props) {
     const scheme = useAppColorScheme();
@@ -172,21 +193,37 @@ export function PlacesAutocomplete({
         }
     };
 
+    const textInputNode = (
+        <TextInput
+            value={value}
+            onChangeText={(t) => {
+                onChangeText(t);
+                if (placesOn) setShowSuggestions(true);
+            }}
+            onFocus={() => placesOn && setShowSuggestions(true)}
+            placeholder={placeholder}
+            placeholderTextColor={placeholderTextColor}
+            // When leadingIcon is present the input sits in a flex row
+            // inside the bar shell — `flex: 1` lets it consume the row's
+            // remaining width to the right of the icon. Without a bar
+            // we keep the back-compat path where `inputStyle` solely
+            // controls the input's appearance.
+            style={leadingIcon ? [{ flex: 1 }, inputStyle] : inputStyle}
+            editable={editable && !picking}
+            autoFocus={autoFocus}
+        />
+    );
+
     return (
         <View style={[styles.wrapper, containerStyle]}>
-            <TextInput
-                value={value}
-                onChangeText={(t) => {
-                    onChangeText(t);
-                    if (placesOn) setShowSuggestions(true);
-                }}
-                onFocus={() => placesOn && setShowSuggestions(true)}
-                placeholder={placeholder}
-                placeholderTextColor={placeholderTextColor}
-                style={inputStyle}
-                editable={editable && !picking}
-                autoFocus={autoFocus}
-            />
+            {leadingIcon ? (
+                <View style={[styles.bar, barStyle]}>
+                    {leadingIcon}
+                    {textInputNode}
+                </View>
+            ) : (
+                textInputNode
+            )}
 
             {placesOn && showSuggestions && (suggestions.length > 0 || loading || error) ? (
                 <View
@@ -208,7 +245,9 @@ export function PlacesAutocomplete({
 
                     {!loading && error ? (
                         <View style={styles.row}>
-                            <ThemedText type="small" style={{ color: '#D9533F' }}>
+                            <ThemedText
+                                type="small"
+                                style={{ color: BrandColors.error }}>
                                 {error}
                             </ThemedText>
                         </View>
@@ -228,13 +267,34 @@ export function PlacesAutocomplete({
                                       },
                                       pressed && { opacity: 0.6 },
                                   ]}>
-                                  <ThemedText type="smallBold">
+                                  {/* Typography matches LocationSuggestionRow
+                                      (the saved-locations row primitive used
+                                      directly above this dropdown in the
+                                      EventForm Where section) so the
+                                      Google-sourced rows read as a natural
+                                      continuation of the saved list rather
+                                      than a different design system. Was
+                                      using ThemedText `smallBold` (Geist
+                                      Bold 14/700) which was visibly heavier
+                                      than the form's 500-weight body. */}
+                                  <ThemedText
+                                      style={[
+                                          styles.suggestionTitle,
+                                          { color: colors.text },
+                                      ]}
+                                      numberOfLines={1}>
                                       {s.mainText || s.text}
                                   </ThemedText>
                                   {s.secondaryText ? (
                                       <ThemedText
-                                          themeColor="textSecondary"
-                                          type="small"
+                                          style={[
+                                              styles.suggestionSub,
+                                              {
+                                                  color: colors.inkFaint,
+                                                  fontFamily:
+                                                      FontFamily.monoMedium,
+                                              },
+                                          ]}
                                           numberOfLines={1}>
                                           {s.secondaryText}
                                       </ThemedText>
@@ -252,6 +312,15 @@ export function PlacesAutocomplete({
 
 const styles = StyleSheet.create({
     wrapper: { position: 'relative' },
+    // Flex row that holds the optional leading icon + TextInput when the
+    // caller is using the "search bar" variant (leadingIcon set). Shell
+    // appearance (border, bg, padding, radius) comes from the caller via
+    // `barStyle`; this style only owns the layout.
+    bar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
     dropdown: {
         marginTop: Spacing.one,
         borderWidth: 1,
@@ -259,9 +328,26 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
     },
     row: {
-        paddingHorizontal: Spacing.three,
-        paddingVertical: Spacing.two,
-        gap: 2,
+        // Padding mirrors LocationSuggestionRow (11 vertical / 14
+        // horizontal) so the dropdown rows have the same vertical
+        // rhythm as the saved-locations rows in the card above.
+        paddingHorizontal: 14,
+        paddingVertical: 11,
+        gap: 1,
+    },
+    // Suggestion typography — matches LocationSuggestionRow (title
+    // 14/500/-0.2 sansMedium; sub 10 monoMedium/-0.2 inkFaint). Color +
+    // fontFamily for the sub line are applied at the call site so the
+    // light/dark theme injection stays simple.
+    suggestionTitle: {
+        fontSize: 14,
+        fontWeight: '500',
+        letterSpacing: -0.2,
+    },
+    suggestionSub: {
+        fontSize: 10,
+        letterSpacing: -0.2,
+        marginTop: 1,
     },
     loadingRow: {
         flexDirection: 'row',
