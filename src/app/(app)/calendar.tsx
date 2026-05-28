@@ -728,7 +728,13 @@ export default function CalendarScreen() {
     const daySummaryCounts = useMemo(() => {
         if (viewMode !== 'day') {
             // Cheap guard so Week/Month renders don't pay for this work.
-            return { events: 0, conflicts: 0, handoffs: 0, tasks: 0 };
+            return {
+                events: 0,
+                conflicts: 0,
+                handoffs: 0,
+                tasks: 0,
+                override: false,
+            };
         }
         const day = days[0];
         const dayKey = format(day, 'yyyy-MM-dd');
@@ -737,6 +743,20 @@ export default function CalendarScreen() {
         const conflicts = dayEvents.filter((e) =>
             conflictKeys.has(`${e.id}|${e.starts_at}`),
         ).length;
+        // Override flag — true when the resolved custodian on this day
+        // came from a custody override (not the pattern default). Drives
+        // the warn-tinted 'OVERRIDE' summary pill so the user sees the
+        // exception at the same glance as their event / conflict /
+        // hand-off counts.
+        let override = false;
+        if (custodySchedule && !custodySchedule.disabled_at) {
+            const r = resolveCustodianOnDate(
+                custodySchedule,
+                overrideMap,
+                day,
+            );
+            if (r.isOverride) override = true;
+        }
         // Hand-off = today's resolved state differs from tomorrow's. We
         // compare on the full `(profileId, bothPresent)` tuple so 'AB'
         // transitions count too (A→AB and AB→A both shift the household's
@@ -774,7 +794,7 @@ export default function CalendarScreen() {
             if (!t.due_at) continue;
             if (isSameDay(new Date(t.due_at), day)) tasks += 1;
         }
-        return { events, conflicts, handoffs, tasks };
+        return { events, conflicts, handoffs, tasks, override };
     }, [
         viewMode,
         days,
@@ -1224,6 +1244,22 @@ export default function CalendarScreen() {
                                     day,
                                     monthEffectiveSelectedDay,
                                 );
+                                // Override flag for this day — drives the
+                                // warn-color dot in the cell's top-right
+                                // corner. Mirrors the week view's
+                                // dayLabelOverrideDot so users see "this
+                                // day has a custody exception" at the
+                                // same scan moment whether they're in
+                                // week or month view.
+                                const dayHasOverride =
+                                    custodySchedule &&
+                                    !custodySchedule.disabled_at
+                                        ? resolveCustodianOnDate(
+                                              custodySchedule,
+                                              overrideMap,
+                                              day,
+                                          ).isOverride
+                                        : false;
                                 return (
                                     <Pressable
                                         key={dayKey}
@@ -1371,6 +1407,27 @@ export default function CalendarScreen() {
                                                 ]}
                                             />
                                         ) : null}
+                                        {/* Custody override dot — pinned
+                                            top-right (vs conflict's
+                                            bottom-right). Same 5×5 warn
+                                            color + 1px card-color rim so
+                                            it reads cleanly on selected
+                                            vs unselected cells. Mirrors
+                                            the week view's
+                                            dayLabelOverrideDot. */}
+                                        {dayHasOverride ? (
+                                            <View
+                                                style={[
+                                                    styles.monthCellOverrideDot,
+                                                    {
+                                                        backgroundColor:
+                                                            colors.warn,
+                                                        borderColor:
+                                                            colors.backgroundElement,
+                                                    },
+                                                ]}
+                                            />
+                                        ) : null}
                                     </Pressable>
                                 );
                             })}
@@ -1390,6 +1447,19 @@ export default function CalendarScreen() {
                             0,
                             selEvents.length - visibleEvents.length,
                         );
+                        // Selected-day override flag for the OVERRIDE pill
+                        // in the preview card header. Same warn semantic
+                        // as the in-grid dot — the pill is just a louder
+                        // restatement for the focused day.
+                        const selHasOverride =
+                            custodySchedule &&
+                            !custodySchedule.disabled_at
+                                ? resolveCustodianOnDate(
+                                      custodySchedule,
+                                      overrideMap,
+                                      sel,
+                                  ).isOverride
+                                : false;
                         return (
                             <View
                                 style={[
@@ -1422,6 +1492,41 @@ export default function CalendarScreen() {
                                                 ]}>
                                                 TODAY
                                             </ThemedText>
+                                        ) : null}
+                                        {selHasOverride ? (
+                                            <View
+                                                style={[
+                                                    styles.monthPreviewOverridePill,
+                                                    {
+                                                        backgroundColor:
+                                                            withAlpha(
+                                                                colors.warn,
+                                                                0x22 / 255,
+                                                            ),
+                                                        borderColor:
+                                                            withAlpha(
+                                                                colors.warn,
+                                                                0x44 / 255,
+                                                            ),
+                                                    },
+                                                ]}>
+                                                <Feather
+                                                    name="repeat"
+                                                    size={10}
+                                                    color={colors.warn}
+                                                />
+                                                <ThemedText
+                                                    style={[
+                                                        styles.monthPreviewOverridePillText,
+                                                        {
+                                                            color: colors.warn,
+                                                            fontFamily:
+                                                                FontFamily.monoSemiBold,
+                                                        },
+                                                    ]}>
+                                                    OVERRIDE
+                                                </ThemedText>
+                                            </View>
                                         ) : null}
                                     </View>
                                     <ThemedText
@@ -1785,9 +1890,21 @@ export default function CalendarScreen() {
                 (daySummaryCounts.events +
                     daySummaryCounts.conflicts +
                     daySummaryCounts.handoffs +
-                    daySummaryCounts.tasks) >
-                    0 ? (
+                    daySummaryCounts.tasks > 0 ||
+                    daySummaryCounts.override) ? (
                     <View style={styles.daySummaryRow}>
+                        {/* Custody override pill — warn-tinted, surfaces
+                            first so the "this day is not the regular
+                            schedule" signal is the first thing in the
+                            summary row. Hidden when the day follows the
+                            pattern default. */}
+                        {daySummaryCounts.override ? (
+                            <DaySummaryPill
+                                icon="override"
+                                label="Custody override"
+                                colors={colors}
+                            />
+                        ) : null}
                         {daySummaryCounts.events > 0 ? (
                             <DaySummaryPill
                                 icon="events"
@@ -2986,6 +3103,20 @@ const styles = StyleSheet.create({
         borderRadius: 3,
         borderWidth: 1,
     },
+    // Override dot — top-right (vs conflict's bottom-right). Same 5×5
+    // warn-color circle with a 1px card-color rim so it reads against
+    // any cell-fill state (white, accent-tinted selected, past-day
+    // muted). Mirrors the week-view `dayLabelOverrideDot` so the
+    // override signal vocabulary is consistent across views.
+    monthCellOverrideDot: {
+        position: 'absolute',
+        right: 4,
+        top: 4,
+        width: 5,
+        height: 5,
+        borderRadius: 3,
+        borderWidth: 1,
+    },
     // ── Conflict bug badge (week + day event blocks) ──────────────────
     // 14×14 round warn-filled badge in the block's bottom-right corner.
     // 1.5px card-color outline so it reads as a pin pressed onto the
@@ -3469,6 +3600,24 @@ const styles = StyleSheet.create({
     monthPreviewTodayPill: {
         fontSize: 11,
         letterSpacing: -0.2,
+    },
+    // Custody-override pill in the preview-card header. Warn-tinted +
+    // bordered to read as a sibling to the TODAY caps label, with the
+    // repeat glyph mirroring the inbox override_change icon. Hidden
+    // when the selected day follows the pattern default.
+    monthPreviewOverridePill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 999,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
+    monthPreviewOverridePillText: {
+        fontSize: 9.5,
+        letterSpacing: 0.3,
+        fontWeight: '700',
     },
     monthPreviewCount: {
         fontSize: 11,

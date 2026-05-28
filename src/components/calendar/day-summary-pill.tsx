@@ -26,17 +26,26 @@ import { ThemedText } from '@/components/themed-text';
 import { FontFamily } from '@/constants/theme';
 import { withAlpha } from '@/lib/platform-styles';
 
-export type DaySummaryPillIcon = 'events' | 'conflict' | 'handoff' | 'tasks';
+export type DaySummaryPillIcon =
+    | 'events'
+    | 'conflict'
+    | 'handoff'
+    | 'tasks'
+    | 'override';
 type Tone = 'default' | 'warn' | 'accent';
 
-// Maps the design's four icon kinds to Feather equivalents. The spec
-// uses inline SVG paths; Feather covers the same visual concepts and
-// keeps the icon vocabulary consistent with the rest of the app.
+// Maps the design's icon kinds to Feather equivalents. The spec uses
+// inline SVG paths; Feather covers the same visual concepts and keeps
+// the icon vocabulary consistent with the rest of the app.
 const ICON_FOR: Record<DaySummaryPillIcon, React.ComponentProps<typeof Feather>['name']> = {
     events: 'calendar',
     conflict: 'alert-triangle',
     handoff: 'refresh-cw',
     tasks: 'check',
+    // 'override' uses the same repeat glyph as swap/override notifications
+    // — visual link to the custody override surface and the inbox row's
+    // override_change icon.
+    override: 'repeat',
 };
 
 // Tone implies tint color + which alpha to use for the fill. Border is
@@ -47,6 +56,10 @@ const TONE_FOR: Record<DaySummaryPillIcon, Tone> = {
     conflict: 'warn',
     handoff: 'default',
     tasks: 'accent',
+    // Warn tone for override — matches the week-view dot's warn color
+    // and the override-request notification tint, signalling "this day
+    // departs from the regular schedule" with the same vocabulary.
+    override: 'warn',
 };
 
 // Structural type for the three theme tokens we read. Lets the
