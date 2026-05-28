@@ -537,16 +537,22 @@ export default function CustodyOverrideEditorScreen() {
                 addToActivityFeed,
                 reassignEvents,
             });
+            // Auto-approved overrides apply immediately, so the user
+            // sees the schedule visibly change on the next surface.
+            // No confirmation needed — the navigation IS the feedback.
+            //
+            // Pending overrides DON'T apply yet, so the schedule looks
+            // unchanged after save. Without an explicit confirmation
+            // the user has no signal the save worked + no idea the
+            // override is awaiting approval. Keep the popup here so
+            // the latent state isn't mysterious.
             const wasPending = result.approval_status === 'pending';
-            const summary = wasPending
-                ? "Sent for approval. You'll get a notification when the co-parent decides."
-                : 'Override saved.';
-            if (Platform.OS === 'web') alert(summary);
-            else
-                Alert.alert(
-                    wasPending ? 'Sent for approval' : 'Saved',
-                    summary,
-                );
+            if (wasPending) {
+                const msg =
+                    "Sent for approval. You'll get a notification when the co-parent decides.";
+                if (Platform.OS === 'web') alert(msg);
+                else Alert.alert('Sent for approval', msg);
+            }
             router.back();
         } catch (err) {
             console.error('createCustodyOverride failed', err);
