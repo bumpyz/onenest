@@ -15,8 +15,8 @@
 
 import { format, isToday, isYesterday } from 'date-fns';
 import { Feather } from '@expo/vector-icons';
-import { Redirect, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { Redirect, useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -36,6 +36,13 @@ import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
 import { useWeekSummary } from '@/hooks/use-week-summary';
 import { resolveCustodianOnDate, buildOverrideMap } from '@/lib/custody';
+import {
+    dismissNotification,
+    listNotifications,
+    markAllNotificationsRead,
+    markNotificationRead,
+    type Notification,
+} from '@/lib/db';
 import { useAuth } from '@/providers/auth-provider';
 import { useAppColorScheme } from '@/providers/theme-provider';
 
@@ -97,6 +104,48 @@ export default function NotificationsScreen() {
         overrideRangeEnd,
     );
     const { summary } = useWeekSummary(household?.id);
+
+    // Persisted notifications (#381). Fetched on mount + on focus so
+    // tabbing back picks up rows written by other surfaces (swap
+    // accept/decline, future event reminders, etc.). The derived
+    // signals below (conflicts, hand-offs) stay as live-computed rows
+    // and don't go through the table — they're already "free" reads.
+    const [persisted, setPersisted] = useState<Notification[]>([]);
+    const refetchPersisted = useCallback(async () => {
+        try {
+            const rows = await listNotifications({ limit: 100 });
+            setPersisted(rows);
+        } catch {
+            setPersisted([]);
+        }
+    }, []);
+    useEffect(() => {
+        void refetchPersisted();
+    }, [refetchPersisted]);
+    useFocusEffect(
+        useCallback(() => {
+            void refetchPersisted();
+        }, [refetchPersisted]),
+    );
+
+    // Per-row tap: mark the persisted row read (best-effort; derived
+    // items get rejected at the DB and we swallow), then route to the
+    // item's href if it has one. Optimistic refetch picks up the
+    // updated read_at so the row's unread-dot drops immediately.
+    const onRowPress = useCallback(
+        async (item: InboxItem) => {
+            try {
+                await markNotificationRead(item.id);
+                await refetchPersisted();
+            } catch {
+                // No-op for derived items.
+            }
+            // Cast: href is a free-form string (DB-driven), not a
+            // typed-routes literal. expo-router accepts it at runtime.
+            if (item.href) router.push(item.href as never);
+        },
+        [refetchPersisted, router],
+    );
 
     // Build the inbox items from real signals where possible. The order
     // doesn't matter here — sectioning by date bucket handles that below.
@@ -171,33 +220,39 @@ export default function NotificationsScreen() {
             }
         }
 
-        // Scaffolds — sample rows so the inbox doesn't look empty before the
-        // persisted-notifications model exists. Clearly marked sample=true.
-        const now = Date.now();
-        const sampleMembers = (members ?? []).filter(Boolean);
-        if (sampleMembers.length > 0) {
-            const m = sampleMembers[0];
+        // Persisted notifications (#381). Each row in the
+        // `notifications` table becomes an InboxItem. Kind-specific
+        // avatar resolution: swap_request/swap_decision use the
+        // requester's color when we can find it; others fall back to
+        // the accent. The `id` field anchors mark-read/dismiss to the
+        // real DB row.
+        for (const n of persisted) {
+            // Pick an avatar member when the payload references a
+            // profile id we can look up. Best-effort — many kinds
+            // don't have an avatar (digest, connect, invite).
+            const payloadProfileId =
+                typeof n.payload?.requester_profile_id === 'string'
+                    ? (n.payload.requester_profile_id as string)
+                    : null;
+            const m = payloadProfileId
+                ? (members ?? []).find((x) => x.profile_id === payloadProfileId)
+                : null;
             list.push({
-                id: 'sample-digest',
-                kind: 'digest',
-                title: 'Sunday digest delivered',
-                body: '5 events · 2 hand-offs · 1 conflict ahead',
-                at: new Date(now - 1000 * 60 * 60 * 24 * 2),
-                sample: true,
-            });
-            list.push({
-                id: 'sample-mention',
-                kind: 'mention',
-                title: `${m.display_name} mentioned you in a task`,
-                body: `"Can you grab the cake?"`,
-                at: new Date(now - 1000 * 60 * 60 * 24),
-                sample: true,
-                avatarColor: m.color ?? colors.accent,
-                avatarInitial: (m.display_name?.[0] ?? '?').toUpperCase(),
+                id: n.id,
+                kind: n.kind as InboxKind,
+                title: n.title,
+                body: n.body ?? '',
+                at: new Date(n.created_at),
+                unread: n.read_at === null,
+                avatarColor: m?.color ?? undefined,
+                avatarInitial: m
+                    ? (m.display_name?.[0] ?? '?').toUpperCase()
+                    : undefined,
+                href: n.href ?? undefined,
             });
         }
         return list;
-    }, [summary, custodySchedule, overrides, members, colors.accent]);
+    }, [summary, custodySchedule, overrides, members, persisted, colors.accent]);
 
     const [filter, setFilter] = useState<Filter>('all');
 
@@ -281,11 +336,19 @@ export default function NotificationsScreen() {
                             </ThemedText>
                         </View>
                         <Pressable
-                            onPress={() => {
-                                // No persisted unread state yet; this is a
-                                // no-op until the notifications table lands.
-                                // Render the button anyway so the surface
-                                // matches the design's affordance.
+                            onPress={async () => {
+                                // Persisted notifications mark-all-read
+                                // (#381). Derived items (conflicts /
+                                // hand-offs) don't have a read state —
+                                // they reflect live data, so nothing
+                                // to persist. Refetch after to pick up
+                                // the updated read_at timestamps.
+                                try {
+                                    await markAllNotificationsRead();
+                                    await refetchPersisted();
+                                } catch {
+                                    // Best-effort.
+                                }
                             }}
                             accessibilityRole="button"
                             accessibilityLabel="Mark all read"
@@ -344,25 +407,33 @@ export default function NotificationsScreen() {
                         ) : null}
                     </ScrollView>
 
-                    {/* Buckets */}
+                    {/* Buckets. onRowPress marks the underlying
+                        persisted row read + routes to its href. Derived
+                        items (conflicts / hand-offs) skip mark-read
+                        since their IDs don't match a DB row — the
+                        helper silently no-ops when called with a
+                        non-uuid id (RLS denies, swallowed in db.ts). */}
                     <Bucket
                         label="Today"
                         items={buckets.today}
                         emptyHint={filter === 'all' ? "You're all caught up." : null}
                         colors={colors}
                         router={router}
+                        onRowPress={onRowPress}
                     />
                     <Bucket
                         label="Yesterday"
                         items={buckets.yesterday}
                         colors={colors}
                         router={router}
+                        onRowPress={onRowPress}
                     />
                     <Bucket
                         label="Earlier"
                         items={buckets.earlier}
                         colors={colors}
                         router={router}
+                        onRowPress={onRowPress}
                     />
 
                     {/* Sample-data note — only show if we rendered scaffolds */}
@@ -456,6 +527,7 @@ function Bucket({
     emptyHint,
     colors,
     router,
+    onRowPress,
 }: {
     label: string;
     items: InboxItem[];
@@ -463,6 +535,8 @@ function Bucket({
     colors: Palette;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     router: any;
+    /** Per-row tap handler. Parent owns mark-read + href routing. */
+    onRowPress?: (item: InboxItem) => void;
 }) {
     if (items.length === 0 && !emptyHint) return null;
     return (
@@ -504,7 +578,8 @@ function Bucket({
                             last={idx === items.length - 1}
                             colors={colors}
                             onPress={() => {
-                                if (item.href) router.push(item.href);
+                                if (onRowPress) onRowPress(item);
+                                else if (item.href) router.push(item.href);
                             }}
                         />
                     ))

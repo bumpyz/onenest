@@ -2179,7 +2179,43 @@ export async function createSwapRequest(input: {
         .select()
         .single();
     if (error) throw error;
-    return data as SwapRequest;
+    const swap = data as SwapRequest;
+    // Notify the OTHER parent(s) in the household (#381 R1). We
+    // fan-out: every household_members row with role='parent' that
+    // isn't the requester gets a notification. Best-effort — a
+    // notification failure doesn't block the swap creation.
+    try {
+        const { data: otherParents } = await supabase
+            .from('household_members')
+            .select('profile_id')
+            .eq('household_id', input.householdId)
+            .eq('role', 'parent')
+            .neq('profile_id', userId);
+        const sameDay = input.fromDate === input.toDate;
+        const rangeLabel = sameDay
+            ? input.fromDate
+            : `${input.fromDate}–${input.toDate}`;
+        await Promise.all(
+            (otherParents ?? []).map((p: { profile_id: string }) =>
+                enqueueNotification({
+                    profileId: p.profile_id,
+                    householdId: input.householdId,
+                    kind: 'swap_request',
+                    title: 'New swap request',
+                    body: `Co-parent requested a swap for ${rangeLabel}.`,
+                    payload: {
+                        swap_request_id: swap.id,
+                        from_date: input.fromDate,
+                        to_date: input.toDate,
+                    },
+                    href: '/custody/schedule?focus=pending',
+                }),
+            ),
+        );
+    } catch {
+        // Best-effort.
+    }
+    return swap;
 }
 
 /**
@@ -2203,7 +2239,40 @@ export async function decideSwapRequest(
         .select()
         .single();
     if (error) throw error;
-    return data as SwapRequest;
+    const swap = data as SwapRequest;
+    // Notify the requester (#381 R1). Wrapped so a notification failure
+    // doesn't block the decision itself — the decide already succeeded
+    // server-side. Skip when the decider IS the requester (cancel
+    // path; the requester just told themselves).
+    if (swap.requested_by_profile_id !== userId) {
+        const sameDay = swap.from_date === swap.to_date;
+        const rangeLabel = sameDay
+            ? swap.from_date
+            : `${swap.from_date}–${swap.to_date}`;
+        try {
+            await enqueueNotification({
+                profileId: swap.requested_by_profile_id,
+                householdId: swap.household_id,
+                kind: 'swap_decision',
+                title:
+                    decision === 'accepted'
+                        ? 'Swap accepted'
+                        : 'Swap declined',
+                body: `Your swap request for ${rangeLabel} was ${decision}.`,
+                payload: {
+                    swap_request_id: swap.id,
+                    decision,
+                    from_date: swap.from_date,
+                    to_date: swap.to_date,
+                },
+                href: '/custody/schedule',
+            });
+        } catch {
+            // Swallow — the decide already happened; the inbox row
+            // is a nice-to-have, not a correctness requirement.
+        }
+    }
+    return swap;
 }
 
 /**
@@ -2225,6 +2294,147 @@ export async function cancelSwapRequest(id: string): Promise<SwapRequest> {
 export async function deleteEvent(id: string): Promise<void> {
     const { error } = await supabase.from('events').delete().eq('id', id);
     if (error) throw error;
+}
+
+// ─── Notifications (migration 0052, R1 #381) ────────────────────────────
+//
+// Persisted per-recipient notification log. Writes are gated through
+// the SECURITY DEFINER `enqueue_notification` RPC because cross-
+// recipient inserts can't be expressed in row-level INSERT policies
+// — the RPC verifies same-household membership before inserting.
+// Reads/updates/deletes go through standard RLS (owner-only).
+
+/** Notification kind. Free-text in the DB but typed here so callers
+ *  pick from the canonical set. New kinds are a single-line addition. */
+export type NotificationKind =
+    | 'swap_request'
+    | 'swap_decision'
+    | 'event_reminder'
+    | 'task_reminder'
+    | 'task_complete'
+    | 'mention'
+    | 'digest'
+    | 'invite'
+    | 'connect'
+    | 'conflict';
+
+export type Notification = {
+    id: string;
+    profile_id: string;
+    household_id: string | null;
+    kind: NotificationKind;
+    title: string;
+    body: string | null;
+    payload: Record<string, unknown>;
+    href: string | null;
+    created_at: string;
+    read_at: string | null;
+    dismissed_at: string | null;
+};
+
+/** Returns the caller's notifications, newest first, excluding
+ *  dismissed rows by default. The Inbox uses this for the main
+ *  feed; the bell-badge count uses the dedicated unread-count
+ *  helper below (cheaper). */
+export async function listNotifications(
+    options: { includeDismissed?: boolean; limit?: number } = {},
+): Promise<Notification[]> {
+    let q = supabase
+        .from('notifications')
+        .select('*')
+        .order('created_at', { ascending: false });
+    if (!options.includeDismissed) {
+        q = q.is('dismissed_at', null);
+    }
+    if (options.limit) {
+        q = q.limit(options.limit);
+    }
+    const { data, error } = await q;
+    if (error) {
+        // PGRST205 (table not found) → empty so older DBs degrade
+        // gracefully during the deploy-code-before-migration window.
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
+    return ((data ?? []) as Notification[]).map((n) => ({
+        ...n,
+        payload: (n.payload as Record<string, unknown>) ?? {},
+    }));
+}
+
+/** Count unread, undismissed notifications. Used by the Today
+ *  screen's bell-badge. Cheaper than listing because we never
+ *  hydrate the rows. */
+export async function countUnreadNotifications(): Promise<number> {
+    const { count, error } = await supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .is('read_at', null)
+        .is('dismissed_at', null);
+    if (error) {
+        if (error.code === 'PGRST205') return 0;
+        throw error;
+    }
+    return count ?? 0;
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+    const { error } = await supabase
+        .from('notifications')
+        .update({ read_at: new Date().toISOString() })
+        .eq('id', id);
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+    const { error } = await supabase
+        .from('notifications')
+        .update({ read_at: new Date().toISOString() })
+        .is('read_at', null);
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
+export async function dismissNotification(id: string): Promise<void> {
+    const { error } = await supabase
+        .from('notifications')
+        .update({ dismissed_at: new Date().toISOString() })
+        .eq('id', id);
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
+/** Enqueue a notification for another household member via the
+ *  SECURITY DEFINER RPC. Caller and recipient must be in the same
+ *  household (or the recipient is an external co-parent linked to a
+ *  child in the household). Errors propagate normally — RLS denials
+ *  surface as a permission_denied; missing tables surface as PGRST205. */
+export async function enqueueNotification(args: {
+    profileId: string;
+    householdId: string | null;
+    kind: NotificationKind;
+    title: string;
+    body?: string | null;
+    payload?: Record<string, unknown>;
+    href?: string | null;
+}): Promise<string | null> {
+    const { data, error } = await supabase.rpc('enqueue_notification', {
+        p_profile_id: args.profileId,
+        p_household_id: args.householdId,
+        p_kind: args.kind,
+        p_title: args.title,
+        p_body: args.body ?? null,
+        p_payload: args.payload ?? {},
+        p_href: args.href ?? null,
+    });
+    if (error) {
+        // PGRST202 = function not found (migration not applied yet);
+        // PGRST205 = table not found. Treat both as a soft no-op so
+        // the action that triggered the notification still succeeds.
+        if (error.code === 'PGRST202' || error.code === 'PGRST205') {
+            return null;
+        }
+        throw error;
+    }
+    return (data as string) ?? null;
 }
 
 // Event occurrence overrides: per-(event_id, date) responsible-parent override that
