@@ -1153,6 +1153,57 @@ export async function removeExternalCoparent(
     if (error) throw error;
 }
 
+/** All external co-parent links for a household — one row per
+ *  (child, profile) pair. NewOverride editor (#494 Phase D) calls
+ *  this to:
+ *    • drive the ApprovalBanner ("which external co-parents must
+ *      approve given the selected kids?")
+ *    • populate "With whom" CaregiverPickRow EXT entries
+ *    • flag KidCheckRow rows whose default custodian is external
+ *
+ *  Joins profiles + children so callers can render avatars + names
+ *  without a second round trip. RLS-scoped: household parents see
+ *  every link in their household.
+ */
+export type HouseholdExternalCoparent = {
+    child_id: string;
+    child_display_name: string;
+    child_color: string;
+    profile_id: string;
+    profile_display_name: string;
+    color: string | null;
+    created_at: string;
+};
+
+export async function listHouseholdExternalCoparents(
+    householdId: string,
+): Promise<HouseholdExternalCoparent[]> {
+    const { data, error } = await supabase
+        .from('child_external_coparents')
+        .select(
+            'child_id, profile_id, color, created_at, ' +
+                'children!inner(household_id, display_name, color), ' +
+                'profiles!inner(display_name)',
+        )
+        .eq('children.household_id', householdId)
+        .order('created_at', { ascending: true });
+    if (error) {
+        // PGRST205 (table not found) carve-out — see
+        // getMyExternalCoparentLinks for rationale.
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
+    return (data ?? []).map((row: any) => ({
+        child_id: row.child_id,
+        child_display_name: row.children.display_name,
+        child_color: row.children.color,
+        profile_id: row.profile_id,
+        profile_display_name: row.profiles?.display_name ?? '',
+        color: row.color,
+        created_at: row.created_at,
+    }));
+}
+
 // ─── households.default_brief_items (migration 0050, #397) ───────────────
 //
 // Read/write helpers for the caregiver brief-items list. Auto-task
