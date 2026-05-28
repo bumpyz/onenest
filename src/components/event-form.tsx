@@ -2083,16 +2083,16 @@ export function EventForm({
 }
 
 const styles = StyleSheet.create({
-    // Alternation FormRow — sits at the bottom of the Who card,
-    // wrapped in a flush hairline-bordered mini-card so it reads as a
-    // settings-row continuation of the chip block above.
+    // Alternation FormRow — sits directly beneath the Responsible chip
+    // strip as a continuation of the same selector. Earlier versions
+    // pulled it edge-to-edge with negative horizontal margins and a
+    // hairline top border so it looked like a settings-row sibling;
+    // that made the row read as a SEPARATE section from Responsible.
+    // Alternates is conceptually part of "who's on duty" — it shapes
+    // how Responsible resolves on each occurrence. Kept inline with no
+    // divider so the chip strip and the row read as one block.
     alternationRowWrap: {
-        marginTop: 8,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        marginHorizontal: -12,
-        // Negative margins counter the parent View's `styles.field`
-        // padding so the row goes edge-to-edge inside the FormGroup
-        // card — matches how SRow groups render flush in iOS Settings.
+        marginTop: 6,
     },
     alternationRow: {
         flexDirection: 'row',
