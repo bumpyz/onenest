@@ -87,3 +87,20 @@ export { ListCardV2, NewListCard, type ListCardV2Child } from './list-card-v2';
 export { RoleBadge, type RoleBadgeKind } from './role-badge';
 export { KidPOVHeader } from './kid-pov-header';
 export { DashedBusyBlockRow } from './dashed-busy-block-row';
+
+// ── NewOverride primitives (design 06.3, #494) ────────────────────────
+// Editor for custody overrides — full multi-section surface replacing
+// the legacy /custody/[date] stub. Phase D consumes these.
+export { KindChip, type KindChipIcon } from './kind-chip';
+export { KidCheckRow } from './kid-check-row';
+export { CaregiverPickRow } from './caregiver-pick-row';
+export { DateRangeBoxes } from './date-range-boxes';
+export { PresetChip } from './preset-chip';
+export {
+    OverridePreviewBar,
+    type PreviewDay,
+} from './override-preview-bar';
+export {
+    ApprovalBanner,
+    type ApprovalApprover,
+} from './approval-banner';
