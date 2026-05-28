@@ -32,6 +32,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ChildBadge } from '@/components/child-badge';
 import { CONTACT_CATEGORY_META } from '@/components/contact-form';
 import { HairlineDivider } from '@/components/ds';
+import { initialsFor } from '@/components/initials-avatar';
 import { LoadingScreen } from '@/components/loading-screen';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -52,17 +53,11 @@ import { useAppColorScheme } from '@/providers/theme-provider';
 // Widened palette — same pattern as Home / Family Hub.
 type Palette = (typeof Colors)['light'] | (typeof Colors)['dark'];
 
-// Initials picker — duplicated from the list screen rather than imported
-// to keep the read-detail self-contained. Pulled into a shared util if
-// any third caller needs it.
-function initialsFor(name: string): string {
-    const words = name.trim().split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
-    const target = words.length > 1 ? words[words.length - 1] : (words[0] ?? name);
-    return target
-        .replace(/[^A-Za-z]/g, '')
-        .slice(0, 2)
-        .toUpperCase() || '?';
-}
+// Initials come from the shared `initialsFor` exported by
+// InitialsAvatar — the Contacts list, this read-detail screen, and
+// the edit form all use the same first+last-letter rule. The previous
+// duplicated "last word's first two letters" logic disagreed with the
+// edit screen and surfaced as a UI inconsistency.
 
 export default function ContactDetailScreen() {
     const router = useRouter();

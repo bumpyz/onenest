@@ -50,8 +50,14 @@ function colorForName(name: string): string {
  *   "Maria"                 → "M"  (single word)
  *   ""                      → "?"  (empty fallback)
  * Bounded to two characters so the layout is predictable.
+ *
+ * Exported so the Contacts list + Contact detail screens render the
+ * same initials as this avatar component — without it the list/detail
+ * used a different ad-hoc "last word's first two letters" rule and
+ * users saw "GA" on the list but "MG" on the edit screen for the same
+ * "Maria Garcia" record.
  */
-function initialsFor(name: string): string {
+export function initialsFor(name: string): string {
     const trimmed = name.trim();
     if (!trimmed) return '?';
     const words = trimmed

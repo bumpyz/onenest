@@ -38,6 +38,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HairlineDivider, SectionHeader } from '@/components/ds';
+import { initialsFor } from '@/components/initials-avatar';
 import { LoadingScreen } from '@/components/loading-screen';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -68,19 +69,13 @@ function telTarget(phone: string): string {
     return `${leadingPlus}${trimmed.replace(/[^\d]/g, '')}`;
 }
 
-// Initials picker for the category-tinted avatar. Design uses the last
-// word of the name when available (so "Dr. Anita Patel" → "PA"); falls
-// back to the first two letters of the whole name when there's only one
-// word. Letters-only — strips honorifics like "Dr." that would otherwise
-// turn into "DR".
-function initialsFor(name: string): string {
-    const words = name.trim().split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
-    const target = words.length > 1 ? words[words.length - 1] : (words[0] ?? name);
-    return target
-        .replace(/[^A-Za-z]/g, '')
-        .slice(0, 2)
-        .toUpperCase() || '?';
-}
+// Initials for the category-tinted avatar use the shared `initialsFor`
+// helper exported by InitialsAvatar so the Contacts list, the
+// individual contact detail screen, and the edit form all render the
+// same letters — first-letter-of-first-word + first-letter-of-second-
+// word ("Maria Garcia" → "MG"). The earlier ad-hoc rule here took the
+// LAST word's first two letters ("Maria Garcia" → "GA"), which
+// disagreed with the edit screen and surfaced as a UI inconsistency.
 
 export default function ContactsScreen() {
     const router = useRouter();
