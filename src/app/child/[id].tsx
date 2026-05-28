@@ -15,6 +15,7 @@ import { Spacing } from '@/constants/theme';
 import { useChildren } from '@/hooks/use-children';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
+import { useLocations } from '@/hooks/use-locations';
 import {
     addChildAllergy,
     addChildMedication,
@@ -43,6 +44,10 @@ export default function EditChildScreen() {
     const { members, isLoading: membersLoading } = useHouseholdMembers(
         household?.id,
     );
+    // Saved locations for the School picker sheet (#465). Same
+    // graceful-loading rationale as the create screen — an empty list
+    // while loading falls through to the plain TextInputSheet.
+    const { locations } = useLocations(household?.id);
 
     const child = useMemo(
         () => (id && children ? children.find((c) => c.id === id) : null),
@@ -221,6 +226,7 @@ export default function EditChildScreen() {
             headerTitle="Edit child"
             initialValues={initialValues}
             members={members ?? []}
+            locations={locations ?? []}
             onSubmit={handleSubmit}
             onDelete={handleDelete}
             onCancel={() => router.back()}

@@ -8,6 +8,7 @@ import {
 import { LoadingScreen } from '@/components/loading-screen';
 import { useHouseholdMembers } from '@/hooks/use-household-members';
 import { useHouseholds } from '@/hooks/use-households';
+import { useLocations } from '@/hooks/use-locations';
 import {
     addChild,
     addChildAllergy,
@@ -25,6 +26,12 @@ export default function NewChildScreen() {
     const { members, isLoading: membersLoading } = useHouseholdMembers(
         household?.id,
     );
+    // Saved locations feed the School picker sheet (#465). We don't
+    // block the form on locations loading — an empty list while
+    // loading or for a fresh household just falls back to the plain
+    // TextInputSheet path; once loaded the picker switches in
+    // seamlessly on next open.
+    const { locations } = useLocations(household?.id);
 
     if (authLoading || householdsLoading || membersLoading) {
         return <LoadingScreen />;
@@ -106,6 +113,7 @@ export default function NewChildScreen() {
             headerTitle="Add child"
             initialValues={INITIAL}
             members={members ?? []}
+            locations={locations ?? []}
             onSubmit={handleSubmit}
             onCancel={() => router.back()}
         />

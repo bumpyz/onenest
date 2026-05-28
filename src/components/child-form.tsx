@@ -37,7 +37,7 @@
 // atomically without the form needing to know about Supabase.
 
 import { Feather } from '@expo/vector-icons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
     Alert,
     KeyboardAvoidingView,
@@ -62,8 +62,10 @@ import {
     FormSectionLabel,
     FormSwitch,
     HealthChip,
+    LocationSuggestionRow,
     PersonChip,
     SegRow,
+    SheetShell,
     TextInputSheet,
     TitleInput,
 } from '@/components/ds';
@@ -77,6 +79,7 @@ import {
     type ChildCaregiverVisibility,
     type ChildMedication,
     type HouseholdMember,
+    type Location,
 } from '@/lib/db';
 import { errorMessage } from '@/lib/errors';
 import { useAppColorScheme } from '@/providers/theme-provider';
@@ -123,6 +126,12 @@ type Props = {
      *  ParentChip row. The current user is implicitly always selected
      *  by default for new children (handled by the route). */
     members: HouseholdMember[];
+    /** Household's saved locations. Threaded into the School field's
+     *  edit sheet so users can pick "Lincoln Elementary" from the
+     *  saved list instead of retyping it for every kid (#465). When
+     *  the list is empty (no saved locations yet) the School field
+     *  falls through to the plain TextInputSheet. */
+    locations?: Location[];
     /** Optional: pre-loaded allergies + medications when editing. The
      *  form starts with these in `initialValues` already; this prop is
      *  here to make the API symmetric. */
@@ -206,6 +215,7 @@ export function ChildForm({
     submitLabel = 'Save',
     initialValues,
     members,
+    locations = [],
     onSubmit,
     onDelete,
     onCancel,
@@ -984,27 +994,159 @@ export function ChildForm({
             </KeyboardAvoidingView>
 
             {/* Shared field-edit sheet — opens for the FormRow + chevron
-                rows above (Pronouns / Nickname / School / Grade /
-                Teacher). One sheet handles all five since they're
-                semantically identical (single short string). */}
-            <TextInputSheet
-                open={activeFieldConfig !== null}
-                title={activeFieldConfig?.title ?? ''}
-                fieldLabel={activeFieldConfig?.label ?? ''}
-                sub={activeFieldConfig?.sub}
-                initialValue={activeFieldConfig?.getCurrent() ?? ''}
-                placeholder={activeFieldConfig?.placeholder}
-                mono={activeFieldConfig?.mono ?? false}
-                autoCapitalize={activeFieldConfig?.autoCapitalize ?? 'sentences'}
-                onSave={(next) => {
-                    activeFieldConfig?.setNext(next);
-                    setEditingField(null);
-                }}
-                onClose={() => setEditingField(null)}
-            />
+                rows above (Pronouns / Nickname / Grade / Teacher). One
+                sheet handles all four since they're semantically
+                identical (single short string).
+                School is the exception (#465): when the household has
+                ≥1 saved location, it routes to SchoolPickerSheet
+                instead so users can pick "Lincoln Elementary" from the
+                saved list instead of retyping it for every kid. The
+                gate falls through to TextInputSheet for households
+                with no saved locations yet (zero-state graceful
+                fallback). */}
+            {editingField === 'school' && locations.length > 0 ? (
+                <SchoolPickerSheet
+                    open
+                    initialValue={school}
+                    locations={locations}
+                    onSave={(next) => {
+                        setSchool(next);
+                        setEditingField(null);
+                    }}
+                    onClose={() => setEditingField(null)}
+                />
+            ) : (
+                <TextInputSheet
+                    open={activeFieldConfig !== null}
+                    title={activeFieldConfig?.title ?? ''}
+                    fieldLabel={activeFieldConfig?.label ?? ''}
+                    sub={activeFieldConfig?.sub}
+                    initialValue={activeFieldConfig?.getCurrent() ?? ''}
+                    placeholder={activeFieldConfig?.placeholder}
+                    mono={activeFieldConfig?.mono ?? false}
+                    autoCapitalize={
+                        activeFieldConfig?.autoCapitalize ?? 'sentences'
+                    }
+                    onSave={(next) => {
+                        activeFieldConfig?.setNext(next);
+                        setEditingField(null);
+                    }}
+                    onClose={() => setEditingField(null)}
+                />
+            )}
         </ThemedView>
     );
 }
+
+// ─── School picker sheet (#465) ─────────────────────────────────────
+//
+// Like TextInputSheet but with a list of saved-location suggestions
+// above the input. Lifted into ChildForm's module rather than a new
+// ds primitive because it's specific to this use case (the
+// location-list semantics here are different from EventForm's Where
+// section — there's no "picked place" sub-card, no Google fallback,
+// no Maps URL). If a second caller emerges this lifts cleanly.
+//
+// Behavior:
+//   * Tap a LocationSuggestionRow → input fills with location name +
+//     Save fires automatically (one-tap pick path).
+//   * Type a custom name + Save → commits as plain text (no dedup
+//     against the saved list; the user explicitly typed it).
+//   * Empty list of suggestions short-circuits via the caller's
+//     conditional — this sheet only mounts when locations.length > 0.
+
+function SchoolPickerSheet({
+    open,
+    initialValue,
+    locations,
+    onSave,
+    onClose,
+}: {
+    open: boolean;
+    initialValue: string;
+    locations: Location[];
+    onSave: (value: string) => void;
+    onClose: () => void;
+}) {
+    const [draft, setDraft] = useState(initialValue);
+    useEffect(() => {
+        if (open) setDraft(initialValue);
+    }, [open, initialValue]);
+
+    return (
+        <SheetShell
+            open={open}
+            onClose={onClose}
+            title="School"
+            sub="Pick a saved location or type a new name."
+            primary="Save"
+            secondary="Cancel"
+            onPrimary={() => onSave(draft.trim())}
+            onSecondary={onClose}
+            height={520}>
+            <View style={schoolSheetStyles.body}>
+                <TitleInput
+                    label="SCHOOL"
+                    value={draft}
+                    onChangeText={setDraft}
+                    placeholder="e.g. Lincoln Elementary"
+                    autoFocus
+                    autoCapitalize="words"
+                />
+                <View style={schoolSheetStyles.listWrap}>
+                    {locations.map((loc, idx) => {
+                        // Match the input against the saved list
+                        // case-insensitively so picking a row + Save
+                        // doesn't re-render as "still selected" if the
+                        // input has different casing.
+                        const selected =
+                            draft.trim().toLowerCase() ===
+                            loc.name.toLowerCase();
+                        const last = idx === locations.length - 1;
+                        return (
+                            <LocationSuggestionRow
+                                key={loc.id}
+                                title={loc.name}
+                                sub={loc.formatted_address || undefined}
+                                selected={selected}
+                                tagLabel={selected ? 'PICKED' : 'SAVED'}
+                                tagTone={selected ? 'accent' : 'neutral'}
+                                last={last}
+                                onPress={() => {
+                                    // One-tap pick: fill the input AND
+                                    // commit on the same gesture. Users
+                                    // who want to edit after picking
+                                    // can re-open the sheet — the most
+                                    // common path is "tap and go".
+                                    onSave(loc.name);
+                                }}
+                            />
+                        );
+                    })}
+                </View>
+            </View>
+        </SheetShell>
+    );
+}
+
+const schoolSheetStyles = StyleSheet.create({
+    body: {
+        // TitleInput owns its own internal padding (14/20/6). Negate
+        // SheetShell's default 16px content-inner padding so the input
+        // sits flush — matches TextInputSheet's body negative-margin
+        // trick.
+        marginHorizontal: -16,
+        marginTop: -12,
+        gap: 12,
+    },
+    listWrap: {
+        // Pull the list edge-to-edge inside the sheet shell while the
+        // TitleInput above stays flush. 16/0 padding so the rows have
+        // breathing room from the sheet edges without the list being
+        // recessed inside an inner card.
+        paddingHorizontal: 0,
+    },
+});
 
 const styles = StyleSheet.create({
     container: { flex: 1 },
