@@ -319,11 +319,12 @@ export default function ChildDetailScreen() {
                             ),
                             colors.background,
                         ]}
-                        // 160° in CSS maps roughly to start={0,0}/end={1,1}
-                        // diagonal in RN — close enough for the design intent
-                        // without doing trig at render time.
+                        // Pure top-to-bottom — kid color at the very top
+                        // edge, fading straight down into the page bg.
+                        // Reads more like a "color wash from above" than
+                        // the diagonal which felt off-axis.
                         start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
+                        end={{ x: 0, y: 1 }}
                         style={StyleSheet.absoluteFill}
                     />
                     {/* Safe-area + top bar */}
