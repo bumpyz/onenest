@@ -190,7 +190,11 @@ export default function JoinScreen() {
                                     borderColor: withAlpha(colors.accent, 0x40 / 0xff),
                                 },
                             ]}>
-                            <Feather name="mail" size={11} color={colors.accent} />
+                            {/* "+" sparkle glyph — matches the design's
+                                fresh / celebratory burst. Feather "mail"
+                                read as "you have email," which changes
+                                the moment (audit, #296 HIGH). */}
+                            <Feather name="plus" size={11} color={colors.accent} />
                             <ThemedText
                                 style={[
                                     styles.invitedPillText,
@@ -323,7 +327,11 @@ export default function JoinScreen() {
                                     borderColor: withAlpha(colors.accent, 0x40 / 0xff),
                                 },
                             ]}>
-                            <Feather name="mail" size={11} color={colors.accent} />
+                            {/* "+" sparkle glyph — matches the design's
+                                fresh / celebratory burst. Feather "mail"
+                                read as "you have email," which changes
+                                the moment (audit, #296 HIGH). */}
+                            <Feather name="plus" size={11} color={colors.accent} />
                             <ThemedText
                                 style={[
                                     styles.invitedPillText,
@@ -419,7 +427,10 @@ export default function JoinScreen() {
                                             fontFamily: FontFamily.monoMedium,
                                         },
                                     ]}>
-                                    {adultCount} ACTIVE{kidCount > 0 ? ` · ${kidCount} KIDS` : ''}
+                                    {adultCount} {adultCount === 1 ? 'PERSON' : 'PEOPLE'}
+                                    {kidCount > 0
+                                        ? ` · ${kidCount} KID${kidCount === 1 ? '' : 'S'}`
+                                        : ''}
                                 </ThemedText>
                             </View>
                             {parentMembers.length > 0 ? (
