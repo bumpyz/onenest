@@ -314,15 +314,35 @@ export default function NotificationsScreen() {
     return (
         <ThemedView style={styles.container}>
             <SafeAreaView style={styles.safe} edges={['top']}>
-                {/* Phase 10 v3: the design source has no secondary back
-                    bar — the screen routes back via the bottom tabs or
-                    the OS gesture. The headerRow below carries the
-                    chrome inline: mono count meta + 22/600 "Activity"
-                    title on the left, "Mark all read" pill on the
-                    right. */}
+                {/* Phase 10 v3: the design source assumes a bottom-nav
+                    return path. The screen is reached via push from
+                    Home (Today bell), Settings, or a notification
+                    deeplink — none of which sit on a tab — so we add
+                    a small back chevron in the leading slot to keep
+                    return navigation available without bringing back
+                    the old full-width chrome bar. The meta + title +
+                    Mark-all-read group stays inline per the spec. */}
                 <ScrollView contentContainerStyle={styles.scroll}>
                     {/* Header summary + Mark all read */}
                     <View style={styles.headerRow}>
+                        <Pressable
+                            onPress={() => router.back()}
+                            accessibilityRole="button"
+                            accessibilityLabel="Back"
+                            style={({ pressed }) => [
+                                styles.headerBackBtn,
+                                {
+                                    backgroundColor: colors.backgroundElement,
+                                    borderColor: colors.hair,
+                                },
+                                pressed && styles.pressed,
+                            ]}>
+                            <Feather
+                                name="chevron-left"
+                                size={14}
+                                color={colors.text}
+                            />
+                        </Pressable>
                         <View style={{ flex: 1 }}>
                             <ThemedText
                                 style={[
@@ -812,19 +832,29 @@ const styles = StyleSheet.create({
 
     scroll: { paddingBottom: 64, gap: Spacing.three },
 
-    // ── Header row (counts + title + Mark all read)
-    // Phase 10 v3: this single row replaces the old back-bar + nested
-    // headerRow pattern. Mono "12 NEW · 8 TODAY" meta stacks above the
-    // 22/600 "Activity" title in the left column; "Mark all read" pill
-    // is right-anchored against the title baseline.
+    // ── Header row (back btn + counts + title + Mark all read)
+    // Phase 10 v3: this single row carries the entire chrome. The leading
+    // back chevron preserves return navigation since the screen is
+    // pushed (not on a tab), the meta + title block sits in the middle
+    // column, and the Mark-all-read pill anchors to the right edge.
+    // 16px horizontal so the back button has the same gutter as the
+    // section cards below.
     headerRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: 20,
+        paddingHorizontal: 16,
         paddingTop: 12,
         paddingBottom: 6,
-        gap: Spacing.two,
+        gap: 10,
+    },
+    headerBackBtn: {
+        width: 32,
+        height: 32,
+        borderRadius: 8,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     headerCounts: {
         fontSize: 10,
