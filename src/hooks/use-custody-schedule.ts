@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 
 import { getCustodySchedule, type CustodySchedule } from '@/lib/db';
@@ -29,6 +30,19 @@ export function useCustodySchedule(householdId: string | undefined) {
     useEffect(() => {
         refetch();
     }, [refetch]);
+
+    // #491 finding #1: pattern saves on /custody/pattern weren't
+    // reaching the Today strip / Family Hub hero. Adding a focus
+    // refetch here means every consumer (CustodyStripToday,
+    // /custody/schedule, /custody/view, Family Hub) picks up the new
+    // schedule when the user navigates back to the screen rendering
+    // them. The cost is one extra GET per tab focus — fine for a
+    // single-row table.
+    useFocusEffect(
+        useCallback(() => {
+            void refetch();
+        }, [refetch]),
+    );
 
     return { schedule, isLoading, error, refetch };
 }

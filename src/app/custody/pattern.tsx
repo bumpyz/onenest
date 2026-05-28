@@ -136,6 +136,37 @@ const PATTERN_OPTIONS: Array<{
 
 const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const;
 
+// #491 finding #2: cycle patterns have multiple hand-offs per rotation
+// (2-2-3 has 4 transitions per 14 days, 2-2-5-5 has 3, 3-4-4-3 has 3).
+// The single DAY OF WEEK picker only makes sense for patterns where the
+// switch happens once per week on a configurable day — i.e. the weekly
+// patterns. For cycle patterns we hide the picker and surface a short
+// explainer instead so the UI doesn't lie about the schema.
+function isMultiHandoffPattern(id: EditorPatternId): boolean {
+    return id === '2-2-3' || id === '2-2-5-5' || id === '3-4-4-3';
+}
+
+// #491 finding #3: "Who has this week" only reads cleanly for the
+// alternating-weeks pattern (7-7) where one whole week IS one parent.
+// For every other pattern the kids switch within the week, so we use
+// "Cycle starts with" — semantically what the row actually controls
+// (which parent owns the cycle's day 0 / parent A slot).
+function anchorRowLabel(id: EditorPatternId): string {
+    return id === '7-7' ? 'Who has this week' : 'Cycle starts with';
+}
+
+function anchorGroupSubLabel(id: EditorPatternId): string {
+    return id === '7-7'
+        ? 'Which week is whose. Editing this shifts all future weeks.'
+        : "Which parent gets the cycle's first day. Editing this shifts the whole rotation.";
+}
+
+function anchorSheetSub(id: EditorPatternId): string {
+    return id === '7-7'
+        ? "Picks which parent the pattern's first week (parent A) belongs to."
+        : "Picks which parent the cycle's first day (parent A) belongs to.";
+}
+
 export default function CustodyPatternEditorScreen() {
     const router = useRouter();
     const scheme = useAppColorScheme();
@@ -596,61 +627,93 @@ export default function CustodyPatternEditorScreen() {
                         label="Hand-off"
                         subLabel="When the switch happens. Used for the next-handoff timer and reminders."
                         colors={colors}>
-                        <View style={styles.handoffDayWrap}>
-                            <ThemedText
-                                style={[
-                                    styles.subSectionLabel,
-                                    {
-                                        color: colors.inkFaint,
-                                        fontFamily: FontFamily.monoSemiBold,
-                                    },
-                                ]}>
-                                DAY OF WEEK
-                            </ThemedText>
-                            <View style={styles.handoffDayRow}>
-                                {DAY_LABELS.map((d, i) => {
-                                    const sel = i === handoffDayIndex;
-                                    return (
-                                        <Pressable
-                                            key={i}
-                                            onPress={() =>
-                                                setHandoffDayIndex(i)
-                                            }
-                                            accessibilityRole="button"
-                                            accessibilityLabel={`Hand-off on ${d}`}
-                                            accessibilityState={{
-                                                selected: sel,
-                                            }}
-                                            style={({ pressed }) => [
-                                                styles.handoffDayCell,
-                                                {
-                                                    backgroundColor: sel
-                                                        ? colors.accent
-                                                        : colors.backgroundInset,
-                                                    borderColor: sel
-                                                        ? colors.accent
-                                                        : colors.hair,
-                                                },
-                                                pressed && styles.pressed,
-                                            ]}>
-                                            <ThemedText
-                                                style={[
-                                                    styles.handoffDayLabel,
-                                                    {
-                                                        color: sel
-                                                            ? colors.onAccent
-                                                            : colors.inkSec,
-                                                        fontFamily:
-                                                            FontFamily.monoSemiBold,
-                                                    },
-                                                ]}>
-                                                {d}
-                                            </ThemedText>
-                                        </Pressable>
-                                    );
-                                })}
+                        {isMultiHandoffPattern(patternId) ? (
+                            // #491 finding #2: cycle patterns (2-2-3, 2-2-5-5,
+                            // 3-4-4-3) have multiple hand-off days baked into
+                            // the rotation, so a single "day of week" picker
+                            // would mis-represent the schema. Show an
+                            // explainer in the same slot.
+                            <View style={styles.handoffDayWrap}>
+                                <ThemedText
+                                    style={[
+                                        styles.subSectionLabel,
+                                        {
+                                            color: colors.inkFaint,
+                                            fontFamily:
+                                                FontFamily.monoSemiBold,
+                                        },
+                                    ]}>
+                                    HAND-OFF DAYS
+                                </ThemedText>
+                                <ThemedText
+                                    style={[
+                                        styles.handoffExplainer,
+                                        { color: colors.inkSec },
+                                    ]}>
+                                    This pattern has multiple hand-offs per
+                                    cycle — they happen automatically on the
+                                    days the rotation flips. Set the
+                                    hand-off time below.
+                                </ThemedText>
                             </View>
-                        </View>
+                        ) : (
+                            <View style={styles.handoffDayWrap}>
+                                <ThemedText
+                                    style={[
+                                        styles.subSectionLabel,
+                                        {
+                                            color: colors.inkFaint,
+                                            fontFamily:
+                                                FontFamily.monoSemiBold,
+                                        },
+                                    ]}>
+                                    DAY OF WEEK
+                                </ThemedText>
+                                <View style={styles.handoffDayRow}>
+                                    {DAY_LABELS.map((d, i) => {
+                                        const sel = i === handoffDayIndex;
+                                        return (
+                                            <Pressable
+                                                key={i}
+                                                onPress={() =>
+                                                    setHandoffDayIndex(i)
+                                                }
+                                                accessibilityRole="button"
+                                                accessibilityLabel={`Hand-off on ${d}`}
+                                                accessibilityState={{
+                                                    selected: sel,
+                                                }}
+                                                style={({ pressed }) => [
+                                                    styles.handoffDayCell,
+                                                    {
+                                                        backgroundColor: sel
+                                                            ? colors.accent
+                                                            : colors.backgroundInset,
+                                                        borderColor: sel
+                                                            ? colors.accent
+                                                            : colors.hair,
+                                                    },
+                                                    pressed && styles.pressed,
+                                                ]}>
+                                                <ThemedText
+                                                    style={[
+                                                        styles.handoffDayLabel,
+                                                        {
+                                                            color: sel
+                                                                ? colors.onAccent
+                                                                : colors.inkSec,
+                                                            fontFamily:
+                                                                FontFamily.monoSemiBold,
+                                                        },
+                                                    ]}>
+                                                    {d}
+                                                </ThemedText>
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                            </View>
+                        )}
                         <SubRow
                             label="Time"
                             value={handoffTime}
@@ -674,7 +737,7 @@ export default function CustodyPatternEditorScreen() {
                     {/* Anchor */}
                     <SubGroup
                         label="Anchor"
-                        subLabel="Which week is whose. Editing this shifts all future weeks."
+                        subLabel={anchorGroupSubLabel(patternId)}
                         colors={colors}>
                         <SubRow
                             label="Pattern started"
@@ -689,7 +752,7 @@ export default function CustodyPatternEditorScreen() {
                             colors={colors}
                         />
                         <SubRow
-                            label="Who has this week"
+                            label={anchorRowLabel(patternId)}
                             value={parentA?.display_name ?? '—'}
                             mono
                             chevron
@@ -1021,8 +1084,8 @@ export default function CustodyPatternEditorScreen() {
                 <SheetShell
                     open={anchorParentSheetOpen}
                     onClose={() => setAnchorParentSheetOpen(false)}
-                    title="Who has this week"
-                    sub="Picks which parent the pattern's first week (parent A) belongs to."
+                    title={anchorRowLabel(patternId)}
+                    sub={anchorSheetSub(patternId)}
                     height={360}>
                     {[parentA, parentB]
                         .filter(
@@ -1727,6 +1790,15 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: '600',
         letterSpacing: -0.2,
+    },
+    // #491 finding #2: explainer body shown in place of the DAY OF WEEK
+    // segmented picker when the selected pattern has multiple hand-offs
+    // per cycle. Matches subRowSub leading so it reads like a sibling
+    // sub-row rather than a callout.
+    handoffExplainer: {
+        fontSize: 12,
+        lineHeight: 17,
+        letterSpacing: -0.1,
     },
 
     // Kid row
