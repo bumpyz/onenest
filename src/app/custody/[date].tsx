@@ -265,19 +265,32 @@ export default function CustodyOverrideEditorScreen() {
         previewWeekStart,
         previewWeekEnd,
     );
+    // BUG FIX: useEvents reads its first arg by reference for its
+    // effect dep array. Passing a fresh `parseISO(fromDate)` on every
+    // render makes useEvents think the start date changed every tick,
+    // which kicks off a refetch loop the browser eventually kills
+    // with ERR_INSUFFICIENT_RESOURCES. Memoize both args off the
+    // string dates so the reference is stable across renders.
+    const eventsRangeStart = useMemo(
+        () => parseISO(fromDate),
+        [fromDate],
+    );
+    const eventsRangeDays = useMemo(
+        () =>
+            Math.max(
+                1,
+                Math.floor(
+                    (parseISO(toDate).getTime() -
+                        parseISO(fromDate).getTime()) /
+                        86_400_000,
+                ) + 1,
+            ),
+        [fromDate, toDate],
+    );
     const { events: rangeEvents } = useEvents(
         household?.id,
-        parseISO(fromDate),
-        // Add 1 because useEvents days arg is exclusive end semantically
-        // for some callers, but here we want inclusive end. Empirically
-        // matches the impact-preview caller in pattern editor.
-        Math.max(
-            1,
-            Math.floor(
-                (parseISO(toDate).getTime() - parseISO(fromDate).getTime()) /
-                    86_400_000,
-            ) + 1,
-        ),
+        eventsRangeStart,
+        eventsRangeDays,
     );
 
     // ─── derived state ───────────────────────────────────────────────
