@@ -997,8 +997,13 @@ export function EventForm({
                     </FormGroup>
 
                     {/* ─── WHO ──────────────────────────────────────────── */}
+                    {/* gap={8} on the FormGroup tightens the vertical
+                        rhythm between the Responsible cluster, Children,
+                        and Mark-private sub-blocks — default gap is 12
+                        (Spacing.three) which read too loose with the
+                        hairline dividers in place. */}
                     <FormSectionLabel>Who</FormSectionLabel>
-                    <FormGroup>
+                    <FormGroup gap={8}>
                         <View style={styles.field}>
                             {/* Multi-select responsible parent. Tap a chip
                                 to tag/untag; first-added becomes lead
@@ -1266,35 +1271,26 @@ export function EventForm({
                     </FormGroup>
 
                     {/* ─── WHERE ────────────────────────────────────────── */}
-                    <FormSectionLabel>Where</FormSectionLabel>
+                    {/* "(optional)" lives in the section label itself so
+                        the inner FormGroup doesn't need to repeat the
+                        "Location (optional)" sub-heading. One sub-heading
+                        per section keeps the Who/When/Where rhythm
+                        consistent. */}
+                    <FormSectionLabel>Where (optional)</FormSectionLabel>
                     <FormGroup>
                         <View style={styles.field}>
-                            <ThemedText type="smallBold">Location (optional)</ThemedText>
-
                             {locations.length > 0 ? (
-                                // Vertical list of saved locations matching
-                                // the design spec's LocSuggestion rows.
-                                // Capped to ~3 rows tall and scrollable —
-                                // households with many saved places can
-                                // scroll to reveal the rest without the
-                                // section eating an unbounded amount of
-                                // the form's vertical real estate.
-                                <View
-                                    style={[
-                                        styles.locationListCard,
-                                        {
-                                            borderColor: colors.hair,
-                                            backgroundColor:
-                                                colors.backgroundElement,
-                                        },
-                                    ]}>
+                                // Saved locations now render edge-to-edge
+                                // inside the FormGroup card itself (no
+                                // inner sub-card). The FormGroup IS the
+                                // container; nesting a second card made
+                                // the section feel claustrophobic. The
+                                // ScrollView keeps the 3-row maxHeight
+                                // clamp so longer lists scroll within
+                                // the card.
+                                <View style={styles.locationListInline}>
                                     <ScrollView
-                                        // 3 rows × ~58px each = 174; the
-                                        // maxHeight clamp ensures only ~3
-                                        // are visible at once. Shorter
-                                        // lists (1-2 rows) render at their
-                                        // natural height; longer lists
-                                        // scroll the overflow.
+                                        // 3 rows × ~58px each = 174.
                                         style={{ maxHeight: 174 }}
                                         nestedScrollEnabled
                                         showsVerticalScrollIndicator>
@@ -2116,10 +2112,13 @@ export function EventForm({
 
 const styles = StyleSheet.create({
     // Alternation FormRow — sits directly beneath the Responsible chip
-    // strip as a continuation of the same selector. No divider above,
-    // tight margin so it reads as one block with the chips.
+    // strip as a continuation of the same selector. No divider, no
+    // marginTop on the wrapper — the parent field's 4px gap already
+    // separates the chip row from this row. Negative marginBottom
+    // pulls the FormRow's internal 13px paddingTop tighter against
+    // the chips so the visual gap stays ~10px instead of ~17.
     alternationRowWrap: {
-        marginTop: 6,
+        marginTop: -6,
     },
     // Hairline between sub-blocks inside the Who card — separates the
     // Responsible cluster (chips + Alternates) from the For/Children
@@ -2215,7 +2214,12 @@ const styles = StyleSheet.create({
     // ~80px = bar padding (Spacing.three top + bottom) + deleteBtn (~44px) + a
     // bit of breathing room.
     scroll: { padding: Spacing.four, gap: Spacing.two, paddingBottom: 80 },
-    field: { gap: Spacing.two },
+    // Field row gap tightened from Spacing.two (8) to 4 so a section's
+    // sub-label, chip strip, and follow-on row (Alternates, etc.) read
+    // as one cluster instead of three loosely-stacked elements. Other
+    // sections inherit this — Notes' textarea sits 4px under its label
+    // now, etc. Tighter feel without losing legibility.
+    field: { gap: 4 },
     // Mark-private row (#466). The title + switch share one row so the
     // switch's vertical position only depends on the title's height
     // (constant). The description sits on its own line below and can
@@ -2262,7 +2266,11 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         letterSpacing: 0.4,
         textTransform: 'uppercase',
-        marginBottom: 8,
+        // Tight 2px gap below the mono caps label — the parent field
+        // already adds a 4px gap to the next child, so the visual
+        // distance from label baseline → chip-row top stays ~6px.
+        // Previously 8 + 8 = 16, which made the cluster feel loose.
+        marginBottom: 2,
     },
     weekdayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.one, paddingTop: Spacing.one },
     // Date field + Clear button on one row, only rendered when recurrence is active.
@@ -2332,14 +2340,14 @@ const styles = StyleSheet.create({
         // text into the tag.
         textTransform: 'uppercase',
     },
-    // Saved-locations list — vertical card that holds the
-    // LocationSuggestionRow stack. 10px radius + hair border so the row
-    // dividers (inside each LocationSuggestionRow) read against a
-    // continuous card edge. overflow:hidden keeps any selected-row
-    // tint from bleeding past the rounded corners.
-    locationListCard: {
-        borderRadius: 10,
-        borderWidth: StyleSheet.hairlineWidth,
+    // Saved-locations list — renders edge-to-edge inside the FormGroup
+    // card itself (no inner sub-card border). Negative horizontal
+    // margins counter the FormGroup's 12px internal padding so the
+    // LocationSuggestionRow stack stretches the card's full width.
+    // overflow:hidden keeps any selected-row accent tint inside the
+    // card's rounded corners.
+    locationListInline: {
+        marginHorizontal: -12,
         overflow: 'hidden',
     },
     mapsLink: { paddingVertical: Spacing.one },
