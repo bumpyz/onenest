@@ -2296,6 +2296,131 @@ export async function deleteEvent(id: string): Promise<void> {
     if (error) throw error;
 }
 
+// ─── Event reminders (migration 0053, R2 #308 + #419 partial) ──────────
+//
+// Per-recipient pre-event push reminders. Each row = "remind this
+// profile, N minutes before event X." Negative offsets fire before
+// the event (the common case); positive offsets fire after (rare
+// follow-up reminders).
+//
+// EventForm UI wire-up + reminder-picker sheet ship as a follow-up;
+// these helpers are the infrastructure the form will call into.
+
+export type EventReminder = {
+    id: string;
+    event_id: string;
+    profile_id: string;
+    offset_minutes: number;
+    fired_at: string | null;
+    created_at: string;
+};
+
+/** Returns every reminder for a given event, across all recipients.
+ *  Used by EventDetail to show "30 min before for Mom · 1 day before
+ *  for Dad" style summaries. */
+export async function listEventReminders(
+    eventId: string,
+): Promise<EventReminder[]> {
+    const { data, error } = await supabase
+        .from('event_reminders')
+        .select('*')
+        .eq('event_id', eventId)
+        .order('offset_minutes', { ascending: true });
+    if (error) {
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
+    return (data ?? []) as EventReminder[];
+}
+
+/** Returns reminders for an event scoped to a single recipient.
+ *  Used by EventForm to seed the picker with the caller's current
+ *  selection. */
+export async function listEventRemindersFor(
+    eventId: string,
+    profileId: string,
+): Promise<EventReminder[]> {
+    const { data, error } = await supabase
+        .from('event_reminders')
+        .select('*')
+        .eq('event_id', eventId)
+        .eq('profile_id', profileId)
+        .order('offset_minutes', { ascending: true });
+    if (error) {
+        if (error.code === 'PGRST205') return [];
+        throw error;
+    }
+    return (data ?? []) as EventReminder[];
+}
+
+/** Upsert a single reminder. Idempotent via the unique constraint on
+ *  (event_id, profile_id, offset_minutes) — re-inserting the same
+ *  tuple is a no-op rather than a duplicate row. */
+export async function upsertEventReminder(args: {
+    eventId: string;
+    profileId: string;
+    offsetMinutes: number;
+}): Promise<void> {
+    const { error } = await supabase
+        .from('event_reminders')
+        .upsert(
+            {
+                event_id: args.eventId,
+                profile_id: args.profileId,
+                offset_minutes: args.offsetMinutes,
+            },
+            { onConflict: 'event_id,profile_id,offset_minutes' },
+        );
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
+/** Delete a single reminder (by composite key). Returns silently
+ *  if the row doesn't exist — matches the "no-op on absent" shape
+ *  upsertEventReminder uses. */
+export async function deleteEventReminder(args: {
+    eventId: string;
+    profileId: string;
+    offsetMinutes: number;
+}): Promise<void> {
+    const { error } = await supabase
+        .from('event_reminders')
+        .delete()
+        .eq('event_id', args.eventId)
+        .eq('profile_id', args.profileId)
+        .eq('offset_minutes', args.offsetMinutes);
+    if (error && error.code !== 'PGRST205') throw error;
+}
+
+/** Replace the entire reminder set for (event, profile) with the
+ *  given list of offsets. The EventForm picker's natural shape: the
+ *  user lands on a single picked offset (or null = no reminder), so
+ *  most calls pass [N] or []. RLS-gated as expected. */
+export async function setEventRemindersFor(
+    eventId: string,
+    profileId: string,
+    offsetMinutes: number[],
+): Promise<void> {
+    // Delete-all-then-insert is the simplest correct mutation; the
+    // unique partial index in 0053 doesn't help here since we want
+    // to remove offsets the user toggled off.
+    const { error: delError } = await supabase
+        .from('event_reminders')
+        .delete()
+        .eq('event_id', eventId)
+        .eq('profile_id', profileId);
+    if (delError && delError.code !== 'PGRST205') throw delError;
+    if (offsetMinutes.length === 0) return;
+    const rows = offsetMinutes.map((m) => ({
+        event_id: eventId,
+        profile_id: profileId,
+        offset_minutes: m,
+    }));
+    const { error: insError } = await supabase
+        .from('event_reminders')
+        .insert(rows);
+    if (insError && insError.code !== 'PGRST205') throw insError;
+}
+
 // ─── Notifications (migration 0052, R1 #381) ────────────────────────────
 //
 // Persisted per-recipient notification log. Writes are gated through
