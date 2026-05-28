@@ -2697,7 +2697,19 @@ export type NotificationKind =
     | 'digest'
     | 'invite'
     | 'connect'
-    | 'conflict';
+    | 'conflict'
+    // Custody-override fan-out (#494 Phase E, migration 0057).
+    //   override_change   — in-household FYI when an override
+    //                       auto-applies (no external co-parent
+    //                       in scope). Recipient: other parents.
+    //   override_request  — external co-parent approval ask, fired
+    //                       when an override saves with a pending
+    //                       approval_status.
+    //   override_decision — fired back to the requester when an
+    //                       approver decides (approved / declined).
+    | 'override_change'
+    | 'override_request'
+    | 'override_decision';
 
 export type Notification = {
     id: string;

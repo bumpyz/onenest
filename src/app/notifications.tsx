@@ -58,7 +58,13 @@ type InboxKind =
     | 'swap'
     | 'digest'
     | 'invite'
-    | 'connect';
+    | 'connect'
+    // Custody-override fan-out (#494 Phase E). All three render with
+    // the swap-style "repeat" glyph but tint differs: request = warn
+    // (decision needed), change + decision = accent (informational).
+    | 'override_change'
+    | 'override_request'
+    | 'override_decision';
 
 type InboxItem = {
     id: string;
@@ -611,6 +617,9 @@ function InboxRow({
         digest: 'inbox',
         invite: 'user-plus',
         connect: 'link',
+        override_change: 'repeat',
+        override_request: 'repeat',
+        override_decision: 'repeat',
     };
     const tintForKind: Record<InboxKind, string> = {
         conflict: colors.warn,
@@ -623,6 +632,11 @@ function InboxRow({
         digest: colors.accent,
         invite: colors.accent,
         connect: colors.accent,
+        // override_request needs the approver's attention — warn-tint
+        // it so the row stands out from passive change/decision rows.
+        override_change: colors.accent,
+        override_request: colors.warn,
+        override_decision: colors.accent,
     };
     const tint = tintForKind[item.kind];
     const icon = iconForKind[item.kind];
