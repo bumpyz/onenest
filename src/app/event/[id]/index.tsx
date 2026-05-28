@@ -91,7 +91,7 @@ import {
 } from '@/components/event/event-responsible-sheet';
 import { EventWhenSheet } from '@/components/event/event-when-sheet';
 import { colorForResponsible, memberColorMap } from '@/lib/colors';
-import { buildOverrideMap } from '@/lib/custody';
+import { buildOverrideMap, resolveCustodianOnDate } from '@/lib/custody';
 import {
     createTask,
     deleteEvent,
@@ -277,6 +277,36 @@ export default function EventDetailScreen() {
         [resolvedResponsibleId, members],
     );
 
+    // Expected custodian — who the custody schedule says has the kids
+    // on this event's date, independent of how the event was tagged.
+    // Used to surface a Reassign suggestion (#418) when the event's
+    // explicit lead disagrees with the schedule. Distinct from
+    // resolvedResponsibleId, which respects the event's explicit
+    // assignment first and falls back to custody only when the event
+    // uses alternation mode. Null when:
+    //   * No custody schedule (non-separated household).
+    //   * Schedule returns 'AB' (both-parents-home day) — we can't say
+    //     who's "expected" and a suggestion would be wrong.
+    const expectedCustodianId = useMemo<string | null>(() => {
+        if (!event || !custodySchedule) return null;
+        const r = resolveCustodianOnDate(
+            custodySchedule,
+            custodyOverrides,
+            occurrenceRangeDate,
+            event.timezone,
+        );
+        return r.profileId;
+    }, [event, custodySchedule, custodyOverrides, occurrenceRangeDate]);
+    const expectedCustodianMember = useMemo(
+        () =>
+            expectedCustodianId
+                ? (members ?? []).find(
+                      (m) => m.profile_id === expectedCustodianId,
+                  ) ?? null
+                : null,
+        [expectedCustodianId, members],
+    );
+
     // Multi-responsible derivations — fed by the new events_responsible join.
     // `responsibleProfiles` is the list of HouseholdMember rows for everyone
     // tagged on this event (lead first). `leadProfileId` is the explicit
@@ -377,6 +407,77 @@ export default function EventDetailScreen() {
             }
         }
     };
+
+    // Reassign suggestion handler (#418). One-tap: promote the expected
+    // custodian to lead. The previous lead drops off the responsibles
+    // list (the override semantic is "this parent has the kids" — they
+    // own this event now). Other non-lead responsibles stay tagged.
+    // If the expected custodian was already a non-lead responsible we
+    // dedupe rather than insert a second row. Same writer path as
+    // handleResponsibleSave so the conflict + multi-responsible
+    // invariants stay consistent.
+    const [reassigningToCustodian, setReassigningToCustodian] =
+        useState(false);
+    const handleReassignToCustodian = async () => {
+        if (!event || !expectedCustodianId || reassigningToCustodian) return;
+        const next: NewEventResponsibleInput[] = [
+            { profileId: expectedCustodianId, isLead: true },
+            ...event.responsibles
+                .filter(
+                    (r) =>
+                        r.profile_id !== expectedCustodianId &&
+                        r.profile_id !== leadProfileId,
+                )
+                .map((r) => ({ profileId: r.profile_id, isLead: false })),
+        ];
+        setReassigningToCustodian(true);
+        try {
+            await updateEvent(event.id, {
+                title: event.title,
+                startsAt: new Date(event.starts_at),
+                endsAt: new Date(event.ends_at),
+                allDay: event.all_day,
+                description: event.description,
+                location: event.location,
+                locationId: event.location_id,
+                recurrenceRule: event.recurrence_rule,
+                eventType: event.event_type,
+                timezone: event.timezone,
+                childIds: event.child_ids,
+                responsibleAlternation: event.responsible_alternation,
+                responsibles: next,
+            });
+            await Promise.all([refetchEvent(), refetchWeekSummary()]);
+        } catch (err) {
+            console.error('reassign-to-custodian failed', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            if (Platform.OS === 'web') {
+                if (typeof window !== 'undefined') {
+                    window.alert(`Couldn't reassign\n\n${msg}`);
+                }
+            } else {
+                Alert.alert("Couldn't reassign", msg);
+            }
+        } finally {
+            setReassigningToCustodian(false);
+        }
+    };
+
+    // Show the Reassign suggestion when (a) the event has a custody
+    // schedule to consult, (b) someone is tagged as lead (we don't
+    // suggest reassigning Anyone — the resolver handles that), (c) the
+    // schedule's expected custodian differs from the current lead, AND
+    // (d) the event isn't using alternation mode (alternation IS the
+    // custody-aware mode — suggesting "reassign to custody" against it
+    // is nonsensical). Caregivers don't see the suggestion (read-only
+    // role; the Pressable would no-op anyway).
+    const showReassignSuggestion =
+        !isCaregiver &&
+        !!event &&
+        !!leadProfileId &&
+        !!expectedCustodianId &&
+        expectedCustodianId !== leadProfileId &&
+        event.responsible_alternation === null;
 
     // For section — child chips for every tagged kid. Reads from the
     // pending draft when one exists so the visible chips reflect what
@@ -591,13 +692,36 @@ export default function EventDetailScreen() {
         return <Redirect href="/calendar" />;
     }
 
-    // Hero meta — `16:00 — 16:45` + `45m` duration. All-day events skip
-    // the time entirely and show "All day" instead.
+    // Hero meta — `16:00 — 16:45` + `45m` duration for timed events;
+    // multi-day all-day events get "All day · N days" + a date-RANGE
+    // pretitle (#418). Single-day all-day stays "All day".
     const starts = parseISO(event.starts_at);
     const ends = event.ends_at ? parseISO(event.ends_at) : null;
     const isAllDay = event.all_day ?? false;
+    // Multi-day all-day detection. All-day events anchor at UTC midnight
+    // (QA-005); ends_at is the EXCLUSIVE midnight of the day AFTER the
+    // last display day. So:
+    //   * single-day all-day: ends_at - starts_at == 86_400_000 ms
+    //   * multi-day all-day:  ends_at - starts_at > 86_400_000 ms
+    // We subtract one day from ends_at to get the inclusive last day for
+    // display purposes (the user-facing "MAY 28" in a Mon→Wed vacation).
+    const isMultiDayAllDay =
+        isAllDay && ends !== null &&
+        ends.getTime() - starts.getTime() > 86_400_000 + 1;
+    const allDayLastDay = isMultiDayAllDay && ends
+        ? new Date(ends.getTime() - 86_400_000)
+        : null;
+    const allDayDayCount = isMultiDayAllDay && ends
+        ? Math.round(
+              (ends.getTime() - starts.getTime()) / 86_400_000,
+          )
+        : isAllDay
+          ? 1
+          : 0;
     const timeLabel = isAllDay
-        ? 'All day'
+        ? isMultiDayAllDay
+            ? `All day · ${allDayDayCount} days`
+            : 'All day'
         : ends
           ? `${format(starts, 'HH:mm')} — ${format(ends, 'HH:mm')}`
           : format(starts, 'HH:mm');
@@ -605,8 +729,33 @@ export default function EventDetailScreen() {
         !isAllDay && ends
             ? formatDuration(ends.getTime() - starts.getTime())
             : null;
-    const heroDateLabel = format(starts, 'MMM d').toUpperCase();
-    const heroYearLabel = format(starts, 'yyyy');
+    // All-day events store at UTC midnight (QA-005). Formatting them
+    // with date-fns in the viewer's local tz reads as the previous day
+    // for any tz west of UTC (e.g. a NYC viewer's "MAY 25" for an event
+    // saved as "2026-05-26T00:00:00Z"). For all-day rows the spec wants
+    // the literal calendar date the event represents, irrespective of
+    // viewer tz, so we format via the UTC getters directly.
+    const heroDateLabel = isAllDay
+        ? formatAllDayMonthDay(starts).toUpperCase()
+        : format(starts, 'MMM d').toUpperCase();
+    const heroYearLabel = isAllDay
+        ? String(starts.getUTCFullYear())
+        : format(starts, 'yyyy');
+    // Multi-day all-day pretitle: extend the MMM D range. Same month
+    // collapses ("MAY 26–28"); cross-month spells both ("MAY 28–JUN 3").
+    // Year is dropped from the range itself and appended once at the
+    // end to match the single-day pretitle vocabulary.
+    const heroRangeLabel = (() => {
+        if (!isMultiDayAllDay || !allDayLastDay) return heroDateLabel;
+        const startMonthDay = formatAllDayMonthDay(starts).toUpperCase();
+        const sameMonth =
+            starts.getUTCMonth() === allDayLastDay.getUTCMonth() &&
+            starts.getUTCFullYear() === allDayLastDay.getUTCFullYear();
+        if (sameMonth) {
+            return `${startMonthDay}–${allDayLastDay.getUTCDate()}`;
+        }
+        return `${startMonthDay}–${formatAllDayMonthDay(allDayLastDay).toUpperCase()}`;
+    })();
     // Pretitle composition (design source screens-event-edit.jsx:316 for
     // multi all-day events). Precedence:
     //   1. ALL-DAY · prefix when the event is all-day (overrides recurrence
@@ -616,7 +765,7 @@ export default function EventDetailScreen() {
     //   2. recurrenceLabel · prefix when recurring + timed.
     //   3. Bare date · year otherwise.
     const pretitle = isAllDay
-        ? `ALL-DAY · ${heroDateLabel} · ${heroYearLabel}`
+        ? `ALL-DAY · ${heroRangeLabel} · ${heroYearLabel}`
         : recurrenceLabel
           ? `${recurrenceLabel} · ${heroDateLabel} · ${heroYearLabel}`
           : `${heroDateLabel} · ${heroYearLabel}`;
@@ -1442,6 +1591,69 @@ export default function EventDetailScreen() {
                                 }
                             />
                         </FormGroup>
+
+                        {/* Reassign suggestion (#418). Surfaces when the
+                            custody schedule says someone else has the
+                            kids on this event's date — pairs with the
+                            override editor's reassign flow (#500): if
+                            the schedule shifts under an event, the
+                            event detail surfaces a one-tap fix instead
+                            of forcing the user to walk into the override
+                            editor just to swap a single event's lead.
+                            Accent-tinted card with refresh-cw glyph +
+                            "Reassign to {name}" Pressable. Tapping
+                            promotes the expected custodian to lead via
+                            handleReassignToCustodian. The card hides
+                            automatically post-save once leadProfileId
+                            matches expectedCustodianId. */}
+                        {showReassignSuggestion && expectedCustodianMember ? (
+                            <Pressable
+                                onPress={
+                                    reassigningToCustodian
+                                        ? undefined
+                                        : handleReassignToCustodian
+                                }
+                                accessibilityRole="button"
+                                accessibilityLabel={`Reassign to ${expectedCustodianMember.display_name}`}
+                                style={({ pressed }) => [
+                                    styles.reassignCard,
+                                    {
+                                        backgroundColor: withAlpha(
+                                            colors.accent,
+                                            0.063,
+                                        ),
+                                        borderColor: withAlpha(
+                                            colors.accent,
+                                            0.33,
+                                        ),
+                                    },
+                                    pressed && styles.pressed,
+                                ]}>
+                                <Feather
+                                    name="refresh-cw"
+                                    size={12}
+                                    color={colors.accent}
+                                    style={styles.reassignIcon}
+                                />
+                                <ThemedText
+                                    style={[
+                                        styles.reassignText,
+                                        { color: colors.inkSec },
+                                    ]}>
+                                    {expectedCustodianMember.display_name} has the kids today.
+                                    {' '}
+                                    <ThemedText
+                                        style={{
+                                            color: colors.accent,
+                                            fontWeight: '600',
+                                        }}>
+                                        {reassigningToCustodian
+                                            ? 'Reassigning…'
+                                            : `Reassign to ${expectedCustodianMember.display_name}`}
+                                    </ThemedText>
+                                </ThemedText>
+                            </Pressable>
+                        ) : null}
                     </View>
 
                     {/* FOR — child chip strip. Hidden entirely when the
@@ -2070,6 +2282,30 @@ function formatDuration(ms: number): string {
     return `${h}h ${m}m`;
 }
 
+// All-day events store at UTC midnight (QA-005). Formatting them with
+// the viewer's local tz pushes the displayed date back one day for any
+// tz west of UTC. Format from the UTC getters directly so the hero
+// shows the literal calendar date the user picked, irrespective of
+// where they're reading from.
+const ALL_DAY_MONTH_NAMES = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+] as const;
+function formatAllDayMonthDay(date: Date): string {
+    const month = ALL_DAY_MONTH_NAMES[date.getUTCMonth()];
+    return `${month} ${date.getUTCDate()}`;
+}
+
 /** Opens the location in the platform's preferred maps app. Prefers the
  *  saved Google Maps URL when present (the user picked the place via
  *  PlacesAutocomplete), then falls back to a text-query search by the
@@ -2305,6 +2541,27 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'flex-start',
         gap: 7,
+    },
+    // Reassign suggestion card (#418). Same vocabulary as taggingCard
+    // (accent-tinted soft fill, small icon + body row) but with a 1px
+    // accent border so it reads as an interactive affordance rather
+    // than passive copy. Sits below the Responsible FormGroup card with
+    // a 10px gap — same rhythm as the multi-responsible taggingCard.
+    reassignCard: {
+        marginTop: 10,
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        borderRadius: 8,
+        borderWidth: 1,
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 8,
+    },
+    reassignIcon: { marginTop: 1 },
+    reassignText: {
+        flex: 1,
+        fontSize: 12,
+        lineHeight: 16,
     },
     taggingIcon: { marginTop: 1 },
     taggingText: {
