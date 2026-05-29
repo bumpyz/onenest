@@ -101,17 +101,22 @@ export default function NotificationsScreen() {
     const colors = Colors[scheme === 'dark' ? 'dark' : 'light'];
 
     const { session, isLoading: authLoading } = useAuth();
+    const currentUserId = session?.user?.id ?? null;
     const { households, isLoading: householdsLoading } = useHouseholds();
     const household = households?.[0];
     const { members } = useHouseholdMembers(household?.id);
     const { schedule: custodySchedule } = useCustodySchedule(household?.id);
-    // Pull a small window of overrides — we only walk +7 days for hand-off
-    // detection. Pre-computed bounds avoid the hook fetching the full
-    // history.
+    // Pull a 60-day forward window of overrides. Used for two things:
+    //   • Hand-off detection only walks +7 days, so any window ≥7 covers it.
+    //   • The outgoing-pending-override row needs to see ALL the user's
+    //     pending requests, not just near-term ones. 60 days catches most
+    //     realistic planning horizons — families rarely schedule custody
+    //     swaps further out, but the override-edit screen + schedule view
+    //     still surface anything outside this window.
     const overrideRangeStart = useMemo(() => new Date(), []);
     const overrideRangeEnd = useMemo(() => {
         const d = new Date();
-        d.setDate(d.getDate() + 14);
+        d.setDate(d.getDate() + 60);
         return d;
     }, []);
     const { overrides } = useCustodyOverrides(
@@ -243,6 +248,68 @@ export default function NotificationsScreen() {
             }
         }
 
+        // Outgoing pending overrides. Replaces the "Sent for approval"
+        // modal Alert that used to fire from /custody/[date] on save.
+        // Surfaces every override the current user created that's still
+        // in `approval_status='pending'` as a self-row in their own
+        // Activity inbox, so they can see "waiting on X" from any
+        // surface in the app without going back to the custody schedule.
+        //
+        // Marked as already-read because it's informational about the
+        // user's own action — not an actionable ask of them. Renders
+        // with the `override_request` icon vocabulary (repeat glyph,
+        // warn tint) since the row's semantic is "a pending decision
+        // is out there" either way; the body copy disambiguates
+        // outgoing vs. incoming.
+        if (currentUserId) {
+            for (const ov of overrides ?? []) {
+                if (
+                    ov.approval_status !== 'pending' ||
+                    ov.created_by !== currentUserId
+                ) {
+                    continue;
+                }
+                // Pull approver first-names for the body. Fallback to
+                // "co-parent" when we can't resolve a profile (e.g.
+                // external co-parent not yet in our members fetch).
+                const approverNames = (ov.requires_approval_from ?? [])
+                    .map((pid) => {
+                        const m = (members ?? []).find(
+                            (x) => x.profile_id === pid,
+                        );
+                        return (
+                            m?.display_name?.split(/\s+/)[0] ?? 'co-parent'
+                        );
+                    });
+                const waitingOn =
+                    approverNames.length === 0
+                        ? 'co-parent'
+                        : approverNames.length === 1
+                          ? approverNames[0]
+                          : `${approverNames[0]} + ${approverNames.length - 1} more`;
+                const startDate = new Date(`${ov.override_date}T00:00:00`);
+                const endDate = new Date(`${ov.end_date}T00:00:00`);
+                const rangeLabel =
+                    ov.override_date === ov.end_date
+                        ? format(startDate, 'EEE MMM d')
+                        : `${format(startDate, 'MMM d')}–${format(endDate, 'd')}`;
+                const custodianMember = (members ?? []).find(
+                    (x) => x.profile_id === ov.custodian_profile_id,
+                );
+                const custodianName =
+                    custodianMember?.display_name?.split(/\s+/)[0] ?? 'them';
+                list.push({
+                    id: `outgoing-pending-${ov.id}`,
+                    kind: 'override_request',
+                    title: `Override sent · waiting on ${waitingOn}`,
+                    body: `${rangeLabel} → ${custodianName} has the kids · they'll decide.`,
+                    at: new Date(ov.created_at),
+                    unread: false,
+                    href: '/custody/schedule',
+                });
+            }
+        }
+
         // Persisted notifications (#381). Each row in the
         // `notifications` table becomes an InboxItem. Kind-specific
         // avatar resolution: swap_request/swap_decision use the
@@ -275,7 +342,15 @@ export default function NotificationsScreen() {
             });
         }
         return list;
-    }, [summary, custodySchedule, overrides, members, persisted, colors.accent]);
+    }, [
+        summary,
+        custodySchedule,
+        overrides,
+        members,
+        persisted,
+        currentUserId,
+        colors.accent,
+    ]);
 
     const [filter, setFilter] = useState<Filter>('all');
 

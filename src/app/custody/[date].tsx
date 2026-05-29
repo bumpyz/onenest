@@ -540,22 +540,27 @@ export default function CustodyOverrideEditorScreen() {
                 addToActivityFeed,
                 reassignEvents,
             });
-            // Auto-approved overrides apply immediately, so the user
-            // sees the schedule visibly change on the next surface.
-            // No confirmation needed — the navigation IS the feedback.
+            // Auto-approved overrides apply immediately — the schedule
+            // visibly changes on the next surface, so the navigation IS
+            // the feedback.
             //
-            // Pending overrides DON'T apply yet, so the schedule looks
-            // unchanged after save. Without an explicit confirmation
-            // the user has no signal the save worked + no idea the
-            // override is awaiting approval. Keep the popup here so
-            // the latent state isn't mysterious.
-            const wasPending = result.approval_status === 'pending';
-            if (wasPending) {
-                const msg =
-                    "Sent for approval. You'll get a notification when the co-parent decides.";
-                if (Platform.OS === 'web') alert(msg);
-                else Alert.alert('Sent for approval', msg);
-            }
+            // Pending overrides used to fire a modal "Sent for approval"
+            // Alert here so the user knew the save worked + the override
+            // was awaiting approval. Two problems with that:
+            //   • The editor already shows the ApprovalBanner explaining
+            //     this BEFORE save, so the popup re-said something the
+            //     user just acknowledged.
+            //   • Modal Alerts interrupt the action they're meant to
+            //     confirm. The right pattern for a successful save is
+            //     a persistent surface signal, not a popup.
+            //
+            // We now surface the pending state via the Activity inbox:
+            // for any pending override where created_by = the current
+            // user, notifications.tsx renders an outgoing self-row
+            // ("Override sent · waiting on X"). The user sees their
+            // own pending requests there from any surface in the app,
+            // not just on the custody schedule.
+            void result;
             router.back();
         } catch (err) {
             console.error('createCustodyOverride failed', err);
